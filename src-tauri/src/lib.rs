@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use tauri::{Emitter, Manager, RunEvent};
+use tauri::{Emitter, Manager};
 
 const VIDEO: &[&str] = &[
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "ts", "m2ts", "mts", "mpg", "mpeg",
@@ -615,7 +615,7 @@ pub fn run() {
 
     app.run(|handle, event| {
         #[cfg(any(target_os = "macos", target_os = "ios"))]
-        if let RunEvent::Opened { urls } = &event {
+        if let tauri::RunEvent::Opened { urls } = &event {
             let paths = urls
                 .iter()
                 .filter_map(|u| u.to_file_path().ok())
