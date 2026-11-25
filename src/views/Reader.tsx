@@ -13,7 +13,15 @@ type Pdf = import('pdfjs-dist').PDFDocumentProxy
 async function openPdf(url: string): Promise<Pdf> {
   const [pdfjs, worker] = await Promise.all([import('pdfjs-dist'), import('pdfjs-dist/build/pdf.worker.min.mjs?url')])
   pdfjs.GlobalWorkerOptions.workerSrc = worker.default
-  return pdfjs.getDocument({ url }).promise
+  const base: string = import.meta.env.VITE_PDFJS_BASE
+  return pdfjs.getDocument({
+    url,
+    cMapUrl: `${base}cmaps/`,
+    cMapPacked: true,
+    standardFontDataUrl: `${base}standard_fonts/`,
+    wasmUrl: `${base}wasm/`,
+    iccUrl: `${base}iccs/`,
+  }).promise
 }
 
 

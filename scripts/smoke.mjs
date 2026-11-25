@@ -16,15 +16,19 @@ if (!existsSync(media)) {
 mkdirSync('test-media/shots', { recursive: true })
 execFileSync('sh', ['-c', "printf '1\\n00:00:00,000 --> 00:00:30,000\\nHello from Flick\\n' > test-media/sample.srt"])
 
-// A tiny 3 page PDF, so the book reader has something to open.
+// A tiny 3 page PDF, so the book reader has something to open. Page 1 also has Japanese text in a
+// font the file does not embed, which pdf.js can draw only with the character maps the build ships.
 function writePdf(path, pages = 3) {
   const objs = ['<< /Type /Catalog /Pages 2 0 R >>', `<< /Type /Pages /Kids [${Array.from({ length: pages }, (_, i) => `${3 + i * 2} 0 R`).join(' ')}] /Count ${pages} >>`]
   for (let i = 0; i < pages; i++) {
-    const c = `BT /F1 48 Tf 72 700 Td (Page ${i + 1}) Tj ET`
-    objs.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${4 + i * 2} 0 R /Resources << /Font << /F1 ${3 + pages * 2} 0 R >> >> >>`)
+    const c = `BT /F1 48 Tf 72 700 Td (Page ${i + 1}) Tj ET` + (i === 0 ? ' BT /F2 36 Tf 72 600 Td <65E5672C> Tj ET' : '')
+    objs.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${4 + i * 2} 0 R /Resources << /Font << /F1 ${3 + pages * 2} 0 R /F2 ${4 + pages * 2} 0 R >> >> >>`)
     objs.push(`<< /Length ${c.length} >>\nstream\n${c}\nendstream`)
   }
   objs.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
+  objs.push(`<< /Type /Font /Subtype /Type0 /BaseFont /KozMinPr6N-Regular /Encoding /UniJIS-UCS2-H /DescendantFonts [${5 + pages * 2} 0 R] >>`)
+  objs.push(`<< /Type /Font /Subtype /CIDFontType0 /BaseFont /KozMinPr6N-Regular /CIDSystemInfo << /Registry (Adobe) /Ordering (Japan1) /Supplement 6 >> /FontDescriptor ${6 + pages * 2} 0 R >>`)
+  objs.push('<< /Type /FontDescriptor /FontName /KozMinPr6N-Regular /Flags 4 /FontBBox [0 -120 1000 880] /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 700 /StemV 80 >>')
   let out = '%PDF-1.4\n'
   const offs = objs.map((o, n) => { const at = out.length; out += `${n + 1} 0 obj\n${o}\nendobj\n`; return at })
   const x = out.length
@@ -126,8 +130,10 @@ try {
   await page.getByRole('button', { name: /Store files/ }).click()
   await (await bookChooser).setFiles(book)
   await page.getByRole('tab', { name: /Books/ }).click()
+  const cmap = page.waitForResponse((r) => r.url().includes('/cmaps/UniJIS-UCS2-H.bcmap'), { timeout: 15000 }).catch(() => null)
   await page.getByText('Test Book').first().click()
   await page.locator('.reader-stage canvas').waitFor({ timeout: 15000 })
+  check((await cmap)?.status() === 200, 'book reader loads the character maps it needs')
   await page.keyboard.press('ArrowRight')
   await page.waitForFunction(() => document.querySelector('.reader-page input')?.value === '2')
   const readUrl = page.url()
