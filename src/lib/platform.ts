@@ -1,6 +1,8 @@
 // Bridges to the Tauri desktop shell. On the website every call here is a no-op or null.
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
+// The Tauri shell on a phone, tablet or TV: no ffmpeg there.
+export const isMobileApp = isDesktop && /Android|iPhone|iPad/i.test(navigator.userAgent)
 export const hasFsAccess = typeof window !== 'undefined' && 'showDirectoryPicker' in window
 export const hasOpfs = typeof navigator !== 'undefined' && !!navigator.storage?.getDirectory
 

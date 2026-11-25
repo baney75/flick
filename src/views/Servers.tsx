@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { notify, reloadItems, items } from '../lib/store'
 import * as Srv from '../lib/servers'
 import { Icon } from '../components/icons'
+import { isDesktop, isMobileApp } from '../lib/platform'
 
 export function Servers() {
   const [list, setList] = useState<Srv.Server[]>([])
@@ -38,7 +39,7 @@ export function Servers() {
             <div class="list-row">
               <Icon name="server" size={18} />
               <div class="grow">
-                <div>{s.name} <span class="small dim">{s.type === 'plex' ? 'Plex' : 'Jellyfin'}</span></div>
+                <div>{s.name} <span class="small dim">{s.type === 'plex' ? 'Plex' : s.type === 'kodi' ? 'Kodi' : 'Jellyfin'}</span></div>
                 <div class="small dim">{s.url} · {items.value.filter((i) => i.server === s.id).length} items</div>
               </div>
               <button class="btn ghost sm" onClick={() => sync(s)} disabled={busy === s.id}><Icon name="refresh" size={14} /> {busy === s.id ? 'Syncing' : 'Sync'}</button>
@@ -51,7 +52,9 @@ export function Servers() {
       <div class="server-grid">
         <JellyfinForm onAdd={add} />
         <PlexForm onAdd={add} />
+        {isDesktop && !isMobileApp && <KodiForm onAdd={add} />}
       </div>
+      {(!isDesktop || isMobileApp) && <p class="small dim">Kodi works in the Mac, Windows and Linux apps.</p>}
       <p class="small dim">Flick talks to your server directly from this device. If the website cannot reach a server on your home network, use the desktop app, or put the server behind HTTPS.</p>
     </div>
   )
@@ -75,6 +78,32 @@ function JellyfinForm({ onAdd }: { onAdd: (s: Srv.Server) => void }) {
       <h3>Jellyfin or Emby</h3>
       <label>Server address<input required placeholder="http://192.168.1.20:8096" value={url} onInput={(e) => setUrl((e.target as HTMLInputElement).value)} /></label>
       <label>Username<input required autocomplete="username" value={user} onInput={(e) => setUser((e.target as HTMLInputElement).value)} /></label>
+      <label>Password<input type="password" autocomplete="current-password" value={pw} onInput={(e) => setPw((e.target as HTMLInputElement).value)} /></label>
+      <button class="btn primary" disabled={busy}>{busy ? 'Connecting…' : 'Connect'}</button>
+      {err && <p class="err">{err}</p>}
+    </form>
+  )
+}
+
+function KodiForm({ onAdd }: { onAdd: (s: Srv.Server) => void }) {
+  const [url, setUrl] = useState('')
+  const [user, setUser] = useState('')
+  const [pw, setPw] = useState('')
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const submit = async (e: Event) => {
+    e.preventDefault()
+    setBusy(true)
+    setErr(null)
+    try { onAdd(await Srv.kodiConnect(url, user, pw)); setPw('') } catch (e2) { setErr((e2 as Error).message) }
+    setBusy(false)
+  }
+  return (
+    <form class="panel" onSubmit={submit}>
+      <h3>Kodi</h3>
+      <p class="dim small">In Kodi, turn on Settings, Services, Control, Allow remote control via HTTP. Flick plays files straight from Kodi. MKV and AVI files play after a quick convert.</p>
+      <label>Kodi address<input required placeholder="http://192.168.1.30:8080" value={url} onInput={(e) => setUrl((e.target as HTMLInputElement).value)} /></label>
+      <label>Username<input autocomplete="username" placeholder="Empty if Kodi has no password" value={user} onInput={(e) => setUser((e.target as HTMLInputElement).value)} /></label>
       <label>Password<input type="password" autocomplete="current-password" value={pw} onInput={(e) => setPw((e.target as HTMLInputElement).value)} /></label>
       <button class="btn primary" disabled={busy}>{busy ? 'Connecting…' : 'Connect'}</button>
       {err && <p class="err">{err}</p>}

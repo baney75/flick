@@ -181,7 +181,8 @@ export async function currentSetup(addonUrls: string[]): Promise<Setup> {
   const defaults = [CINEMETA, OPENSUBS]
   const extra = await stremioExtra()
   const urls = [...new Set([...addonUrls, ...extra])].filter((u) => !defaults.includes(u) && isHttp(u)).slice(0, MAX_ADDONS)
-  const servers = (await getServers()).slice(0, MAX_SERVERS).map(({ type, name, url, token, userId }) => (userId ? { type, name, url, token, userId } : { type, name, url, token }))
+  // Setup files do not carry Kodi yet.
+  const servers = (await getServers()).filter((s): s is Server & { type: SetupServer['type'] } => s.type !== 'kodi').slice(0, MAX_SERVERS).map(({ type, name, url, token, userId }) => (userId ? { type, name, url, token, userId } : { type, name, url, token }))
   const out: Setup = { v: 1, settings: { ...settings.value } }
   if (urls.length) out.stremioAddons = urls
   if (servers.length) out.servers = servers
