@@ -5,6 +5,8 @@ import { spawn, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync } from 'node:fs'
 
 const PORT = 4178
+// SMOKE_BASE=https://flick-player.pages.dev checks a deployed site instead of a local build.
+const BASE = process.env.SMOKE_BASE ?? `http://localhost:${PORT}`
 const media = 'test-media/Sample.Clip.2023.webm'
 if (!existsSync(media)) {
   mkdirSync('test-media', { recursive: true })
@@ -14,13 +16,13 @@ if (!existsSync(media)) {
 mkdirSync('test-media/shots', { recursive: true })
 execFileSync('sh', ['-c', "printf '1\\n00:00:00,000 --> 00:00:30,000\\nHello from Flick\\n' > test-media/sample.srt"])
 
-const server = spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' })
+const server = process.env.SMOKE_BASE ? null : spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' })
 const fails = []
 const check = (ok, what) => { console.log(`${ok ? 'PASS' : 'FAIL'} ${what}`); if (!ok) fails.push(what) }
 
 try {
   for (let i = 0; i < 50; i++) {
-    try { await fetch(`http://localhost:${PORT}/`); break } catch { await new Promise((r) => setTimeout(r, 200)) }
+    try { await fetch(`${BASE}/`); break } catch { await new Promise((r) => setTimeout(r, 200)) }
   }
   const browser = await chromium.launch({ channel: process.env.SMOKE_CHANNEL ?? 'chrome', args: ['--autoplay-policy=no-user-gesture-required'] })
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
@@ -28,7 +30,7 @@ try {
   page.on('pageerror', (e) => errors.push(e.message))
 
   const t0 = Date.now()
-  await page.goto(`http://localhost:${PORT}/`)
+  await page.goto(`${BASE}/`)
   await page.getByText('Drop anything here to play it.').waitFor()
   check(Date.now() - t0 < 3000, `first screen in ${Date.now() - t0} ms`)
   await page.screenshot({ path: 'test-media/shots/home-empty.png' })
@@ -70,7 +72,7 @@ try {
   check(saved.length === 1 && saved[0].pos > 10, `progress saved (${saved[0]?.pos?.toFixed(1)}s)`)
 
   // Stremio without an account: Cinemeta catalogs and a title page.
-  await page.goto(`http://localhost:${PORT}/#/stremio`)
+  await page.goto(`${BASE}/#/stremio`)
   const firstCard = page.locator('.row-section .card:not(.skeleton)').first()
   await firstCard.waitFor({ timeout: 15000 })
   check(await page.locator('.row-section').count() > 1, `Cinemeta catalogs load (${await page.locator('.row-section').count()} rows)`)
@@ -83,7 +85,7 @@ try {
   await page.screenshot({ path: 'test-media/shots/detail.png' })
 
   // Search.
-  await page.goto(`http://localhost:${PORT}/#/stremio`)
+  await page.goto(`${BASE}/#/stremio`)
   await page.getByLabel('Search Stremio').fill('interstellar')
   await page.keyboard.press('Enter')
   await page.getByText(/Interstellar/).first().waitFor({ timeout: 15000 })
@@ -91,19 +93,19 @@ try {
 
   // Phone layout.
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto(`http://localhost:${PORT}/#/library`)
+  await page.goto(`${BASE}/#/library`)
   await page.waitForTimeout(400)
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)
   check(!overflow, 'no sideways scroll at 390px')
   await page.screenshot({ path: 'test-media/shots/phone-library.png' })
-  await page.goto(`http://localhost:${PORT}/#/stremio`)
+  await page.goto(`${BASE}/#/stremio`)
   await page.locator('.row-section .card:not(.skeleton)').first().waitFor({ timeout: 15000 })
   await page.screenshot({ path: 'test-media/shots/phone-stremio.png' })
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.join(' | ') : ''}`)
   await browser.close()
 } finally {
-  server.kill()
+  server?.kill()
 }
 if (fails.length) { console.error(`\n${fails.length} check(s) failed`); process.exit(1) }
 console.log('\nsmoke: all checks passed')
