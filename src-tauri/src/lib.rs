@@ -8,7 +8,8 @@ use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 const VIDEO: &[&str] = &[
@@ -832,6 +833,254 @@ fn kodi_proxy(app: &tauri::AppHandle, req: &tauri::http::Request<Vec<u8>>) -> An
     proxy_fetch(&base, auth.as_deref(), &path, range)
 }
 
+// ---- offline downloads ----
+// A server file streams into app_data_dir/downloads/<id>.<ext>.part, resumes from the part's
+// size with a Range request, and is renamed to <id>.<ext> once complete.
+
+fn valid_id(s: &str) -> bool {
+    (1..=64).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+fn valid_ext(s: &str) -> bool {
+    (1..=5).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+}
+
+/// Stop flags for running downloads, by item id.
+#[derive(Default)]
+struct Downloads(Mutex<HashMap<String, Arc<AtomicBool>>>);
+
+#[derive(Serialize, Clone)]
+struct DownloadProgress {
+    id: String,
+    done: u64,
+    total: u64,
+    part: String,
+}
+
+fn downloads_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("downloads"))
+}
+
+/// The total size from a Content-Range like "bytes 100-199/1000".
+fn range_total(cr: Option<&str>) -> Option<u64> {
+    cr?.rsplit_once('/')?.1.trim().parse().ok()
+}
+
+/// Streams `url` into `part`, resuming from its size. A 200 answer to a Range starts over.
+fn fetch_to(
+    url: &str,
+    auth: Option<&str>,
+    part: &Path,
+    stop: &AtomicBool,
+    mut on_progress: impl FnMut(u64, u64),
+) -> Result<(), String> {
+    use std::io::{Read, Write};
+    let have = std::fs::metadata(part).map(|m| m.len()).unwrap_or(0);
+    // No global timeout: a 20 GB file takes a long time. Each read gets its own limit instead.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(15)))
+        .timeout_per_read(Some(std::time::Duration::from_secs(60)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut req = agent.get(url);
+    if have > 0 {
+        req = req.header("Range", format!("bytes={have}-"));
+    }
+    if let Some(auth) = auth {
+        req = req.header("Authorization", auth);
+    }
+    let resp = req
+        .call()
+        .map_err(|e| format!("The server did not answer ({e})"))?;
+    let head = |name: &str| {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let len = head("content-length").and_then(|v| v.parse::<u64>().ok());
+    let range = range_total(head("content-range").as_deref());
+    let (start, total) = match resp.status().as_u16() {
+        206 => (have, range.or(len.map(|l| l + have))),
+        200 => (0, len),
+        // The part already holds the whole file.
+        416 if have > 0 && range == Some(have) => return Ok(()),
+        401 | 403 => return Err("The server refused the login.".into()),
+        code => return Err(format!("The server said {code}")),
+    };
+    let total = total.unwrap_or(0);
+    let mut f = if start == 0 {
+        std::fs::File::create(part)
+    } else {
+        std::fs::OpenOptions::new().append(true).open(part)
+    }
+    .map_err(|e| e.to_string())?;
+    let mut body = resp.into_body().into_reader();
+    let mut buf = vec![0u8; 256 * 1024];
+    let mut done = start;
+    let mut last = std::time::Instant::now();
+    on_progress(done, total);
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            return Err("Canceled".into());
+        }
+        let n = body.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        f.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        done += n as u64;
+        if last.elapsed() >= std::time::Duration::from_millis(250) {
+            on_progress(done, total);
+            last = std::time::Instant::now();
+        }
+    }
+    f.sync_all().map_err(|e| e.to_string())?;
+    if total > 0 && done < total {
+        return Err("The download stopped early. Try again to resume.".into());
+    }
+    on_progress(done, total.max(done));
+    Ok(())
+}
+
+/// A file extension from the first bytes, for servers whose URL names none (Jellyfin).
+fn sniff_ext(head: &[u8]) -> Option<&'static str> {
+    match head {
+        [0x1a, 0x45, 0xdf, 0xa3, ..] => Some("mkv"),
+        [_, _, _, _, b'f', b't', b'y', b'p', ..] => Some("mp4"),
+        [b'I', b'D', b'3', ..] => Some("mp3"),
+        [b'f', b'L', b'a', b'C', ..] => Some("flac"),
+        [b'O', b'g', b'g', b'S', ..] => Some("ogg"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'A', b'V', b'E', ..] => Some("wav"),
+        _ => None,
+    }
+}
+
+/// The final extension: `ext`, or for "bin" (unknown) one sniffed from the file.
+fn final_ext(part: &Path, ext: &str) -> String {
+    use std::io::Read;
+    if ext != "bin" {
+        return ext.to_string();
+    }
+    let mut head = [0u8; 16];
+    let n = std::fs::File::open(part)
+        .and_then(|mut f| f.read(&mut head))
+        .unwrap_or(0);
+    sniff_ext(&head[..n]).unwrap_or("bin").to_string()
+}
+
+/// Downloads `url` (the login goes as Basic auth, never in the URL) and returns the final path.
+#[tauri::command]
+async fn download(
+    app: tauri::AppHandle,
+    id: String,
+    url: String,
+    user: Option<String>,
+    pass: Option<String>,
+    ext: String,
+) -> Result<String, String> {
+    if !valid_id(&id) || !valid_ext(&ext) {
+        return Err("Bad download name".into());
+    }
+    if !is_url(&url) {
+        return Err("Downloads need an http:// or https:// address".into());
+    }
+    let dir = downloads_dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let state = app.state::<Downloads>();
+    state.0.lock().unwrap().insert(id.clone(), stop.clone());
+    let auth = basic(&user.unwrap_or_default(), &pass.unwrap_or_default());
+    let (app2, id2) = (app.clone(), id.clone());
+    let res = tauri::async_runtime::spawn_blocking(move || {
+        let part = dir.join(format!("{id2}.{ext}.part"));
+        let part_s = part.to_string_lossy().into_owned();
+        fetch_to(&url, auth.as_deref(), &part, &stop, |done, total| {
+            let p = DownloadProgress {
+                id: id2.clone(),
+                done,
+                total,
+                part: part_s.clone(),
+            };
+            let _ = app2.emit("download-progress", p);
+        })?;
+        let out = dir.join(format!("{id2}.{}", final_ext(&part, &ext)));
+        std::fs::rename(&part, &out).map_err(|e| e.to_string())?;
+        Ok(out.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    state.0.lock().unwrap().remove(&id);
+    res
+}
+
+/// Stops a running download. The .part stays, so the next download of that id resumes.
+#[tauri::command]
+fn download_cancel(state: tauri::State<Downloads>, id: String) {
+    if let Some(stop) = state.0.lock().unwrap().get(&id) {
+        stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Deletes `path` only when it is a file directly inside `dir`, after resolving `..` and symlinks.
+fn remove_inside(dir: &Path, path: &Path) -> Result<(), String> {
+    let dir = dir.canonicalize().map_err(|e| e.to_string())?;
+    let p = match path.canonicalize() {
+        Ok(p) => p,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+    };
+    if p.parent() != Some(dir.as_path()) || !p.is_file() {
+        return Err("That file is not a Flick download".into());
+    }
+    std::fs::remove_file(p).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn download_remove(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let dir = downloads_dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    remove_inside(&dir, Path::new(&path))
+}
+
+/// Whether a finished download is still on disk, so playback can fall back to the server.
+#[tauri::command]
+fn download_exists(path: String) -> bool {
+    Path::new(&path).is_file()
+}
+
+#[derive(Serialize)]
+struct Space {
+    free: Option<u64>,
+    used: u64,
+}
+
+#[tauri::command]
+fn downloads_space(app: tauri::AppHandle) -> Result<Space, String> {
+    let dir = downloads_dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let used = std::fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .filter_map(|e| e.metadata().ok())
+        .filter(|m| m.is_file())
+        .map(|m| m.len())
+        .sum();
+    Ok(Space {
+        free: fs4::available_space(&dir).ok(),
+        used,
+    })
+}
+
 #[tauri::command]
 fn take_opened(state: tauri::State<Opened>) -> Vec<String> {
     std::mem::take(&mut *state.0.lock().unwrap())
@@ -940,6 +1189,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Opened::default())
         .manage(KodiProxy::default())
+        .manage(Downloads::default())
         .register_asynchronous_uri_scheme_protocol("kodi", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
             tauri::async_runtime::spawn_blocking(move || responder.respond(kodi_proxy(&app, &req)));
@@ -956,6 +1206,11 @@ pub fn run() {
             kodi_rpc,
             kodi_image,
             kodi_proxy_register,
+            download,
+            download_cancel,
+            download_remove,
+            download_exists,
+            downloads_space,
             make_default_player
         ])
         .setup(|app| {
@@ -1191,7 +1446,8 @@ mod tests {
                         .find_map(|l| l.strip_prefix("range: bytes="))
                         .and_then(|r| r.trim().split_once('-'))
                         .map(|(a, b)| match a.parse::<usize>() {
-                            Ok(a) => (a, b.parse::<usize>().unwrap()),
+                            // An open range runs to the end.
+                            Ok(a) => (a, b.parse::<usize>().unwrap_or(usize::MAX)),
                             // Suffix range: the last n bytes.
                             Err(_) => (data.len() - b.parse::<usize>().unwrap(), data.len() - 1),
                         });
@@ -1261,6 +1517,145 @@ mod tests {
                 401
             );
         }
+    }
+
+    #[test]
+    fn download_names_are_checked() {
+        for ok in ["a", "abc123", "A_b-9", &"x".repeat(64)] {
+            assert!(valid_id(ok), "{ok}");
+        }
+        for bad in ["", "../x", "a/b", "a.b", "a b", &"x".repeat(65), "é"] {
+            assert!(!valid_id(bad), "{bad}");
+        }
+        for ok in ["mp4", "mkv", "m4a", "bin", "a1234"] {
+            assert!(valid_ext(ok), "{ok}");
+        }
+        for bad in ["", "MP4", "abcdef", "m.4", "m/4", "-"] {
+            assert!(!valid_ext(bad), "{bad}");
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("flick-dl-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn download_remove_stays_inside_the_folder() {
+        let root = scratch("remove");
+        let dir = root.join("downloads");
+        std::fs::create_dir_all(&dir).unwrap();
+        let outside = root.join("keep.mp4");
+        std::fs::write(&outside, b"x").unwrap();
+        let inside = dir.join("a.mp4");
+        std::fs::write(&inside, b"x").unwrap();
+
+        assert!(remove_inside(&dir, &outside).is_err());
+        assert!(remove_inside(&dir, &dir.join("../keep.mp4")).is_err());
+        assert!(
+            remove_inside(&dir, &dir).is_err(),
+            "never the folder itself"
+        );
+        #[cfg(unix)]
+        {
+            let link = dir.join("link.mp4");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            assert!(
+                remove_inside(&dir, &link).is_err(),
+                "a symlink out is refused"
+            );
+        }
+        assert!(outside.exists());
+
+        remove_inside(&dir, &inside).unwrap();
+        assert!(!inside.exists());
+        remove_inside(&dir, &inside).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn sniffs_extensions() {
+        assert_eq!(sniff_ext(&[0x1a, 0x45, 0xdf, 0xa3, 1]), Some("mkv"));
+        assert_eq!(sniff_ext(b"\0\0\0\x20ftypisom"), Some("mp4"));
+        assert_eq!(sniff_ext(b"ID3\x04"), Some("mp3"));
+        assert_eq!(sniff_ext(b"RIFF\0\0\0\0WAVEfmt "), Some("wav"));
+        assert_eq!(sniff_ext(b"hello"), None);
+    }
+
+    #[test]
+    fn downloads_resume_restart_and_send_the_login() {
+        let data: Vec<u8> = (0..700_000).map(|i| (i % 251) as u8).collect();
+        let dir = scratch("fetch");
+        let auth = basic("kodi", "pw");
+        let go = AtomicBool::new(false);
+        let path = "/vfs/%2Fm%2FA.mp4";
+
+        // Full download, with progress.
+        let base = fake_kodi(data.clone(), true);
+        let part = dir.join("full.mp4.part");
+        let mut last = (0, 0);
+        fetch_to(
+            &format!("{base}{path}"),
+            auth.as_deref(),
+            &part,
+            &go,
+            |d, t| last = (d, t),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&part).unwrap(), data);
+        assert_eq!(last, (data.len() as u64, data.len() as u64));
+
+        // Resume: a part with marked bytes keeps them, so only the rest came over the wire.
+        let part = dir.join("resume.mp4.part");
+        std::fs::write(&part, vec![0u8; 1000]).unwrap();
+        fetch_to(
+            &format!("{base}{path}"),
+            auth.as_deref(),
+            &part,
+            &go,
+            |_, _| {},
+        )
+        .unwrap();
+        let got = std::fs::read(&part).unwrap();
+        assert_eq!(got.len(), data.len());
+        assert!(got[..1000].iter().all(|&b| b == 0));
+        assert_eq!(got[1000..], data[1000..]);
+
+        // A server that ignores Range answers 200: start over, no marked bytes left.
+        let base = fake_kodi(data.clone(), false);
+        let part = dir.join("restart.mp4.part");
+        std::fs::write(&part, vec![0u8; 1000]).unwrap();
+        fetch_to(
+            &format!("{base}{path}"),
+            auth.as_deref(),
+            &part,
+            &go,
+            |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&part).unwrap(), data);
+
+        // fake_kodi answers 401 without the Basic header.
+        let part = dir.join("nologin.mp4.part");
+        let e = fetch_to(&format!("{base}{path}"), None, &part, &go, |_, _| {}).unwrap_err();
+        assert!(e.contains("login"), "{e}");
+
+        // Cancel keeps the part.
+        let stop = AtomicBool::new(true);
+        let part = dir.join("cancel.mp4.part");
+        let e = fetch_to(
+            &format!("{base}{path}"),
+            auth.as_deref(),
+            &part,
+            &stop,
+            |_, _| {},
+        )
+        .unwrap_err();
+        assert_eq!(e, "Canceled");
+        assert!(part.exists());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
