@@ -18,8 +18,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 walkdir = "2"
 base64 = "0.23"
-# Kodi JSON-RPC on the home network. No TLS keeps the binary small.
-ureq = { version = "3", default-features = false, features = ["json"] }
+# Kodi JSON-RPC, and downloads from Plex and Jellyfin, which are often https (plex.direct).
+ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
+# Free space in the downloads folder.
+fs4 = "1"
 percent-encoding = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
