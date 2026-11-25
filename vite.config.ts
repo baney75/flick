@@ -6,6 +6,5 @@ export default defineConfig({
   clearScreen: false,
   server: { port: 5178, strictPort: true },
   build: { target: 'es2022', sourcemap: false, chunkSizeWarningLimit: 600 },
-  // Agent worktrees under .claude/ hold other branches' tests.
-  test: { environment: 'node', exclude: ['**/node_modules/**', '.claude/**'] },
+  test: { environment: 'node' },
 })

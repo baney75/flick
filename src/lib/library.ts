@@ -3,6 +3,7 @@
 import * as db from './db'
 import { kindOf, parseName, type Kind, SUB_EXT, ext } from './parse'
 import { isDesktop, invoke, fileUrl, onDesktopEvent, type ScanEntry, type Probe } from './platform'
+import { kodiResolve } from './servers'
 
 export type Source =
   | { t: 'path'; path: string }
@@ -10,8 +11,13 @@ export type Source =
   | { t: 'opfs'; name: string }
   | { t: 'url'; url: string; fallback?: string }
   | { t: 'session'; key: string }
+  // A file on a Kodi box. The URL never carries the login; the server record holds it.
+  | { t: 'kodi'; server: string; url: string }
 
-export type Origin = 'local' | 'stored' | 'jellyfin' | 'plex'
+/** Poster marker for a Kodi that has a password: Card fetches it through the desktop shell. */
+export const KODI_IMG = 'kodi-img:'
+
+export type Origin = 'local' | 'stored' | 'jellyfin' | 'plex' | 'kodi'
 
 export interface Item {
   id: string
@@ -234,16 +240,10 @@ export interface Resolved { url: string; revoke?: () => void; file?: File; sidec
 
 export async function resolve(src: Source, onStatus?: (s: string) => void): Promise<Resolved> {
   if (src.t === 'url') return { url: src.url }
+  if (src.t === 'kodi') return { url: await kodiResolve(src, onStatus) }
   if (src.t === 'path') {
     const probe = await invoke<Probe>('probe', { path: src.path }).catch(() => null)
-    let path = src.path
-    if (probe && !probe.playable) {
-      onStatus?.('Converting for playback')
-      const off = await onDesktopEvent<{ path: string; pct: number }>('prepare-progress', (p) => {
-        if (p.path === src.path) onStatus?.(`Converting for playback ${Math.round(p.pct)}%`)
-      })
-      try { path = await invoke<string>('prepare', { path: src.path }) } finally { off() }
-    }
+    const path = probe && !probe.playable ? await prepared(src.path, onStatus) : src.path
     const subs = await invoke<{ name: string; text: string }[]>('sidecar_subs', { path: src.path }).catch(() => [])
     return { url: await fileUrl(path), sidecarSubs: subs }
   }
@@ -253,6 +253,15 @@ export async function resolve(src: Source, onStatus?: (s: string) => void): Prom
   let sidecarSubs: { name: string; text: string }[] | undefined
   if (src.t === 'handle') sidecarSubs = await findHandleSubs(src).catch(() => undefined)
   return { url, file, revoke: () => URL.revokeObjectURL(url), sidecarSubs }
+}
+
+/** Remuxes a file or http(s) URL to a cached MP4 with ffmpeg and returns the cache path. */
+export async function prepared(input: string, onStatus?: (s: string) => void, user = '', pass = ''): Promise<string> {
+  onStatus?.('Converting for playback')
+  const off = await onDesktopEvent<{ path: string; pct: number }>('prepare-progress', (p) => {
+    if (p.path === input) onStatus?.(`Converting for playback ${Math.round(p.pct)}%`)
+  })
+  try { return await invoke<string>('prepare', { path: input, user, pass }) } finally { off() }
 }
 
 async function findHandleSubs(src: Extract<Source, { t: 'handle' }>) {
