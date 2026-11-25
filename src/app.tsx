@@ -5,6 +5,7 @@ import { Library, ShowPage } from './views/Library'
 import { Stremio, StremioDetail } from './views/Stremio'
 import { Servers } from './views/Servers'
 import { Settings } from './views/Settings'
+import { Setup } from './views/Setup'
 import { Player } from './components/Player'
 import { Icon } from './components/icons'
 import { playFiles, playPaths } from './lib/actions'
@@ -31,6 +32,7 @@ function View() {
   if (parts[0] === 'stremio') return <Stremio />
   if (parts[0] === 'servers') return <Servers />
   if (parts[0] === 'settings') return <Settings />
+  if (parts[0] === 'setup') return <Setup key={r} code={qs.get('c') ?? ''} />
   return <Home />
 }
 

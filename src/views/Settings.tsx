@@ -1,7 +1,31 @@
 import { useEffect, useState } from 'preact/hooks'
-import { settings, setSettings, notify, items } from '../lib/store'
+import { settings, setSettings, notify, items, stremio, go } from '../lib/store'
 import { isDesktop, invoke } from '../lib/platform'
 import { formatBytes } from '../lib/parse'
+import { Icon } from '../components/icons'
+import { currentSetup, encodeSetup, validateSetup, SETUP_BASE } from '../lib/setup'
+
+async function shareSetup() {
+  const link = SETUP_BASE + encodeSetup(await currentSetup(stremio.value.addons.map((a) => a.transportUrl)))
+  try {
+    await navigator.clipboard.writeText(link)
+    notify('Setup link copied. It holds your server tokens: send it only to people you trust.', 6000)
+  } catch {
+    prompt('Copy this setup link:', link)
+  }
+}
+
+function importSetup() {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.json,application/json'
+  input.onchange = async () => {
+    const f = input.files?.[0]
+    if (!f) return
+    try { go('/setup?c=' + encodeSetup(validateSetup(JSON.parse(await f.text())))) } catch (e) { notify(`Setup file: ${(e as Error).message}`) }
+  }
+  input.click()
+}
 
 export function Settings() {
   const s = settings.value
@@ -61,6 +85,16 @@ export function Settings() {
           </p>
         </section>
       )}
+
+      <section class="panel">
+        <h3>Setup</h3>
+        <p class="dim small">Share your addons, servers and settings with one link, or import a setup file someone made for you. You review everything before it connects.</p>
+        <p class="err">The link contains your server tokens. Anyone who has it can use your servers, so send it only to people you trust.</p>
+        <div class="row">
+          <button class="btn" onClick={shareSetup}><Icon name="link" size={16} /> Share my setup</button>
+          <button class="btn" onClick={importSetup}><Icon name="file" size={16} /> Import setup file</button>
+        </div>
+      </section>
 
       <section class="panel">
         <h3>Storage</h3>
