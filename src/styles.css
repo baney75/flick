@@ -354,4 +354,4 @@ html.tv .hrow { grid-auto-columns: 300px; padding: 10px 6px 14px; }
 
 .offline-note { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 16px; border-radius: 10px; background: var(--surface-2); }
 .offline-note span { flex: 1; min-width: 0; }
-.card { -webkit-touch-callout: none; }
+.card { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }

@@ -80,6 +80,7 @@ export function Library() {
       if (!confirm(`Delete "${it.title}" from Flick's storage? This removes the stored copy.`)) return
       await deleteStored(it)
     } else {
+      await removeDownload(it.id).catch(() => {})
       await removeItems([it.id])
     }
     await reloadItems()
@@ -157,7 +158,7 @@ export function Library() {
       )}
 
       {menu && (
-        <div class="ctx" style={{ left: `${Math.max(8, Math.min(menu.x, innerWidth - 240))}px`, top: `${Math.max(8, Math.min(menu.y, innerHeight - 300))}px` }} onClick={(e) => e.stopPropagation()}>
+        <div class="ctx" style={{ left: `${Math.max(8, Math.min(menu.x, innerWidth - 308))}px`, top: `${Math.max(8, Math.min(menu.y, innerHeight - 300))}px` }} onClick={(e) => e.stopPropagation()}>
           <div class="ctx-title">{menu.it.title}</div>
           <div class="small dim">{[menu.it.folder, menu.it.size ? formatBytes(menu.it.size) : null, menu.it.duration ? formatTime(menu.it.duration) : null].filter(Boolean).join(' · ')}</div>
           <button onClick={() => { playItem(menu.it); setMenu(null) }}>Play</button>

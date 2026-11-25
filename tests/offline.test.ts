@@ -48,7 +48,9 @@ describe('offline helpers', () => {
       ['busy', row({ id: 'busy', state: 'downloading' })],
       ['new', row({ id: 'new' })],
     ])
-    const prog = { w: { pos: 95, dur: 100 }, half: { pos: 50, dur: 100 }, busy: { pos: 99, dur: 100 } }
+    const prog = { w: { pos: 95, dur: 100, at: 5 }, half: { pos: 50, dur: 100, at: 5 }, busy: { pos: 99, dur: 100, at: 5 } }
     expect(watchedDownloads(rows, prog)).toEqual(['w'])
+    // Watched before it was downloaded: keep it, the person just saved it.
+    expect(watchedDownloads(new Map([['old', row({ id: 'old', at: 10 })]]), { old: { pos: 99, dur: 100, at: 5 } })).toEqual([])
   })
 })

@@ -27,20 +27,24 @@ export const isSaved = (d: Download | undefined) => !!d && d.state !== 'failed'
 
 /** Queues items for download and says so; errors show as a notice. */
 export async function save(list: Item[]) {
-  const ok = list.filter(canDownload)
-  for (const it of ok) await download(it).catch((e) => notify((e as Error).message))
-  if (ok.length) notify(ok.length === 1 ? `Downloading ${ok[0].title}. It plays offline when done.` : `Downloading ${ok.length} items.`)
+  let queued = 0
+  let error = ''
+  for (const it of list.filter(canDownload)) {
+    try { await download(it); queued++ } catch (e) { error = (e as Error).message }
+  }
+  if (error) notify(queued ? `Downloading ${queued}. One could not start: ${error}` : error)
+  else if (queued) notify(queued === 1 ? 'Downloading. It plays offline when done.' : `Downloading ${queued} items.`)
 }
 
 export const online = signal(typeof navigator === 'undefined' ? true : navigator.onLine)
 
 const WATCHED = 0.93
 
-/** Item ids whose download is done and whose progress says watched. */
-export function watchedDownloads(rows: Map<string, Download>, prog: Record<string, { pos: number; dur: number }>): string[] {
+/** Item ids whose download is done and that were watched after the download started. */
+export function watchedDownloads(rows: Map<string, Download>, prog: Record<string, { pos: number; dur: number; at: number }>): string[] {
   return [...rows.values()].filter((d) => {
     const p = prog[d.id]
-    return d.state === 'done' && !!p?.dur && p.pos / p.dur >= WATCHED
+    return d.state === 'done' && !!p?.dur && p.pos / p.dur >= WATCHED && p.at > d.at
   }).map((d) => d.id)
 }
 
