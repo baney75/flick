@@ -9,7 +9,7 @@ import { items, progress, settings, setSettings, reloadItems, saveStremio, strem
 import { getServers, saveServer, removeServer, syncServer, type Server } from '../servers'
 import type { Item } from '../library'
 import { contentIndex, localProgressKeys, progressDocKey } from './keys'
-import { startSync, publish, seed, docValue, docKeys } from './engine'
+import { startSync, publish, docValue, docKeys } from './engine'
 import { bus } from './bus'
 
 // Settings that follow the person; volume stays per device.
@@ -47,15 +47,15 @@ export async function startSyncBinding() {
   prevServers = await serverSnapshot()
   prevAddons = new Set(await stremioExtra())
 
-  await startSync((keys) => { applyRemote(keys).catch(() => {}) })
-
-  // First join: offer what this device has, without overwriting what the group already holds.
-  seed([
+  // Offer what this device has, without overwriting what the group already holds. The engine
+  // calls this on start and again after joining a new group, whose doc starts empty.
+  const offer = (): [string, unknown][] => [
     ...progressChanges({}, progress.value),
     ...SHARED.map((k) => [`s:${k}`, settings.value[k]] as [string, unknown]),
     ...[...prevServers].map(([id, s]) => [`v:${id}`, JSON.parse(s)] as [string, unknown]),
     ...[...prevAddons].map((u) => [`a:${u}`, true] as [string, unknown]),
-  ])
+  ]
+  await startSync((keys) => { applyRemote(keys).catch(() => {}) }, offer)
 
   effect(() => {
     const next = progress.value
