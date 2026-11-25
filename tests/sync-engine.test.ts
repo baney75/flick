@@ -2,7 +2,12 @@ import 'fake-indexeddb/auto'
 import { describe, it, expect, vi, beforeAll } from 'vitest'
 
 // A fake relay socket: records what this device sends and lets the test deliver messages.
-const net = vi.hoisted(() => ({ socks: [] as any[] }))
+const net = vi.hoisted(() => ({ socks: [] as any[], hold: null as Promise<void> | null }))
+// Key derivation waits on net.hold when it is set, so a test can keep a connect attempt in flight.
+vi.mock('../src/lib/sync/crypto', async (orig) => {
+  const real = await orig<typeof import('../src/lib/sync/crypto')>()
+  return { ...real, openGroup: async (s: string) => { if (net.hold) await net.hold; return real.openGroup(s) } }
+})
 class FakeSocket {
   static OPEN = 1
   readyState = 0
@@ -21,6 +26,7 @@ vi.stubGlobal('document', { addEventListener: () => {}, hidden: false })
 vi.stubGlobal('addEventListener', () => {})
 
 const { startSync, join, publish, docKeys, sync } = await import('../src/lib/sync/engine')
+const db = await import('../src/lib/db')
 const { newSecret, openGroup, seal } = await import('../src/lib/sync/crypto')
 const settle = () => new Promise((r) => setTimeout(r, 30))
 
@@ -51,5 +57,34 @@ describe('sync engine', () => {
     sock.onmessage?.({ data: await seal(g.key, { type: 'hello', from: 'peer-2', name: 'Late' }) })
     await settle()
     expect(sync.value.peers).toEqual([])
+  })
+
+  it('a join made while an older connect is still deriving its key still connects', async () => {
+    let release = () => {}
+    net.hold = new Promise((r) => { release = r })
+    const b = newSecret(), c = newSecret()
+    const pb = join(b)
+    await settle()
+    const pc = join(c)
+    await settle()
+    net.hold = null
+    release()
+    await Promise.all([pb, pc])
+    await settle()
+    expect(net.socks.at(-1).url).toContain((await openGroup(c)).room)
+    expect(sync.value.status).toBe('online')
+  })
+
+  it('a peer update in a tab that missed a leave does not put the old group back', async () => {
+    const a = newSecret()
+    await join(a)
+    await settle()
+    const g = await openGroup(a)
+    const sock = net.socks.at(-1)
+    // A beat arrives and this tab saves the peer while another tab of the browser leaves sync.
+    await sock.onmessage({ data: await seal(g.key, { type: 'beat', from: 'peer-3' }) })
+    void db.put('kv', 'sync', { secret: null, device: sync.value.device })
+    await settle()
+    expect((await db.get<{ secret: string | null }>('kv', 'sync'))?.secret).toBeNull()
   })
 })

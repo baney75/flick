@@ -24,7 +24,12 @@ type Msg =
   | { type: 'bye'; from: string }
   | { type: 'beat'; from: string }
 
-interface Saved { secret: string | null; device: string; name: string; peers: Peer[] }
+// Membership ('sync') is written only by join and leave. Everything else lives in its own record, and
+// per-group records carry their group's secret, so a write from a tab that has not caught up with a
+// join or leave cannot put the old group back or leak its data into the new one.
+interface Saved { secret: string | null; device: string }
+interface SavedPeers { secret: string | null; peers: Peer[] }
+interface SavedDoc { secret: string | null; rows: [string, Entry][] }
 
 export const sync = signal<SyncState>({ paired: false, secret: null, device: '', name: '', status: 'off', peers: [] })
 
@@ -32,7 +37,8 @@ const doc: Doc = new Map()
 const clock = new Clock()
 let group: Group | null = null
 let ws: WebSocket | null = null
-let connecting = false
+// Bumped by every connect(); an attempt whose number has moved on gives way to the newer one.
+let attempt = 0
 let retry = 0
 let retryTimer: ReturnType<typeof setTimeout> | undefined
 // Each device sends a sealed heartbeat every 30 seconds. Peers count as online only while they have
@@ -64,26 +70,33 @@ function randomId() {
   return [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-// The stored record is the truth about which group this browser is in. Only join and leave change the
-// secret; anything else that saves first checks it, so a tab left behind by another tab's join or leave
-// adopts the new membership instead of writing its old group back.
+// The stored membership is the truth about which group this browser is in.
 async function persist(membership = false) {
-  if (!membership) {
-    const stored = await db.get<Saved>('kv', 'sync')
-    if (stored && stored.secret !== sync.value.secret) return adopt(stored)
-  }
   const s = sync.value
-  await db.put('kv', 'sync', { secret: s.secret, device: s.device, name: s.name, peers: s.peers.map((p) => ({ ...p, online: false })) } satisfies Saved)
-  if (membership) tabs?.postMessage('membership')
+  if (membership) {
+    await db.put('kv', 'sync', { secret: s.secret, device: s.device } satisfies Saved)
+    tabs?.postMessage('membership')
+  }
+  await db.put('kv', 'sync.name', s.name)
+  await db.put('kv', 'sync.peers', { secret: s.secret, peers: s.peers.map((p) => ({ ...p, online: false })) } satisfies SavedPeers)
+}
+
+// Records saved for one group; anything saved for another group is ignored.
+async function loadGroupState(secret: string | null) {
+  const peers = await db.get<SavedPeers>('kv', 'sync.peers')
+  const saved = await db.get<SavedDoc>('kv', 'sync.doc')
+  doc.clear()
+  if (secret && saved?.secret === secret) for (const [k, e] of saved.rows) { doc.set(k, e); clock.see(e.t) }
+  return secret && peers?.secret === secret ? peers.peers : []
 }
 
 // Take on membership another tab stored: drop this tab's connection and doc, then join what is stored.
 async function adopt(stored: Saved) {
   retire()
-  doc.clear()
-  const rows = (await db.get<[string, Entry][]>('kv', 'sync.doc')) ?? []
-  for (const [k, e] of rows) { doc.set(k, e); clock.see(e.t) }
-  sync.value = { ...sync.value, paired: !!stored.secret, secret: stored.secret, status: 'off', peers: stored.peers ?? [] }
+  clearTimeout(saveTimer)
+  saveTimer = undefined
+  const peers = await loadGroupState(stored.secret)
+  sync.value = { ...sync.value, paired: !!stored.secret, secret: stored.secret, status: 'off', peers }
   if (stored.secret) await connect()
 }
 
@@ -92,7 +105,7 @@ async function adopt(stored: Saved) {
 function saveDocNow() {
   clearTimeout(saveTimer)
   saveTimer = undefined
-  return db.put('kv', 'sync.doc', [...doc]).catch(() => {})
+  return db.put('kv', 'sync.doc', { secret: sync.value.secret, rows: [...doc] } satisfies SavedDoc).catch(() => {})
 }
 function saveDocSoon() {
   if (saveTimer === undefined) saveTimer = setTimeout(saveDocNow, 800)
@@ -104,11 +117,11 @@ export async function startSync(handler: (keys: string[]) => void, offer: () => 
   onChange = handler
   offerLocal = offer
   const saved = await db.get<Saved>('kv', 'sync')
-  const rows = (await db.get<[string, Entry][]>('kv', 'sync.doc')) ?? []
-  for (const [k, e] of rows) { doc.set(k, e); clock.see(e.t) }
+  const secret = saved?.secret ?? null
+  const peers = await loadGroupState(secret)
   sync.value = {
-    paired: !!saved?.secret, secret: saved?.secret ?? null, device: saved?.device || randomId(),
-    name: saved?.name || guessName(), status: 'off', peers: saved?.peers ?? [],
+    paired: !!secret, secret, device: saved?.device || randomId(),
+    name: (await db.get<string>('kv', 'sync.name')) || guessName(), status: 'off', peers,
   }
   if (!saved) await persist(true)
   if (sync.value.secret) await connect()
@@ -171,6 +184,8 @@ export async function leave() {
     await seal(g.key, { type: 'bye', from: sync.value.device } satisfies Msg).then((m) => sock.send(m)).catch(() => {})
   }
   retire()
+  clearTimeout(saveTimer)
+  saveTimer = undefined
   doc.clear()
   await db.del('kv', 'sync.doc')
   sync.value = { ...sync.value, paired: false, secret: null, status: 'off', peers: [] }
@@ -198,12 +213,12 @@ export async function rename(name: string) {
 // whatever connection came before is retired first, so a device never holds two sockets.
 async function connect() {
   const secret = sync.value.secret
-  if (!secret || connecting) return
-  connecting = true
-  try {
-    retire()
+  if (!secret) return
+  const mine = ++attempt
+  retire()
+  {
     const g = await openGroup(secret)
-    if (sync.value.secret !== secret) return // left or switched while the key was derived
+    if (mine !== attempt || sync.value.secret !== secret) return // superseded, left or switched while the key was derived
     group = g
     sync.value = { ...sync.value, status: 'connecting' }
     const sock = new WebSocket(`${relay()}/room/${g.room}`)
@@ -231,8 +246,6 @@ async function connect() {
       sync.value = { ...sync.value, status: 'offline', peers: sync.value.peers.map((p) => ({ ...p, online: false })) }
       retryTimer = setTimeout(connect, Math.min(30_000, 1000 * 2 ** retry++))
     }
-  } finally {
-    connecting = false
   }
 }
 
