@@ -39,7 +39,11 @@ fn is_media(p: &Path) -> bool {
 }
 
 fn find_tool(name: &str) -> Option<PathBuf> {
-    let name = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
+    let name = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    };
     // Apps launched from Finder do not get the shell PATH, so check the usual spots first.
     for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
         let p = Path::new(dir).join(&name);
@@ -47,7 +51,11 @@ fn find_tool(name: &str) -> Option<PathBuf> {
             return Some(p);
         }
     }
-    std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths).map(|d| d.join(&name)).find(|p| p.is_file()))
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|d| d.join(&name))
+            .find(|p| p.is_file())
+    })
 }
 
 #[derive(Serialize)]
@@ -117,7 +125,10 @@ fn is_url(input: &str) -> bool {
 fn basic(user: &str, pass: &str) -> Option<String> {
     use base64::Engine;
     (!user.is_empty()).then(|| {
-        format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}")))
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"))
+        )
     })
 }
 
@@ -267,12 +278,40 @@ async fn prepare(
     let auth = basic(&user.unwrap_or_default(), &pass.unwrap_or_default());
     tauri::async_runtime::spawn_blocking(move || {
         remux(&path, auth.as_deref(), &out, |pct| {
-            let _ = app.emit("prepare-progress", PrepareProgress { path: path.clone(), pct });
+            let _ = app.emit(
+                "prepare-progress",
+                PrepareProgress {
+                    path: path.clone(),
+                    pct,
+                },
+            );
         })?;
         Ok(out.to_string_lossy().into_owned())
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// ffmpeg video arguments: copy H.264 and HEVC, transcode anything else to H.264.
+/// VideoToolbox exists only on macOS, so other platforms use libx264.
+fn video_args(codec: Option<&str>) -> Vec<String> {
+    let v: &[&str] = match codec {
+        Some("h264") => &["-c:v", "copy"],
+        Some("hevc") => &["-c:v", "copy", "-tag:v", "hvc1"],
+        Some(_) if cfg!(target_os = "macos") => &[
+            "-c:v",
+            "h264_videotoolbox",
+            "-b:v",
+            "10M",
+            "-pix_fmt",
+            "yuv420p",
+        ],
+        Some(_) => &[
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+        ],
+        None => &[],
+    };
+    v.iter().map(|a| a.to_string()).collect()
 }
 
 fn remux(input: &str, auth: Option<&str>, out: &Path, on_pct: impl Fn(f64)) -> Result<(), String> {
@@ -282,20 +321,13 @@ fn remux(input: &str, auth: Option<&str>, out: &Path, on_pct: impl Fn(f64)) -> R
     let tmp = out.with_extension("part.mp4");
     let mut args: Vec<String> = vec!["-y".into(), "-v".into(), "error".into()];
     args.extend(input_args(input, auth));
-    args.extend(["-map".into(), "0:v:0?".into(), "-map".into(), "0:a:0?".into()]);
-    match probe.video.as_deref() {
-        Some("h264") => args.extend(["-c:v".into(), "copy".into()]),
-        Some("hevc") => args.extend(["-c:v".into(), "copy".into(), "-tag:v".into(), "hvc1".into()]),
-        Some(_) => args.extend([
-            "-c:v".into(),
-            "h264_videotoolbox".into(),
-            "-b:v".into(),
-            "10M".into(),
-            "-pix_fmt".into(),
-            "yuv420p".into(),
-        ]),
-        None => {}
-    }
+    args.extend([
+        "-map".into(),
+        "0:v:0?".into(),
+        "-map".into(),
+        "0:a:0?".into(),
+    ]);
+    args.extend(video_args(probe.video.as_deref()));
     match probe.audio.as_deref() {
         Some("aac") | Some("mp3") | Some("alac") => args.extend(["-c:a".into(), "copy".into()]),
         Some(_) => args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "320k".into()]),
@@ -548,7 +580,10 @@ async fn kodi_image(url: String, user: String, pass: String) -> Result<String, S
             .limit(2 * 1024 * 1024)
             .read_to_vec()
             .map_err(|e| e.to_string())?;
-        Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+        Ok(format!(
+            "data:{mime};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        ))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -743,7 +778,9 @@ mod tests {
 
     #[test]
     fn probe_tells_native_from_needs_conversion() {
-        if find_tool("ffprobe").is_none() || !Path::new(&media("Demo.Show.S01E02.Pilot.mkv")).exists() {
+        if find_tool("ffprobe").is_none()
+            || !Path::new(&media("Demo.Show.S01E02.Pilot.mkv")).exists()
+        {
             eprintln!("skipped: needs ffprobe and test-media");
             return;
         }
@@ -754,7 +791,12 @@ mod tests {
         let mkv = run_probe(&media("Demo.Show.S01E02.Pilot.mkv"), None).unwrap();
         assert!(!mkv.playable, "MKV must go through prepare");
         assert_eq!(mkv.audio.as_deref(), Some("ac3"));
-        assert!(run_probe(&media("Sample.Clip.2023.webm"), None).unwrap().playable, "WebM plays natively");
+        assert!(
+            run_probe(&media("Sample.Clip.2023.webm"), None)
+                .unwrap()
+                .playable,
+            "WebM plays natively"
+        );
     }
 
     #[test]
@@ -768,18 +810,44 @@ mod tests {
     }
 
     #[test]
+    fn transcode_encoder_exists_on_this_platform() {
+        let args = video_args(Some("mpeg4"));
+        let enc = &args[1];
+        if cfg!(target_os = "macos") {
+            assert_eq!(enc, "h264_videotoolbox");
+        } else {
+            assert_eq!(enc, "libx264");
+        }
+        assert_eq!(video_args(Some("h264")), ["-c:v", "copy"]);
+        assert!(video_args(None).is_empty());
+    }
+
+    #[test]
     fn http_input_gets_auth_header() {
         use base64::Engine;
         let auth = basic("kodi", "p@ss").unwrap();
         let b64 = auth.strip_prefix("Basic ").unwrap();
-        let decoded = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .unwrap();
         assert_eq!(decoded, b"kodi:p@ss");
         let url = "http://192.168.1.30:8080/vfs/%2Fa.mkv";
-        assert_eq!(input_args(url, Some(&auth)), ["-headers".to_string(), format!("Authorization: {auth}\r\n"), "-i".to_string(), url.to_string()]);
+        assert_eq!(
+            input_args(url, Some(&auth)),
+            [
+                "-headers".to_string(),
+                format!("Authorization: {auth}\r\n"),
+                "-i".to_string(),
+                url.to_string()
+            ]
+        );
         assert_eq!(input_args("HTTPS://h/x.mkv", Some(&auth))[0], "-headers");
         assert_eq!(input_args(url, None), ["-i", url]);
         // A local file never gets the header, even with a login.
-        assert_eq!(input_args("/media/http:/a.mkv", Some(&auth)), ["-i", "/media/http:/a.mkv"]);
+        assert_eq!(
+            input_args("/media/http:/a.mkv", Some(&auth)),
+            ["-i", "/media/http:/a.mkv"]
+        );
         assert!(basic("", "x").is_none());
     }
 
@@ -788,13 +856,23 @@ mod tests {
     #[ignore]
     fn remux_reads_http_with_basic_auth() {
         let url = std::env::var("FLICK_HTTP_MKV").unwrap();
-        let auth = basic(&std::env::var("FLICK_HTTP_USER").unwrap(), &std::env::var("FLICK_HTTP_PASS").unwrap());
+        let auth = basic(
+            &std::env::var("FLICK_HTTP_USER").unwrap(),
+            &std::env::var("FLICK_HTTP_PASS").unwrap(),
+        );
         let p = run_probe(&url, auth.as_deref()).expect("ffprobe reads the URL");
         assert!(!p.playable, "MKV over http still needs prepare");
         let out = std::env::temp_dir().join(format!("flick-http-{}.mp4", cache_key(&url)));
         remux(&url, auth.as_deref(), &out, |_| {}).unwrap();
         let mp4 = run_probe(out.to_str().unwrap(), None).unwrap();
-        eprintln!("output {} container={} video={:?} audio={:?} duration={}", out.display(), mp4.container, mp4.video, mp4.audio, mp4.duration);
+        eprintln!(
+            "output {} container={} video={:?} audio={:?} duration={}",
+            out.display(),
+            mp4.container,
+            mp4.video,
+            mp4.audio,
+            mp4.duration
+        );
         assert!(mp4.playable && mp4.duration > 0.5);
     }
 
