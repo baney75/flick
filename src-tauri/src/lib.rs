@@ -3,6 +3,7 @@
 
 use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -609,7 +610,13 @@ fn kodi_call(
         401 => return Err("Wrong username or password.".into()),
         code => return Err(format!("Kodi said {code}")),
     }
-    let mut j: serde_json::Value = resp.body_mut().read_json().map_err(|e| e.to_string())?;
+    // A big library's JSON-RPC answer can pass ureq's 10 MB default.
+    let mut j: serde_json::Value = resp
+        .body_mut()
+        .with_config()
+        .limit(64 * 1024 * 1024)
+        .read_json()
+        .map_err(|e| e.to_string())?;
     if let Some(err) = j.get("error") {
         let msg = err
             .get("message")
@@ -618,6 +625,211 @@ fn kodi_call(
         return Err(format!("Kodi said: {msg}"));
     }
     Ok(j["result"].take())
+}
+
+// ---- kodi:// streaming proxy ----
+// <video> cannot send Basic auth, so the web view asks kodi://localhost/<server id>/<path> and the
+// shell fetches base + path with the login. Each answer is at most CHUNK bytes, so a 10 GB file
+// never sits in memory; media elements ask again for the next range.
+
+const CHUNK: u64 = 8 * 1024 * 1024;
+
+struct KodiLogin {
+    base: String,
+    auth: Option<String>,
+}
+
+#[derive(Default)]
+struct KodiProxy(Mutex<HashMap<String, KodiLogin>>);
+
+/// Stores a Kodi login for the kodi:// proxy. Only base + path under it is ever fetched.
+#[tauri::command]
+fn kodi_proxy_register(
+    state: tauri::State<KodiProxy>,
+    id: String,
+    base: String,
+    user: String,
+    pass: String,
+) -> Result<(), String> {
+    if !is_url(&base) {
+        return Err("Kodi address must start with http:// or https://".into());
+    }
+    let base = base.trim_end_matches('/').to_string();
+    let auth = basic(&user, &pass);
+    state.0.lock().unwrap().insert(id, KodiLogin { base, auth });
+    Ok(())
+}
+
+/// Splits a proxy URI path ("/<id>%2F<path>", as convertFileSrc builds it) into id and path.
+/// Returns None unless the path is vfs/<one segment>, Kodi's file endpoint, so the login never
+/// reaches jsonrpc or any other Kodi URL.
+fn proxy_target(uri_path: &str) -> Option<(String, String)> {
+    let decoded = percent_encoding::percent_decode_str(uri_path.trim_start_matches('/'))
+        .decode_utf8()
+        .ok()?;
+    let (id, rest) = decoded.split_once('/')?;
+    // Only Kodi's file endpoint, vfs/<one encoded segment>: never jsonrpc, image or a query.
+    let file = rest.strip_prefix("vfs/")?;
+    let bad = |c: char| matches!(c, '/' | '?' | '#' | ':' | '\\');
+    if id.is_empty() || file.is_empty() || file.contains(bad) {
+        return None;
+    }
+    let d = percent_encoding::percent_decode_str(file).decode_utf8_lossy();
+    if d == ".." || d == "." {
+        return None;
+    }
+    Some((id.to_string(), rest.to_string()))
+}
+
+#[derive(Debug, PartialEq)]
+enum Want {
+    /// bytes=start- or bytes=start-end (or no Range: from 0).
+    From(u64, Option<u64>),
+    /// bytes=-n: the last n bytes.
+    Last(u64),
+}
+
+fn parse_range(h: Option<&str>) -> Want {
+    let spec = h.and_then(|h| h.trim().strip_prefix("bytes="));
+    let Some(spec) = spec.filter(|s| !s.contains(',')) else {
+        return Want::From(0, None);
+    };
+    let Some((a, b)) = spec.trim().split_once('-') else {
+        return Want::From(0, None);
+    };
+    match (a.parse::<u64>(), b.parse::<u64>()) {
+        (Ok(a), Ok(b)) if b >= a => Want::From(a, Some(b)),
+        (Ok(a), Err(_)) if b.is_empty() => Want::From(a, None),
+        (Err(_), Ok(n)) if a.is_empty() && n > 0 => Want::Last(n),
+        _ => Want::From(0, None),
+    }
+}
+
+/// The Range sent to Kodi: what was asked, capped to CHUNK bytes.
+fn upstream_range(w: &Want) -> String {
+    match *w {
+        Want::From(a, b) => {
+            let cap = a + CHUNK - 1;
+            format!("bytes={a}-{}", b.map_or(cap, |b| b.min(cap)))
+        }
+        Want::Last(n) => format!("bytes=-{}", n.min(CHUNK)),
+    }
+}
+
+/// The inclusive span to answer for a file of `total` bytes, capped to CHUNK. None means 416.
+fn answer_span(w: &Want, total: u64) -> Option<(u64, u64)> {
+    let (a, b) = match *w {
+        Want::From(a, b) => (a, b.unwrap_or(u64::MAX)),
+        Want::Last(n) => (total.saturating_sub(n.min(CHUNK)), u64::MAX),
+    };
+    if a >= total {
+        return None;
+    }
+    Some((a, b.min(total - 1).min(a + CHUNK - 1)))
+}
+
+type Answer = tauri::http::Response<Vec<u8>>;
+
+fn plain(status: u16, msg: &str) -> Answer {
+    tauri::http::Response::builder()
+        .status(status)
+        .header("Content-Type", "text/plain")
+        .body(msg.as_bytes().to_vec())
+        .unwrap()
+}
+
+/// Fetches base/path from Kodi with the login and the capped Range, and builds the answer.
+fn proxy_fetch(base: &str, auth: Option<&str>, path: &str, range: Option<&str>) -> Answer {
+    use std::io::Read;
+    let want = parse_range(range);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(10)))
+        .timeout_global(Some(std::time::Duration::from_secs(120)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut req = agent
+        .get(format!("{base}/{path}"))
+        .header("Range", upstream_range(&want));
+    if let Some(auth) = auth {
+        req = req.header("Authorization", auth);
+    }
+    let resp = match req.call() {
+        Ok(r) => r,
+        Err(e) => return plain(502, &format!("Kodi did not answer ({e})")),
+    };
+    let status = resp.status().as_u16();
+    let head = |name: &str| {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let mime = head("content-type").unwrap_or_else(|| "application/octet-stream".into());
+    let kodi_range = head("content-range");
+    let total = head("content-length").and_then(|v| v.parse::<u64>().ok());
+    let mut body = resp.into_body().into_reader();
+    let mut buf = vec![];
+    let out = tauri::http::Response::builder()
+        .header("Content-Type", mime)
+        .header("Accept-Ranges", "bytes");
+    let out = match status {
+        206 => {
+            if let Err(e) = body.take(CHUNK).read_to_end(&mut buf) {
+                return plain(502, &e.to_string());
+            }
+            let out = out.status(206);
+            match kodi_range {
+                Some(cr) => out.header("Content-Range", cr),
+                None => out,
+            }
+        }
+        // Kodi ignored the Range and sent the whole file: cut the span out here.
+        200 => {
+            let Some(total) = total else {
+                let _ = body.take(CHUNK).read_to_end(&mut buf);
+                return tauri::http::Response::builder()
+                    .status(200)
+                    .header("Content-Length", buf.len())
+                    .body(buf)
+                    .unwrap();
+            };
+            let Some((a, b)) = answer_span(&want, total) else {
+                return tauri::http::Response::builder()
+                    .status(416)
+                    .header("Content-Range", format!("bytes */{total}"))
+                    .body(vec![])
+                    .unwrap();
+            };
+            let skipped = std::io::copy(&mut (&mut body).take(a), &mut std::io::sink());
+            if skipped.ok() != Some(a) || body.take(b - a + 1).read_to_end(&mut buf).is_err() {
+                return plain(502, "Kodi closed the connection early");
+            }
+            out.status(206)
+                .header("Content-Range", format!("bytes {a}-{b}/{total}"))
+        }
+        code => {
+            let _ = body.take(64 * 1024).read_to_end(&mut buf);
+            out.status(code)
+        }
+    };
+    out.header("Content-Length", buf.len()).body(buf).unwrap()
+}
+
+fn kodi_proxy(app: &tauri::AppHandle, req: &tauri::http::Request<Vec<u8>>) -> Answer {
+    let Some((id, path)) = proxy_target(req.uri().path()) else {
+        return plain(400, "Bad Kodi path");
+    };
+    let login = {
+        let map = app.state::<KodiProxy>();
+        let map = map.0.lock().unwrap();
+        map.get(&id).map(|l| (l.base.clone(), l.auth.clone()))
+    };
+    let Some((base, auth)) = login else {
+        return plain(404, "Unknown Kodi server");
+    };
+    let range = req.headers().get("range").and_then(|v| v.to_str().ok());
+    proxy_fetch(&base, auth.as_deref(), &path, range)
 }
 
 #[tauri::command]
@@ -727,6 +939,11 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Opened::default())
+        .manage(KodiProxy::default())
+        .register_asynchronous_uri_scheme_protocol("kodi", |ctx, req, responder| {
+            let app = ctx.app_handle().clone();
+            tauri::async_runtime::spawn_blocking(move || responder.respond(kodi_proxy(&app, &req)));
+        })
         .invoke_handler(tauri::generate_handler![
             scan_folder,
             probe,
@@ -738,6 +955,7 @@ pub fn run() {
             take_opened,
             kodi_rpc,
             kodi_image,
+            kodi_proxy_register,
             make_default_player
         ])
         .setup(|app| {
@@ -874,6 +1092,175 @@ mod tests {
             mp4.duration
         );
         assert!(mp4.playable && mp4.duration > 0.5);
+    }
+
+    #[test]
+    fn proxy_path_parses_both_url_forms_and_stays_under_base() {
+        // convertFileSrc("kodi-a/vfs/%2Fm%2FA.mp4", "kodi") on macOS/Linux and on Windows/Android.
+        let enc = "kodi-a%2Fvfs%2F%252Fm%252FA.mp4";
+        for u in [
+            format!("kodi://localhost/{enc}"),
+            format!("http://kodi.localhost/{enc}"),
+        ] {
+            let uri: tauri::http::Uri = u.parse().unwrap();
+            assert_eq!(
+                proxy_target(uri.path()),
+                Some(("kodi-a".into(), "vfs/%2Fm%2FA.mp4".into()))
+            );
+        }
+        for bad in [
+            "/kodi-a%2F..%2Fjsonrpc",
+            "/kodi-a%2Fjsonrpc",
+            "/kodi-a%2Fjsonrpc%3Frequest%3D%257B%257D",
+            "/kodi-a%2Fimage%2Fx",
+            "/kodi-a%2Fvfs%2Fx%3Fa%3Db",
+            "/kodi-a%2Fvfs%2Fa%2Fb",
+            "/kodi-a%2Fvfs%2F",
+            "/kodi-a%2Fvfs%2F..%2F..%2Fx",
+            "/kodi-a%2Fvfs%2F%252E%252E%2Fx",
+            "/kodi-a%2Fhttp%3A%2F%2Fevil.example%2Fx",
+            "/kodi-a%2F%2Fevil.example%2Fx",
+            "/kodi-a%2F.%2Fx",
+            "/kodi-a",
+            "/%2Fvfs%2Fx",
+        ] {
+            assert_eq!(proxy_target(bad), None, "{bad}");
+        }
+        // A dotted file name inside the encoded Kodi path is fine.
+        assert!(proxy_target("/k%2Fvfs%2F%252Fm%252FA..B.mp4").is_some());
+    }
+
+    #[test]
+    fn range_is_capped_to_one_chunk() {
+        let c = CHUNK;
+        let total = 10 * c;
+        let w = parse_range(Some("bytes=0-"));
+        assert_eq!(upstream_range(&w), format!("bytes=0-{}", c - 1));
+        assert_eq!(answer_span(&w, total), Some((0, c - 1)));
+        assert_eq!(answer_span(&w, 1000), Some((0, 999)));
+
+        let w = parse_range(Some("bytes=100-199"));
+        assert_eq!(upstream_range(&w), "bytes=100-199");
+        assert_eq!(answer_span(&w, total), Some((100, 199)));
+
+        let w = parse_range(None);
+        assert_eq!(w, Want::From(0, None));
+        assert_eq!(upstream_range(&w), format!("bytes=0-{}", c - 1));
+
+        let w = parse_range(Some("bytes=-500"));
+        assert_eq!(upstream_range(&w), "bytes=-500");
+        assert_eq!(answer_span(&w, total), Some((total - 500, total - 1)));
+        let w = parse_range(Some(&format!("bytes=-{}", 3 * c)));
+        assert_eq!(upstream_range(&w), format!("bytes=-{c}"));
+        assert_eq!(answer_span(&w, total), Some((total - c, total - 1)));
+
+        let w = parse_range(Some("bytes=5-"));
+        assert_eq!(upstream_range(&w), format!("bytes=5-{}", 5 + c - 1));
+        let w = parse_range(Some(&format!("bytes=0-{}", 5 * c)));
+        assert_eq!(upstream_range(&w), format!("bytes=0-{}", c - 1));
+        assert_eq!(answer_span(&parse_range(Some("bytes=2000-")), 1000), None);
+        assert_eq!(parse_range(Some("bytes=0-1,5-9")), Want::From(0, None));
+        assert_eq!(parse_range(Some("items=1-2")), Want::From(0, None));
+    }
+
+    /// A tiny Kodi stand-in: needs Basic auth, serves `data`, honors Range only when `ranges`.
+    fn fake_kodi(data: Vec<u8>, ranges: bool) -> String {
+        use std::io::{Read, Write};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for mut s in l.incoming().flatten() {
+                let mut req = vec![];
+                let mut b = [0u8; 1];
+                while !req.ends_with(b"\r\n\r\n") && s.read(&mut b).unwrap_or(0) == 1 {
+                    req.push(b[0]);
+                }
+                let req = String::from_utf8_lossy(&req).to_ascii_lowercase();
+                let path_ok = req.starts_with("get /vfs/%2fm%2fa.mp4 ");
+                let auth = format!(
+                    "authorization: {}",
+                    basic("kodi", "pw").unwrap().to_ascii_lowercase()
+                );
+                let (head, body) = if !req.contains(&auth) {
+                    ("HTTP/1.1 401 Unauthorized\r\n".to_string(), vec![])
+                } else if !path_ok {
+                    ("HTTP/1.1 404 Not Found\r\n".to_string(), vec![])
+                } else {
+                    let range = req
+                        .lines()
+                        .find_map(|l| l.strip_prefix("range: bytes="))
+                        .and_then(|r| r.trim().split_once('-'))
+                        .map(|(a, b)| match a.parse::<usize>() {
+                            Ok(a) => (a, b.parse::<usize>().unwrap()),
+                            // Suffix range: the last n bytes.
+                            Err(_) => (data.len() - b.parse::<usize>().unwrap(), data.len() - 1),
+                        });
+                    match range.filter(|_| ranges) {
+                        Some((a, b)) => {
+                            let b = b.min(data.len() - 1);
+                            (
+                                format!(
+                                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {a}-{b}/{}\r\n",
+                                    data.len()
+                                ),
+                                data[a..=b].to_vec(),
+                            )
+                        }
+                        None => ("HTTP/1.1 200 OK\r\n".to_string(), data.clone()),
+                    }
+                };
+                let _ = write!(
+                    s,
+                    "{head}Content-Type: video/mp4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = s.write_all(&body);
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[test]
+    fn proxy_fetch_sends_login_and_range() {
+        let data: Vec<u8> = (0..(CHUNK as usize + 5000))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let auth = basic("kodi", "pw");
+        for ranges in [true, false] {
+            let base = fake_kodi(data.clone(), ranges);
+            let r = proxy_fetch(
+                &base,
+                auth.as_deref(),
+                "vfs/%2Fm%2FA.mp4",
+                Some("bytes=100-199"),
+            );
+            assert_eq!(r.status(), 206, "ranges={ranges}");
+            assert_eq!(r.body(), &data[100..200]);
+            let cr = format!("bytes 100-199/{}", data.len());
+            assert_eq!(r.headers()["content-range"], cr.as_str());
+            assert_eq!(r.headers()["content-type"], "video/mp4");
+
+            // An open range gets one chunk, not the whole file.
+            let r = proxy_fetch(&base, auth.as_deref(), "vfs/%2Fm%2FA.mp4", Some("bytes=0-"));
+            assert_eq!(r.status(), 206);
+            assert_eq!(r.body().len() as u64, CHUNK);
+            assert_eq!(r.body()[..], data[..CHUNK as usize]);
+            let cr = format!("bytes 0-{}/{}", CHUNK - 1, data.len());
+            assert_eq!(r.headers()["content-range"], cr.as_str());
+
+            let r = proxy_fetch(
+                &base,
+                auth.as_deref(),
+                "vfs/%2Fm%2FA.mp4",
+                Some("bytes=-10"),
+            );
+            assert_eq!(r.status(), 206);
+            assert_eq!(r.body(), &data[data.len() - 10..]);
+            assert_eq!(
+                proxy_fetch(&base, None, "vfs/%2Fm%2FA.mp4", None).status(),
+                401
+            );
+        }
     }
 
     #[test]

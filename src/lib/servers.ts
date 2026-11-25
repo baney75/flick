@@ -3,7 +3,7 @@
 import type { Item, Source } from './library'
 import { hash, prepared, thumbUrl, KODI_IMG } from './library'
 import * as db from './db'
-import { invoke, fileUrl } from './platform'
+import { invoke, fileUrl, protocolUrl, isMobileApp } from './platform'
 
 export interface Server {
   id: string
@@ -223,7 +223,7 @@ export async function plexItems(s: Server): Promise<Item[]> {
 // ---------------- Kodi ----------------
 // Kodi's web server sends no CORS headers, so JSON-RPC goes through the desktop shell (kodi_rpc).
 // <video> and <img> cannot send Basic auth headers, and Chromium blocks a login inside subresource URLs,
-// so media URLs never carry it. The shell sends it instead: prepare (ffmpeg) for media, kodi_image for art.
+// so media URLs never carry it. The shell sends it instead: the kodi:// proxy for media, kodi_image for art.
 
 const b64 = (t: string) => btoa(String.fromCharCode(...new TextEncoder().encode(t)))
 const unb64 = (t: string) => new TextDecoder().decode(Uint8Array.from(atob(t), (c) => c.charCodeAt(0)))
@@ -258,7 +258,8 @@ export interface KodiLibrary { movies?: KodiMovie[]; episodes?: KodiEpisode[]; s
 export function kodiMap(s: Server, lib: KodiLibrary): Item[] {
   const base = s.url
   // With a password, the poster is a marker that Card resolves through kodi_image.
-  const art = (a?: string) => (a ? `${s.token ? KODI_IMG : `${base}/image/`}${encodeURIComponent(a)}` : undefined)
+  // Phone apps block plain http in the web view, so their art comes through the shell like a locked Kodi's.
+  const art = (a?: string) => (a ? `${s.token || isMobileApp ? KODI_IMG : `${base}/image/`}${encodeURIComponent(a)}` : undefined)
   const when = (d?: string) => {
     const t = d ? Date.parse(d.replace(' ', 'T')) : NaN
     return Number.isNaN(t) ? 0 : t
@@ -300,37 +301,68 @@ export function kodiMap(s: Server, lib: KodiLibrary): Item[] {
   return out
 }
 
-export async function kodiItems(s: Server): Promise<Item[]> {
+const KODI_PAGE = 2000
+
+/** Every result of a Kodi list method, asked for KODI_PAGE at a time so big libraries fit. */
+async function kodiAll<T>(s: Server, method: string, key: 'movies' | 'episodes' | 'songs', properties: string[]): Promise<T[]> {
   const [user, pass] = kodiLogin(s)
-  const call = <T>(method: string, properties: string[]) => kodiRpc<T>(s.url, user, pass, method, { properties })
-  const [m, e, t] = await Promise.all([
-    call<KodiLibrary>('VideoLibrary.GetMovies', ['title', 'year', 'runtime', 'file', 'art', 'dateadded']),
-    call<KodiLibrary>('VideoLibrary.GetEpisodes', ['title', 'showtitle', 'season', 'episode', 'runtime', 'file', 'art', 'dateadded']),
-    call<KodiLibrary>('AudioLibrary.GetSongs', ['title', 'artist', 'album', 'duration', 'file', 'thumbnail']),
+  const out: T[] = []
+  for (;;) {
+    const r = await kodiRpc<Record<string, unknown> & { limits?: { total?: number } }>(s.url, user, pass, method, {
+      properties,
+      limits: { start: out.length, end: out.length + KODI_PAGE },
+    })
+    const page = (r[key] as T[] | undefined) ?? []
+    out.push(...page)
+    if (!page.length || out.length >= (r.limits?.total ?? 0)) return out
+  }
+}
+
+export async function kodiItems(s: Server): Promise<Item[]> {
+  const [movies, episodes, songs] = await Promise.all([
+    kodiAll<KodiMovie>(s, 'VideoLibrary.GetMovies', 'movies', ['title', 'year', 'runtime', 'file', 'art', 'dateadded']),
+    kodiAll<KodiEpisode>(s, 'VideoLibrary.GetEpisodes', 'episodes', ['title', 'showtitle', 'season', 'episode', 'runtime', 'file', 'art', 'dateadded']),
+    kodiAll<KodiSong>(s, 'AudioLibrary.GetSongs', 'songs', ['title', 'artist', 'album', 'duration', 'file', 'thumbnail']),
   ])
-  return kodiMap(s, { movies: m.movies, episodes: e.episodes, songs: t.songs })
+  return kodiMap(s, { movies, episodes, songs })
 }
 
 const kodiServer = async (id?: string) => (await getServers()).find((x) => x.id === id)
 
-// What the web view plays without a remux.
-const NATIVE = /\.(mp4|m4v|mov|webm|mp3|m4a|aac|flac|wav|ogg|opus)$/i
+// What the web view plays without a remux. Not OGG or Opus: WKWebView on the Mac cannot play them.
+const NATIVE = /\.(mp4|m4v|mov|webm|mp3|m4a|aac|flac|wav)$/i
 
-/** A playable URL for a Kodi file: the plain URL when it can, else a local MP4 from prepare. */
+// Server id to the login last given to the shell's kodi:// proxy this session.
+const proxied = new Map<string, string>()
+
+/** The kodi:// proxy URL for a file on a Kodi with a password. The shell adds the login. */
+async function kodiProxyUrl(s: Server, url: string): Promise<string> {
+  if (!url.startsWith(s.url + '/')) throw new Error('This Kodi file is not on its server any more. Sync the server again.')
+  if (proxied.get(s.id) !== s.token) {
+    const [user, pass] = kodiLogin(s)
+    await invoke('kodi_proxy_register', { id: s.id, base: s.url, user, pass })
+    proxied.set(s.id, s.token)
+  }
+  return protocolUrl(`${s.id}/${url.slice(s.url.length + 1)}`, 'kodi')
+}
+
+/** A playable URL for a Kodi file: the plain URL or the kodi:// proxy when it can, else a local MP4 from prepare. */
 export async function kodiResolve(src: Extract<Source, { t: 'kodi' }>, onStatus?: (s: string) => void): Promise<string> {
   const s = await kodiServer(src.server)
-  if (!s?.token && NATIVE.test(decodeURIComponent(src.url))) return src.url
+  // Phone apps block plain http media loads, so they always stream through the proxy.
+  if (NATIVE.test(decodeURIComponent(src.url))) return s && (s.token || isMobileApp) ? kodiProxyUrl(s, src.url) : src.url
+  if (isMobileApp) throw new Error(KODI_DESKTOP_ONLY)
   const ff = await invoke<{ ffmpeg: string | null }>('ffmpeg_status').catch(() => ({ ffmpeg: null }))
-  if (!ff.ffmpeg) throw new Error(kodiNeedsFfmpeg(!!s?.token))
+  if (!ff.ffmpeg) throw new Error(kodiNeedsFfmpeg())
   const [user, pass] = s ? kodiLogin(s) : ['', '']
   return fileUrl(await prepared(src.url, onStatus, user, pass))
 }
 
+export const KODI_DESKTOP_ONLY = 'This format needs the desktop app (Mac, Windows or Linux). Phones and TVs play MP4, M4V, MOV, WebM and common audio from Kodi.'
+
 /** Why a Kodi file cannot play on a computer without ffmpeg, in words the person can act on. */
-export function kodiNeedsFfmpeg(hasPassword: boolean): string {
-  return hasPassword
-    ? 'This Kodi has a password, so Flick plays its files through ffmpeg. Install ffmpeg (brew install ffmpeg on a Mac), or turn off the Kodi web server password.'
-    : 'This file needs a quick convert, which uses ffmpeg. Install ffmpeg (brew install ffmpeg on a Mac) to play MKV and AVI files from Kodi.'
+export function kodiNeedsFfmpeg(): string {
+  return 'This file needs a quick convert, which uses ffmpeg. Install ffmpeg (brew install ffmpeg on a Mac) to play MKV and AVI files from Kodi.'
 }
 
 /** Fetches a password-protected Kodi poster once, then serves it from the thumbs store. */

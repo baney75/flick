@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { notify, reloadItems, items } from '../lib/store'
 import * as Srv from '../lib/servers'
 import { Icon } from '../components/icons'
-import { isDesktop, isMobileApp } from '../lib/platform'
+import { isDesktop } from '../lib/platform'
 
 export function Servers() {
   const [list, setList] = useState<Srv.Server[]>([])
@@ -52,9 +52,9 @@ export function Servers() {
       <div class="server-grid">
         <JellyfinForm onAdd={add} />
         <PlexForm onAdd={add} />
-        {isDesktop && !isMobileApp && <KodiForm onAdd={add} />}
+        {isDesktop && <KodiForm onAdd={add} />}
       </div>
-      {(!isDesktop || isMobileApp) && <p class="small dim">Kodi works in the Mac, Windows and Linux apps.</p>}
+      {!isDesktop && <p class="small dim">Kodi works in the Flick apps.</p>}
       <p class="small dim">Flick talks to your server directly from this device. If the website cannot reach a server on your home network, use the desktop app, or put the server behind HTTPS.</p>
     </div>
   )
@@ -101,7 +101,7 @@ function KodiForm({ onAdd }: { onAdd: (s: Srv.Server) => void }) {
   return (
     <form class="panel" onSubmit={submit}>
       <h3>Kodi</h3>
-      <p class="dim small">In Kodi, turn on Settings, Services, Control, Allow remote control via HTTP. Flick plays files straight from Kodi. MKV and AVI files play after a quick convert.</p>
+      <p class="dim small">In Kodi, turn on Settings, Services, Control, Allow remote control via HTTP. Flick plays files straight from Kodi. MKV and AVI files play after a quick convert in the Mac, Windows and Linux apps.</p>
       <label>Kodi address<input required placeholder="http://192.168.1.30:8080" value={url} onInput={(e) => setUrl((e.target as HTMLInputElement).value)} /></label>
       <label>Username<input autocomplete="username" placeholder="Empty if Kodi has no password" value={user} onInput={(e) => setUser((e.target as HTMLInputElement).value)} /></label>
       <label>Password<input type="password" autocomplete="current-password" value={pw} onInput={(e) => setPw((e.target as HTMLInputElement).value)} /></label>

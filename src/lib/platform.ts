@@ -1,8 +1,9 @@
 // Bridges to the Tauri desktop shell. On the website every call here is a no-op or null.
 
 export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
-// The Tauri shell on a phone, tablet or TV: no ffmpeg there.
-export const isMobileApp = isDesktop && /Android|iPhone|iPad/i.test(navigator.userAgent)
+// The Tauri shell on a phone, tablet or TV: no ffmpeg there. iPadOS reports a Mac, so check for touch too.
+export const isMobileApp =
+  isDesktop && (/Android|iPhone|iPad/i.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1))
 export const hasFsAccess = typeof window !== 'undefined' && 'showDirectoryPicker' in window
 export const hasOpfs = typeof navigator !== 'undefined' && !!navigator.storage?.getDirectory
 
@@ -22,6 +23,11 @@ let convert: ((p: string) => string) | null = null
 export async function fileUrl(path: string): Promise<string> {
   if (!convert) convert = (await core()).convertFileSrc
   return convert(path)
+}
+
+/** A URL for a custom shell protocol, in the form this platform's web view uses. */
+export async function protocolUrl(path: string, protocol: string): Promise<string> {
+  return (await core()).convertFileSrc(path, protocol)
 }
 
 export async function pickFolder(): Promise<string | null> {
