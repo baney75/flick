@@ -8,7 +8,7 @@ let base = process.env.RELAY_URL
 let dev
 if (!base) {
   base = `http://127.0.0.1:${PORT}`
-  dev = spawn('npx', ['wrangler', 'dev', '--port', String(PORT), '--ip', '127.0.0.1'], { cwd: fileURLToPath(new URL('.', import.meta.url)), stdio: ['ignore', 'pipe', 'pipe'] })
+  dev = spawn('npx', ['wrangler', 'dev', '--port', String(PORT), '--ip', '127.0.0.1', '--var', 'IDLE_MS:2000'], { cwd: fileURLToPath(new URL('.', import.meta.url)), stdio: ['ignore', 'pipe', 'pipe'] })
   await new Promise((ok, bad) => {
     const t = setTimeout(() => bad(new Error('wrangler dev did not start')), 60_000)
     const on = (b) => { if (/Ready on/.test(String(b))) { clearTimeout(t); ok() } }
@@ -39,6 +39,31 @@ try {
 
   b.s.send('x'.repeat(300 * 1024))
   check('an oversized message closes that socket', (await Promise.race([b.closed, wait(3000).then(() => 0)])) === 1009)
+
+  const wide = await client(room('c'))
+  wide.s.send('\u20ac'.repeat(100_000)) // 100,000 characters, 300,000 bytes
+  check('the size cap counts bytes, not characters', (await Promise.race([wide.closed, wait(3000).then(() => 0)])) === 1009)
+
+  const pong = await client(room('d'))
+  pong.s.send('ping')
+  await wait(400)
+  check('the relay answers ping with pong', pong.got.includes('pong'))
+  pong.s.close()
+
+  const full = await Promise.all(Array.from({ length: 16 }, () => client(room('e'))))
+  const extra = await client(room('e')).then((x) => { x.s.close(); return 'opened' }, () => 'refused')
+  check('a 17th device in an active room is refused', extra === 'refused')
+  if (dev) {
+    // Locally the idle limit is 2 seconds: after that, a newcomer takes the quietest device's place.
+    await wait(2500)
+    const late = await client(room('e')).then((x) => x, () => null)
+    late?.s.send('after')
+    await wait(500)
+    const heard = full.filter((x) => x.got.includes('after')).length
+    check(`a full room drops a device that went quiet (${heard} of 16 still hear the room)`, !!late && heard === 15)
+    late?.s.close()
+  }
+  for (const x of full) x.s.close()
 
   const bad = await fetch(`${base}/room/not-a-room`)
   check('a malformed room is 404', bad.status === 404)
