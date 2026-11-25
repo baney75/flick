@@ -4,6 +4,8 @@ export const isDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' 
 // The Tauri shell on a phone, tablet or TV: no ffmpeg there. iPadOS reports a Mac, so check for touch too.
 export const isMobileApp =
   isDesktop && (/Android|iPhone|iPad/i.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1))
+// Safari's engine (the Mac and iPhone apps, Safari itself) plays no OGG or Opus files.
+export const isApple = typeof navigator !== 'undefined' && /Macintosh|iPhone|iPad/.test(navigator.userAgent)
 export const hasFsAccess = typeof window !== 'undefined' && 'showDirectoryPicker' in window
 export const hasOpfs = typeof navigator !== 'undefined' && !!navigator.storage?.getDirectory
 

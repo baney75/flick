@@ -3,7 +3,7 @@
 import type { Item, Source } from './library'
 import { hash, prepared, thumbUrl, KODI_IMG } from './library'
 import * as db from './db'
-import { invoke, fileUrl, protocolUrl, isMobileApp } from './platform'
+import { invoke, fileUrl, protocolUrl, isMobileApp, isApple } from './platform'
 
 export interface Server {
   id: string
@@ -335,8 +335,10 @@ export async function kodiAuth(id?: string): Promise<[string, string]> {
   return s ? kodiLogin(s) : ['', '']
 }
 
-// What the web view plays without a remux. Not OGG or Opus: WKWebView on the Mac cannot play them.
+// What the web view plays without a remux. OGG and Opus play everywhere but Apple's web view.
 const NATIVE = /\.(mp4|m4v|mov|webm|mp3|m4a|aac|flac|wav)$/i
+const NATIVE_NOT_APPLE = /\.(ogg|oga|opus)$/i
+const playsNatively = (name: string) => NATIVE.test(name) || (!isApple && NATIVE_NOT_APPLE.test(name))
 
 // Server id to the login last given to the shell's kodi:// proxy this session.
 const proxied = new Map<string, string>()
@@ -356,7 +358,7 @@ async function kodiProxyUrl(s: Server, url: string): Promise<string> {
 export async function kodiResolve(src: Extract<Source, { t: 'kodi' }>, onStatus?: (s: string) => void): Promise<string> {
   const s = await kodiServer(src.server)
   // Phone apps block plain http media loads, so they always stream through the proxy.
-  if (NATIVE.test(decodeURIComponent(src.url))) return s && (s.token || isMobileApp) ? kodiProxyUrl(s, src.url) : src.url
+  if (playsNatively(decodeURIComponent(src.url))) return s && (s.token || isMobileApp) ? kodiProxyUrl(s, src.url) : src.url
   if (isMobileApp) throw new Error(KODI_DESKTOP_ONLY)
   const ff = await invoke<{ ffmpeg: string | null }>('ffmpeg_status').catch(() => ({ ffmpeg: null }))
   if (!ff.ffmpeg) throw new Error(kodiNeedsFfmpeg())
