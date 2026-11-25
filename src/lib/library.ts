@@ -243,7 +243,10 @@ export interface Resolved { url: string; revoke?: () => void; file?: File; sidec
 /** `itemId` names the library item, so a finished download plays from the device instead. */
 export async function resolve(src: Source, onStatus?: (s: string) => void, itemId?: string): Promise<Resolved> {
   const local = itemId ? await localFor(itemId).catch(() => null) : null
-  if (local) return resolve(local, onStatus)
+  if (local) {
+    // A local copy that cannot play (no ffmpeg, an unreadable file) falls through to the network source.
+    try { return await resolve(local, onStatus) } catch { /* play from the server instead */ }
+  }
   if (src.t === 'url') return { url: src.url }
   if (src.t === 'kodi') return { url: await kodiResolve(src, onStatus) }
   if (src.t === 'path') {

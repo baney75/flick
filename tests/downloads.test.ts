@@ -10,6 +10,7 @@ const shell = vi.hoisted(() => ({
   calls: [] as [string, any][],
   listeners: new Map<string, (p: any) => void>(),
   exists: true,
+  playable: true,
 }))
 vi.mock('../src/lib/platform', async (orig) => ({
   ...(await orig<typeof import('../src/lib/platform')>()),
@@ -26,7 +27,8 @@ vi.mock('../src/lib/platform', async (orig) => ({
       return `/data/downloads/${args.id}.${args.ext}`
     }
     if (cmd === 'download_exists') return shell.exists
-    if (cmd === 'probe') return { playable: true }
+    if (cmd === 'probe') return { playable: shell.playable }
+    if (cmd === 'prepare') throw 'ffmpeg not found'
     if (cmd === 'sidecar_subs') return []
     return null
   },
@@ -115,6 +117,7 @@ beforeEach(() => {
   shell.desktop = false
   shell.calls = []
   shell.exists = true
+  shell.playable = true
   net.order = []
   net.ranges = []
   net.max = net.live = 0
@@ -244,5 +247,15 @@ describe('downloads in the apps', () => {
     shell.exists = false
     expect((await resolve(it.src, undefined, it.id)).url).toBe((it.src as { url: string }).url)
     expect(await getDownload(it.id)).toBeUndefined()
+  })
+
+  it('resolve falls back to the network when the local copy cannot play', async () => {
+    shell.desktop = true
+    const it = item('kf', { t: 'url', url: 'https://plex.example/library/parts/1/3/file.mkv?X-Plex-Token=t' })
+    await download(it)
+    await _test.idle()
+    // Desktop without ffmpeg: the probe says not playable and prepare rejects.
+    shell.playable = false
+    expect((await resolve(it.src, undefined, it.id)).url).toBe((it.src as { url: string }).url)
   })
 })
