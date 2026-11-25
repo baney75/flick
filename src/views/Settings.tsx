@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { settings, setSettings, notify, items, stremio, go } from '../lib/store'
 import { isDesktop, invoke } from '../lib/platform'
 import { formatBytes } from '../lib/parse'
+import { SyncPanel } from './Sync'
 import { Icon } from '../components/icons'
 import { downloads, removeDownload } from '../lib/downloads'
 import { currentSetup, encodeSetup, validateSetup, SETUP_BASE } from '../lib/setup'
@@ -65,6 +66,8 @@ export function Settings() {
         </label>
       </section>
 
+      <SyncPanel />
+
       <section class="panel">
         <h3>Appearance</h3>
         <label>Theme
@@ -106,7 +109,7 @@ export function Settings() {
 
       <section class="panel">
         <h3>Privacy</h3>
-        <p class="dim small">Your library, history and sign-in keys stay on this device. Flick has no account, no analytics and no ads. It only talks to the services you connect: Stremio and its addons, and your own servers.</p>
+        <p class="dim small">Your library, history and sign-in keys stay on this device. Flick has no account, no analytics and no ads. It only talks to the services you connect: Stremio and its addons, and your own servers. Sync goes through a relay that forwards sealed messages it cannot read and stores nothing.</p>
       </section>
     </div>
   )

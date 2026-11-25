@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "check": "tsc --noEmit && vitest run && vite build && node scripts/smoke.mjs",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "check:sync": "vite build && node relay/test.mjs && node scripts/sync-e2e.mjs"
   },
   "dependencies": {
     "@preact/signals": "^2.11.4",
@@ -17,7 +18,8 @@
     "@tauri-apps/plugin-dialog": "^2.8.4",
     "hls.js": "^1.7.4",
     "pdfjs-dist": "6.5.438",
-    "preact": "^11.2.0"
+    "preact": "^11.2.0",
+    "uqr": "^0.1.3"
   },
   "devDependencies": {
     "@preact/preset-vite": "^2.10.6",
