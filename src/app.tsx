@@ -54,6 +54,8 @@ export function App() {
     loadStremio()
     resumeDownloads().catch(() => {})
     startOffline()
+    addEventListener('flick:db-stale', () => notify('Flick was updated in another tab. Reload this tab to keep going.', 15000))
+    addEventListener('flick:db-blocked', () => notify('Close your other Flick tabs to finish updating.', 15000))
     if (isDesktop) {
       // Files opened from Finder before or after launch.
       invoke<string[]>('take_opened').then((p) => p.length && playPaths(p)).catch(() => {})

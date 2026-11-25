@@ -16,8 +16,18 @@ function open(): Promise<IDBDatabase> {
       const db = req.result
       for (const s of STORES) if (!db.objectStoreNames.contains(s)) db.createObjectStore(s)
     }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
+    req.onsuccess = () => {
+      const db = req.result
+      // A newer Flick in another tab needs the database: let go so its upgrade is not blocked.
+      db.onversionchange = () => {
+        db.close()
+        dbPromise = null
+        if (typeof dispatchEvent === 'function') dispatchEvent(new Event('flick:db-stale'))
+      }
+      resolve(db)
+    }
+    req.onblocked = () => { if (typeof dispatchEvent === 'function') dispatchEvent(new Event('flick:db-blocked')) }
+    req.onerror = () => { dbPromise = null; reject(req.error) }
   })
   return dbPromise
 }
