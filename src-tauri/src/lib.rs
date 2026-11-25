@@ -769,10 +769,13 @@ mod tests {
 
     #[test]
     fn http_input_gets_auth_header() {
+        use base64::Engine;
         let auth = basic("kodi", "p@ss").unwrap();
-        assert_eq!(auth, "Basic a29kaTpwQHNz");
+        let b64 = auth.strip_prefix("Basic ").unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+        assert_eq!(decoded, b"kodi:p@ss");
         let url = "http://192.168.1.30:8080/vfs/%2Fa.mkv";
-        assert_eq!(input_args(url, Some(&auth)), ["-headers", "Authorization: Basic a29kaTpwQHNz\r\n", "-i", url]);
+        assert_eq!(input_args(url, Some(&auth)), ["-headers".to_string(), format!("Authorization: {auth}\r\n"), "-i".to_string(), url.to_string()]);
         assert_eq!(input_args("HTTPS://h/x.mkv", Some(&auth))[0], "-headers");
         assert_eq!(input_args(url, None), ["-i", url]);
         // A local file never gets the header, even with a login.
