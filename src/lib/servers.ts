@@ -320,8 +320,17 @@ const NATIVE = /\.(mp4|m4v|mov|webm|mp3|m4a|aac|flac|wav|ogg|opus)$/i
 export async function kodiResolve(src: Extract<Source, { t: 'kodi' }>, onStatus?: (s: string) => void): Promise<string> {
   const s = await kodiServer(src.server)
   if (!s?.token && NATIVE.test(decodeURIComponent(src.url))) return src.url
+  const ff = await invoke<{ ffmpeg: string | null }>('ffmpeg_status').catch(() => ({ ffmpeg: null }))
+  if (!ff.ffmpeg) throw new Error(kodiNeedsFfmpeg(!!s?.token))
   const [user, pass] = s ? kodiLogin(s) : ['', '']
   return fileUrl(await prepared(src.url, onStatus, user, pass))
+}
+
+/** Why a Kodi file cannot play on a computer without ffmpeg, in words the person can act on. */
+export function kodiNeedsFfmpeg(hasPassword: boolean): string {
+  return hasPassword
+    ? 'This Kodi has a password, so Flick plays its files through ffmpeg. Install ffmpeg (brew install ffmpeg on a Mac), or turn off the Kodi web server password.'
+    : 'This file needs a quick convert, which uses ffmpeg. Install ffmpeg (brew install ffmpeg on a Mac) to play MKV and AVI files from Kodi.'
 }
 
 /** Fetches a password-protected Kodi poster once, then serves it from the thumbs store. */

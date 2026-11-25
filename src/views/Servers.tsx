@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { notify, reloadItems, items } from '../lib/store'
 import * as Srv from '../lib/servers'
 import { Icon } from '../components/icons'
-import { isDesktop } from '../lib/platform'
+import { isDesktop, isMobileApp } from '../lib/platform'
 
 export function Servers() {
   const [list, setList] = useState<Srv.Server[]>([])
@@ -52,9 +52,9 @@ export function Servers() {
       <div class="server-grid">
         <JellyfinForm onAdd={add} />
         <PlexForm onAdd={add} />
-        {isDesktop && <KodiForm onAdd={add} />}
+        {isDesktop && !isMobileApp && <KodiForm onAdd={add} />}
       </div>
-      {!isDesktop && <p class="small dim">Kodi works in the desktop and mobile apps.</p>}
+      {(!isDesktop || isMobileApp) && <p class="small dim">Kodi works in the Mac, Windows and Linux apps.</p>}
       <p class="small dim">Flick talks to your server directly from this device. If the website cannot reach a server on your home network, use the desktop app, or put the server behind HTTPS.</p>
     </div>
   )

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { kodiMap, type Server, type KodiLibrary } from '../src/lib/servers'
+import { kodiMap, kodiNeedsFfmpeg, type Server, type KodiLibrary } from '../src/lib/servers'
 import { hash, KODI_IMG } from '../src/lib/library'
 
 const open: Server = { id: 'kodi-a', type: 'kodi', name: 'Living Room', url: 'http://192.168.1.30:8080', token: '' }
@@ -66,5 +66,11 @@ describe('kodi mapping', () => {
 
   it('handles an empty library', () => {
     expect(kodiMap(open, {})).toEqual([])
+  })
+
+  it('says what to do when ffmpeg is missing', () => {
+    expect(kodiNeedsFfmpeg(true)).toMatch(/password/)
+    expect(kodiNeedsFfmpeg(true)).toMatch(/install ffmpeg/i)
+    expect(kodiNeedsFfmpeg(false)).toMatch(/MKV and AVI/)
   })
 })
