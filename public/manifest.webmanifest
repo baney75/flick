@@ -1,0 +1,22 @@
+{
+  "name": "Flick",
+  "short_name": "Flick",
+  "description": "Plays your videos and music instantly, builds a fast library, links to Stremio, Plex and Jellyfin.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b0b0d",
+  "theme_color": "#0b0b0d",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ],
+  "file_handlers": [
+    {
+      "action": "/",
+      "accept": {
+        "video/*": [".mp4", ".m4v", ".mov", ".webm", ".mkv", ".ogv"],
+        "audio/*": [".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".opus"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+# Flick: notes for agents
+
+- Stack: Preact + TypeScript + Vite (web UI in `src/`), Tauri 2 + Rust (desktop and mobile shell in `src-tauri/`).
+- Done means `npm run check` passes (types, vitest, build, headless smoke in `scripts/smoke.mjs`), plus `cargo clippy` in `src-tauri` for Rust changes. For player or UI changes, also run the desktop app and try the steps live.
+- Release builds on this Mac: keep `[profile.release.build-override] strip = "none"` in `src-tauri/Cargo.toml`. Xcode 27's strip corrupts proc-macro dylibs, and LTO with panic=abort failed the same way.
+- The web build must keep working without Tauri: every desktop call goes through `src/lib/platform.ts` and is guarded by `isDesktop`.
+- Never add stream sources or addons on the user's behalf. Flick uses only the Stremio addons the user installs.
+- No em or en dashes in prose.

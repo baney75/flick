@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Flick",
+  "version": "0.1.0",
+  "identifier": "com.dbaney.flick",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5178",
+    "beforeBuildCommand": "npx vite build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Flick",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 420,
+        "minHeight": 320,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "backgroundColor": "#0b0b0d"
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": { "enable": true, "scope": ["**"] }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "category": "public.app-category.entertainment",
+    "shortDescription": "Fast media player and library",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "fileAssociations": [
+      { "ext": ["mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "ts", "m2ts", "mts", "mpg", "mpeg", "ogv", "3gp"], "name": "Video", "role": "Viewer", "rank": "Default" },
+      { "ext": ["mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "aiff", "aif", "wma"], "name": "Audio", "role": "Viewer", "rank": "Default" }
+    ],
+    "macOS": { "minimumSystemVersion": "12.0" }
+  }
+}
