@@ -164,17 +164,22 @@ export function seed(changes: [string, unknown][]) {
   send({ type: 'entries', from: sync.value.device, list })
 }
 
-export async function createGroup() { await join(newSecret()) }
+// The device that starts a group writes its data with real times; devices that join later only seed
+// (time 1), so on first pairing the group's values win over a newcomer's defaults instead of tying.
+export async function createGroup() {
+  await join(newSecret(), false)
+  publish(offerLocal().filter(([k]) => !doc.has(k)))
+}
 
 // Joining a different group starts clean: the old group's entries and devices stay behind, so
 // nothing from it reaches the new one. Rejoining the same group keeps them.
-export async function join(secret: string) {
+export async function join(secret: string, offer = true) {
   if (secret === sync.value.secret) return connect()
   await leave()
   sync.value = { ...sync.value, paired: true, secret }
   await persist(true)
   await connect()
-  seed(offerLocal())
+  if (offer) seed(offerLocal())
 }
 
 export async function leave() {

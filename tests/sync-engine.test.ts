@@ -25,7 +25,7 @@ vi.stubGlobal('navigator', { userAgent: 'Mac' })
 vi.stubGlobal('document', { addEventListener: () => {}, hidden: false })
 vi.stubGlobal('addEventListener', () => {})
 
-const { startSync, join, publish, docKeys, sync } = await import('../src/lib/sync/engine')
+const { startSync, join, createGroup, publish, docKeys, docValue, sync } = await import('../src/lib/sync/engine')
 const db = await import('../src/lib/db')
 const { newSecret, openGroup, seal } = await import('../src/lib/sync/crypto')
 const settle = () => new Promise((r) => setTimeout(r, 30))
@@ -86,5 +86,16 @@ describe('sync engine', () => {
     void db.put('kv', 'sync', { secret: null, device: sync.value.device })
     await settle()
     expect((await db.get<{ secret: string | null }>('kv', 'sync'))?.secret).toBeNull()
+  })
+
+  it('on first pairing the group creator\'s data beats a joiner\'s seeded defaults', async () => {
+    await createGroup()
+    await settle()
+    const g = await openGroup(sync.value.secret!)
+    const sock = net.socks.at(-1)
+    // The joiner seeds its own default at time 1, from a device id that would win any tie.
+    await sock.onmessage({ data: await seal(g.key, { type: 'entries', from: 'ffffffffffffffff', list: [['s:theme', { v: 'light', t: 1, d: 'ffffffffffffffff' }]] }) })
+    await settle()
+    expect(docValue('s:theme')).toBe('dark')
   })
 })
