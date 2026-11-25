@@ -5,6 +5,8 @@ import { kodiPoster } from '../lib/servers'
 import { thumbTick, progress, episodeLabel } from '../lib/store'
 import { formatTime } from '../lib/parse'
 import { Icon } from './icons'
+import { downloads } from '../lib/downloads'
+import { badgeFor } from '../lib/offline'
 
 export function useThumb(it: Item | undefined) {
   const plain = it?.poster && !it.poster.startsWith(KODI_IMG) ? it.poster : null
@@ -32,8 +34,9 @@ export function Card(props: {
 }) {
   const { image, title, sub, shape = 'wide', pct, icon = 'film', badge, onClick, onMore } = props
   const [loaded, setLoaded] = useState(false)
+  const hold = useLongPress(onMore)
   return (
-    <button class={`card ${shape}`} onClick={onClick} onContextMenu={onMore ? (e) => { e.preventDefault(); onMore(e) } : undefined} title={title}>
+    <button class={`card ${shape}`} onClick={(e) => { if (hold.fired()) e.stopPropagation(); else onClick() }} onContextMenu={onMore ? (e) => { e.preventDefault(); onMore(e) } : undefined} title={title} {...hold.events}>
       <div class="art">
         {image ? <img src={image} alt="" loading="lazy" decoding="async" class={loaded ? 'in' : ''} onLoad={() => setLoaded(true)} /> : <div class="art-ph"><Icon name={icon} size={30} /></div>}
         {badge && <span class="badge">{badge}</span>}
@@ -48,6 +51,31 @@ export function Card(props: {
   )
 }
 
+/**
+ * Holding a card on a touch screen opens its menu. iPhone Safari never fires contextmenu,
+ * so without this the menu (and Download) is out of reach there.
+ */
+function useLongPress(onMore?: (e: MouseEvent) => void) {
+  const t = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const done = useRef(false)
+  const start = useRef<[number, number]>([0, 0])
+  const clear = () => { if (t.current) clearTimeout(t.current); t.current = null }
+  return {
+    fired: () => { const f = done.current; done.current = false; return f },
+    events: onMore ? {
+      onPointerDown: (e: PointerEvent) => {
+        done.current = false
+        if (e.pointerType !== 'touch') return
+        start.current = [e.clientX, e.clientY]
+        t.current = setTimeout(() => { done.current = true; onMore(new MouseEvent('contextmenu', { clientX: start.current[0], clientY: start.current[1] })) }, 500)
+      },
+      onPointerMove: (e: PointerEvent) => { if (Math.hypot(e.clientX - start.current[0], e.clientY - start.current[1]) > 10) clear() },
+      onPointerUp: clear,
+      onPointerCancel: clear,
+    } : {},
+  }
+}
+
 export function ItemCard({ it, onClick, onMore }: { it: Item; onClick: () => void; onMore?: (e: MouseEvent) => void }) {
   const img = useThumb(it)
   const p = progress.value[it.id]
@@ -56,7 +84,8 @@ export function ItemCard({ it, onClick, onMore }: { it: Item; onClick: () => voi
     : [it.year, it.duration ? formatTime(it.duration) : null, it.origin !== 'local' ? originName(it) : null].filter(Boolean).join(' · ')
   return (
     <Card image={img} title={it.show ?? it.title} sub={sub} shape={it.kind === 'audio' ? 'square' : it.poster && it.origin !== 'local' ? 'poster' : 'wide'}
-      icon={it.kind === 'audio' ? 'music' : 'film'} pct={p && p.dur ? p.pos / p.dur : undefined} onClick={onClick} onMore={onMore} />
+      icon={it.kind === 'audio' ? 'music' : 'film'} pct={p && p.dur ? p.pos / p.dur : undefined} badge={badgeFor(downloads.value.get(it.id))}
+      onClick={onClick} onMore={onMore} />
   )
 }
 

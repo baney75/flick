@@ -5,6 +5,8 @@ import { Icon } from '../components/icons'
 import { addFolder, openFiles, openUrl, playPaths } from '../lib/actions'
 import { continueWatching } from '../lib/stremio'
 import { isDesktop } from '../lib/platform'
+import { online } from '../lib/offline'
+import { downloads } from '../lib/downloads'
 
 function ResumeCard({ k, p }: { k: string; p: Progress }) {
   const ref = p.ref
@@ -32,8 +34,21 @@ export function Home() {
   const showList = [...shows.value.values()].slice(0, 20)
   const empty = !all.length && !cont.length && !stCont.length
 
+  const saved = [...downloads.value.values()].filter((d) => d.state === 'done').length
+  const toDownloads = () => {
+    try { sessionStorage.setItem('flick.tab', 'downloads') } catch { /* private mode */ }
+    go('/library')
+  }
+
   return (
     <div class="page">
+      {!online.value && (
+        <div class="offline-note" role="status">
+          <Icon name="download" size={16} />
+          <span>{saved ? `You're offline. ${saved > 1 ? `Your ${saved} downloads still play.` : 'Your download still plays.'}` : "You're offline. Downloads you save play without a connection."}</span>
+          {saved > 0 && <button class="btn sm" onClick={toDownloads}>Open downloads</button>}
+        </div>
+      )}
       {empty ? (
         <div class="welcome">
           <div class="welcome-mark"><Icon name="play" size={34} /></div>
