@@ -80,7 +80,7 @@ export async function addFolder() {
   if (isDesktop) {
     const path = await pickFolder()
     if (!path) return
-    folder = { id: hash(path), name: path.split('/').filter(Boolean).pop() ?? path, path }
+    folder = pathFolder(path)
   } else if (hasFsAccess) {
     try {
       const handle = await (window as unknown as { showDirectoryPicker(o?: object): Promise<FileSystemDirectoryHandle> }).showDirectoryPicker({ id: 'flick-media', mode: 'read' })
@@ -92,6 +92,17 @@ export async function addFolder() {
     const name = files[0].webkitRelativePath.split('/')[0] || 'Folder'
     folder = { id: hash(name), name, session: true }
   }
+  await indexFolder(folder, files)
+}
+
+const pathFolder = (path: string): Folder => ({ id: hash(path), name: path.split('/').filter(Boolean).pop() ?? path, path })
+
+/** Add a desktop folder by its path (setup links). Returns how many files it found. */
+export function addFolderPath(path: string): Promise<number> {
+  return indexFolder(pathFolder(path))
+}
+
+async function indexFolder(folder: Folder, files?: File[]): Promise<number> {
   notify(`Scanning ${folder.name}…`, 60000)
   const found = await scanFolder(folder, files)
   if (folder.session) {
@@ -101,12 +112,13 @@ export async function addFolder() {
     items.value = [...items.value.filter((i) => !ids.has(i.id)), ...merged]
     queueThumbs(merged)
     notify(`Found ${merged.length} files. This browser only keeps them until you close the tab; use Chrome, Edge or the desktop app to keep folders.`, 7000)
-    return
+    return merged.length
   }
   await saveFolder(folder)
   await mergeScan(folder.name, found)
   await reloadItems()
   notify(`Added ${found.length} files from ${folder.name}.`)
+  return found.length
 }
 
 export async function rescanAll() {

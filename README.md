@@ -15,6 +15,37 @@ A fast media player and library. It plays your videos and music the moment you o
 - **TV.** D-pad navigation and a 10-foot focus style for Android TV and remotes.
 - **Private.** No account, no analytics, no ads. Everything stays on the device.
 
+## Set up Flick for someone (agents)
+
+Write one JSON payload, turn it into a link, and send it. The person opens the link, sees every item Flick will add, and taps **Connect all**. Nothing changes before that tap. On the desktop app, use **Settings > Import setup file** with the same JSON.
+
+```json
+{
+  "v": 1,
+  "stremioAddons": ["https://addon.example/manifest.json"],
+  "servers": [
+    { "type": "plex", "name": "Den", "url": "https://192-168-1-20.example.plex.direct:32400", "token": "PLEX_TOKEN" },
+    { "type": "jellyfin", "url": "http://192.168.1.20:8096", "token": "JELLYFIN_API_KEY", "userId": "JELLYFIN_USER_ID" }
+  ],
+  "folders": ["/Users/me/Movies"],
+  "settings": { "theme": "dark", "skipSeconds": 15, "autoplayNext": true, "speed": 1 }
+}
+```
+
+- `v` must be `1`. Every other field is optional. Unknown keys are dropped.
+- `stremioAddons`: up to 50 manifest URLs (`https://` or `stremio://`). Use only addons the person chose.
+- `servers`: tokens only, never passwords. Jellyfin needs `userId`. URLs must be `http` or `https`.
+- `folders`: desktop paths. The website skips them.
+- `settings`: any of `autoplayNext`, `speed`, `volume`, `skipSeconds`, `theme` (`system`, `dark`, `light`).
+
+Build the link from base64url of the JSON:
+
+```sh
+echo "https://flick-player.pages.dev/#/setup?c=$(node -e 'process.stdout.write(Buffer.from(require("fs").readFileSync(0)).toString("base64url"))' < setup.json)"
+```
+
+The link holds server tokens: send it only to the person it is for. **Settings > Share my setup** builds the same link from your own addons, servers and settings.
+
 ## Run it
 
 ```sh
