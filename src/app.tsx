@@ -6,7 +6,7 @@ import { Stremio, StremioDetail } from './views/Stremio'
 import { Servers } from './views/Servers'
 import { Settings } from './views/Settings'
 import { PairPage } from './views/Sync'
-import { startSync } from './lib/sync/engine'
+import { startSyncBinding } from './lib/sync/bind'
 import { Setup } from './views/Setup'
 import { Reader } from './views/Reader'
 import { Player } from './components/Player'
@@ -54,10 +54,7 @@ export function App() {
 
   useEffect(() => {
     installSpatialNav(() => !!nowPlaying.value)
-    reloadItems()
-    loadProgress()
-    // Pairing and presence only for now; what syncs is wired up next.
-    startSync(() => {}).catch(() => {})
+    Promise.all([reloadItems(), loadProgress()]).then(startSyncBinding).catch(() => {})
     loadStremio()
     resumeDownloads().catch(() => {})
     startOffline()

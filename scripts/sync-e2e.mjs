@@ -1,5 +1,5 @@
 // Sync check: two separate browser profiles pair through a local relay (wrangler dev),
-// see each other online, and find each other again after a reload.
+// then a setting changed on one shows up on the other, and the device list sees both.
 import { chromium } from 'playwright'
 import { spawn } from 'node:child_process'
 
@@ -44,10 +44,18 @@ try {
   check(await until(() => b.getByText('Online now').isVisible()), 'the second device sees the first online')
   check(await until(() => a.getByText('Online now').isVisible()), 'the first device sees the second online')
 
-  // A device that drops off comes back on its own.
+  await a.getByLabel('Skip buttons jump').selectOption('30')
+  check(await until(async () => (await b.getByLabel('Skip buttons jump').inputValue()) === '30'), 'a setting changed on one device appears on the other')
+  await b.getByLabel('Default speed').selectOption('1.5')
+  check(await until(async () => (await a.getByLabel('Default speed').inputValue()) === '1.5'), 'and the other way')
+
+  // A device that was offline catches up when it reconnects.
   await b.reload()
   await b.goto(b.url().replace(/#.*$/, '#/settings'))
   check(await until(() => b.getByText('Online now').isVisible()), 'a reloaded device reconnects and sees the other again')
+  await a.getByLabel('Skip buttons jump').selectOption('15')
+  const caught = await until(async () => (await b.getByLabel('Skip buttons jump').inputValue()) === '15')
+  check(caught, 'a reloaded device catches up')
   await until(() => a.getByText('Online now').isVisible())
   await b.close({ runBeforeUnload: true })
   check(await until(async () => !(await a.getByText('Online now').isVisible())), 'a device that closes its page shows offline on the other')

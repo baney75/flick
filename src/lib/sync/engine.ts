@@ -112,8 +112,10 @@ function saveDocSoon() {
 }
 
 // Load saved state and connect when this device is in a group.
-export async function startSync(handler: (keys: string[]) => void) {
+// `offer` lists what this device has; it is seeded on start and again after joining a new group.
+export async function startSync(handler: (keys: string[]) => void, offer: () => [string, unknown][] = () => []) {
   onChange = handler
+  offerLocal = offer
   const saved = await db.get<Saved>('kv', 'sync')
   const secret = saved?.secret ?? null
   const peers = await loadGroupState(secret)
@@ -123,6 +125,7 @@ export async function startSync(handler: (keys: string[]) => void) {
   }
   if (!saved) await persist(true)
   if (sync.value.secret) await connect()
+  seed(offerLocal())
   addEventListener('online', () => { if (sync.value.secret && !ws) connect() })
   addEventListener('pagehide', () => {
     if (saveTimer !== undefined) saveDocNow()
@@ -134,6 +137,8 @@ export async function startSync(handler: (keys: string[]) => void) {
   })
   document.addEventListener('visibilitychange', () => { if (document.hidden && saveTimer !== undefined) saveDocNow() })
 }
+
+let offerLocal: () => [string, unknown][] = () => []
 
 export const docValue = (key: string) => doc.get(key)?.v
 export const docKeys = (prefix: string) => [...doc.keys()].filter((k) => k.startsWith(prefix))
@@ -159,16 +164,22 @@ export function seed(changes: [string, unknown][]) {
   send({ type: 'entries', from: sync.value.device, list })
 }
 
-export async function createGroup() { await join(newSecret()) }
+// The device that starts a group writes its data with real times; devices that join later only seed
+// (time 1), so on first pairing the group's values win over a newcomer's defaults instead of tying.
+export async function createGroup() {
+  await join(newSecret(), false)
+  publish(offerLocal().filter(([k]) => !doc.has(k)))
+}
 
 // Joining a different group starts clean: the old group's entries and devices stay behind, so
 // nothing from it reaches the new one. Rejoining the same group keeps them.
-export async function join(secret: string) {
+export async function join(secret: string, offer = true) {
   if (secret === sync.value.secret) return connect()
   await leave()
   sync.value = { ...sync.value, paired: true, secret }
   await persist(true)
   await connect()
+  if (offer) seed(offerLocal())
 }
 
 export async function leave() {
