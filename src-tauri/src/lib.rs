@@ -853,6 +853,28 @@ fn valid_ext(s: &str) -> bool {
 #[derive(Default)]
 struct Downloads(Mutex<HashMap<String, Arc<AtomicBool>>>);
 
+impl Downloads {
+    /// Registers a run for `id` and returns its stop flag. A second run for the same id would
+    /// append to the same .part, so it is refused. Check and insert share one lock.
+    fn begin(&self, id: &str) -> Result<Arc<AtomicBool>, String> {
+        let mut map = self.0.lock().unwrap();
+        if map.contains_key(id) {
+            return Err("Already downloading".into());
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        map.insert(id.to_string(), stop.clone());
+        Ok(stop)
+    }
+
+    /// Unregisters the run that owns `stop`, leaving any newer run's entry alone.
+    fn end(&self, id: &str, stop: &Arc<AtomicBool>) {
+        let mut map = self.0.lock().unwrap();
+        if map.get(id).is_some_and(|s| Arc::ptr_eq(s, stop)) {
+            map.remove(id);
+        }
+    }
+}
+
 #[derive(Serialize, Clone)]
 struct DownloadProgress {
     id: String,
@@ -874,7 +896,31 @@ fn range_total(cr: Option<&str>) -> Option<u64> {
     cr?.rsplit_once('/')?.1.trim().parse().ok()
 }
 
-/// Streams `url` into `part`, resuming from its size. A 200 answer to a Range starts over.
+/// The first byte from a Content-Range like "bytes 100-199/1000".
+fn range_start(cr: Option<&str>) -> Option<u64> {
+    let span = cr?.trim().strip_prefix("bytes")?.trim_start();
+    span.split_once('-')?.0.trim().parse().ok()
+}
+
+/// The resume sidecar next to a part: `<part>.meta` holds the first answer's validator.
+fn meta_path(part: &Path) -> PathBuf {
+    let mut s = part.as_os_str().to_owned();
+    s.push(".meta");
+    PathBuf::from(s)
+}
+
+/// Empties the part and forgets its validator, so the next request starts from 0.
+fn restart_part(part: &Path, meta: &Path) -> Result<(), String> {
+    std::fs::File::create(part).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(meta);
+    Ok(())
+}
+
+/// Streams `url` into `part`, resuming from its size. A 200 answer to a Range starts over, and
+/// so does a 206 that starts at the wrong byte. The first answer's strong ETag (or else its
+/// Last-Modified) goes to `<part>.meta` and rides along as If-Range, so a file that changed
+/// on the server comes back as a 200. A 206 that ends short of the total (servers that cap
+/// open ranges) is followed by the next Range from where it ended, in this same call.
 fn fetch_to(
     url: &str,
     auth: Option<&str>,
@@ -883,7 +929,7 @@ fn fetch_to(
     mut on_progress: impl FnMut(u64, u64),
 ) -> Result<(), String> {
     use std::io::{Read, Write};
-    let have = std::fs::metadata(part).map(|m| m.len()).unwrap_or(0);
+    let meta = meta_path(part);
     // No global timeout: a 20 GB file takes a long time. Each read gets its own limit instead.
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(std::time::Duration::from_secs(15)))
@@ -891,65 +937,108 @@ fn fetch_to(
         .http_status_as_error(false)
         .build()
         .into();
-    let mut req = agent.get(url);
-    if have > 0 {
-        req = req.header("Range", format!("bytes={have}-"));
-    }
-    if let Some(auth) = auth {
-        req = req.header("Authorization", auth);
-    }
-    let resp = req
-        .call()
-        .map_err(|e| format!("The server did not answer ({e})"))?;
-    let head = |name: &str| {
-        resp.headers()
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-    };
-    let len = head("content-length").and_then(|v| v.parse::<u64>().ok());
-    let range = range_total(head("content-range").as_deref());
-    let (start, total) = match resp.status().as_u16() {
-        206 => (have, range.or(len.map(|l| l + have))),
-        200 => (0, len),
-        // The part already holds the whole file.
-        416 if have > 0 && range == Some(have) => return Ok(()),
-        401 | 403 => return Err("The server refused the login.".into()),
-        code => return Err(format!("The server said {code}")),
-    };
-    let total = total.unwrap_or(0);
-    let mut f = if start == 0 {
-        std::fs::File::create(part)
-    } else {
-        std::fs::OpenOptions::new().append(true).open(part)
-    }
-    .map_err(|e| e.to_string())?;
-    let mut body = resp.into_body().into_reader();
+    let mut may_retry_shrunk = true;
     let mut buf = vec![0u8; 256 * 1024];
-    let mut done = start;
-    let mut last = std::time::Instant::now();
-    on_progress(done, total);
     loop {
-        if stop.load(Ordering::Relaxed) {
-            return Err("Canceled".into());
+        let have = std::fs::metadata(part).map(|m| m.len()).unwrap_or(0);
+        let mut req = agent.get(url);
+        if have > 0 {
+            req = req.header("Range", format!("bytes={have}-"));
+            let tag = std::fs::read_to_string(&meta).unwrap_or_default();
+            if !tag.trim().is_empty() {
+                req = req.header("If-Range", tag.trim());
+            }
         }
-        let n = body.read(&mut buf).map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
+        if let Some(auth) = auth {
+            req = req.header("Authorization", auth);
         }
-        f.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-        done += n as u64;
-        if last.elapsed() >= std::time::Duration::from_millis(250) {
-            on_progress(done, total);
-            last = std::time::Instant::now();
+        let resp = req
+            .call()
+            .map_err(|e| format!("The server did not answer ({e})"))?;
+        let head = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        let len = head("content-length").and_then(|v| v.parse::<u64>().ok());
+        let cr = head("content-range");
+        let range = range_total(cr.as_deref());
+        let (start, total) = match resp.status().as_u16() {
+            206 => {
+                if range_start(cr.as_deref()).is_some_and(|s| s != have) {
+                    if have == 0 {
+                        return Err("The server sent the wrong part of the file.".into());
+                    }
+                    restart_part(part, &meta)?;
+                    continue;
+                }
+                (have, range.or(len.map(|l| l + have)))
+            }
+            200 => (0, len),
+            // The part already holds the whole file.
+            416 if have > 0 && range == Some(have) => {
+                let _ = std::fs::remove_file(&meta);
+                return Ok(());
+            }
+            // The server file shrank below the part: start over, once.
+            416 if have > 0 && may_retry_shrunk && range.is_some_and(|t| t < have) => {
+                may_retry_shrunk = false;
+                restart_part(part, &meta)?;
+                continue;
+            }
+            401 | 403 => return Err("The server refused the login.".into()),
+            code => return Err(format!("The server said {code}")),
+        };
+        let total = total.unwrap_or(0);
+        if start == 0 {
+            let tag = head("etag")
+                .filter(|t| !t.starts_with("W/"))
+                .or_else(|| head("last-modified"));
+            match tag {
+                Some(t) => std::fs::write(&meta, t).map_err(|e| e.to_string())?,
+                None => {
+                    let _ = std::fs::remove_file(&meta);
+                }
+            }
         }
+        let mut f = if start == 0 {
+            std::fs::File::create(part)
+        } else {
+            std::fs::OpenOptions::new().append(true).open(part)
+        }
+        .map_err(|e| e.to_string())?;
+        let mut body = resp.into_body().into_reader();
+        let mut done = start;
+        let mut last = std::time::Instant::now();
+        on_progress(done, total);
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                return Err("Canceled".into());
+            }
+            let n = body.read(&mut buf).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            f.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+            done += n as u64;
+            if last.elapsed() >= std::time::Duration::from_millis(250) {
+                on_progress(done, total);
+                last = std::time::Instant::now();
+            }
+        }
+        f.sync_all().map_err(|e| e.to_string())?;
+        if total > 0 && done < total {
+            if done == start {
+                return Err("The download stopped early. Try again to resume.".into());
+            }
+            // A capped or cut-short answer: ask for the rest.
+            continue;
+        }
+        let _ = std::fs::remove_file(&meta);
+        on_progress(done, total.max(done));
+        return Ok(());
     }
-    f.sync_all().map_err(|e| e.to_string())?;
-    if total > 0 && done < total {
-        return Err("The download stopped early. Try again to resume.".into());
-    }
-    on_progress(done, total.max(done));
-    Ok(())
 }
 
 /// A file extension from the first bytes, for servers whose URL names none (Jellyfin).
@@ -996,9 +1085,9 @@ async fn download(
     }
     let dir = downloads_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let stop = Arc::new(AtomicBool::new(false));
     let state = app.state::<Downloads>();
-    state.0.lock().unwrap().insert(id.clone(), stop.clone());
+    let stop = state.begin(&id)?;
+    let mine = stop.clone();
     let auth = basic(&user.unwrap_or_default(), &pass.unwrap_or_default());
     let (app2, id2) = (app.clone(), id.clone());
     let res = tauri::async_runtime::spawn_blocking(move || {
@@ -1018,9 +1107,9 @@ async fn download(
         Ok(out.to_string_lossy().into_owned())
     })
     .await
-    .map_err(|e| e.to_string())?;
-    state.0.lock().unwrap().remove(&id);
-    res
+    .map_err(|e| e.to_string());
+    state.end(&id, &mine);
+    res?
 }
 
 /// Stops a running download. The .part stays, so the next download of that id resumes.
@@ -1045,11 +1134,17 @@ fn remove_inside(dir: &Path, path: &Path) -> Result<(), String> {
     std::fs::remove_file(p).map_err(|e| e.to_string())
 }
 
+/// Deletes a download or a .part, plus the part's resume sidecar.
+fn remove_download(dir: &Path, path: &Path) -> Result<(), String> {
+    remove_inside(dir, path)?;
+    remove_inside(dir, &meta_path(path))
+}
+
 #[tauri::command]
 fn download_remove(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let dir = downloads_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    remove_inside(&dir, Path::new(&path))
+    remove_download(&dir, Path::new(&path))
 }
 
 /// Whether a finished download is still on disk, so playback can fall back to the server.
@@ -1420,60 +1515,125 @@ mod tests {
 
     /// A tiny Kodi stand-in: needs Basic auth, serves `data`, honors Range only when `ranges`.
     fn fake_kodi(data: Vec<u8>, ranges: bool) -> String {
-        use std::io::{Read, Write};
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = l.local_addr().unwrap();
-        std::thread::spawn(move || {
-            for mut s in l.incoming().flatten() {
-                let mut req = vec![];
-                let mut b = [0u8; 1];
-                while !req.ends_with(b"\r\n\r\n") && s.read(&mut b).unwrap_or(0) == 1 {
-                    req.push(b[0]);
-                }
-                let req = String::from_utf8_lossy(&req).to_ascii_lowercase();
-                let path_ok = req.starts_with("get /vfs/%2fm%2fa.mp4 ");
-                let auth = format!(
-                    "authorization: {}",
-                    basic("kodi", "pw").unwrap().to_ascii_lowercase()
-                );
-                let (head, body) = if !req.contains(&auth) {
-                    ("HTTP/1.1 401 Unauthorized\r\n".to_string(), vec![])
-                } else if !path_ok {
-                    ("HTTP/1.1 404 Not Found\r\n".to_string(), vec![])
-                } else {
-                    let range = req
-                        .lines()
-                        .find_map(|l| l.strip_prefix("range: bytes="))
-                        .and_then(|r| r.trim().split_once('-'))
-                        .map(|(a, b)| match a.parse::<usize>() {
-                            // An open range runs to the end.
-                            Ok(a) => (a, b.parse::<usize>().unwrap_or(usize::MAX)),
-                            // Suffix range: the last n bytes.
-                            Err(_) => (data.len() - b.parse::<usize>().unwrap(), data.len() - 1),
-                        });
-                    match range.filter(|_| ranges) {
-                        Some((a, b)) => {
-                            let b = b.min(data.len() - 1);
-                            (
+        Fake::new(data, ranges).serve()
+    }
+
+    /// Knobs for the fake server. `data` and `etag` can change between requests, and every
+    /// request head is logged (lowercased) so tests can check what was sent.
+    #[derive(Clone)]
+    struct Fake {
+        data: Arc<Mutex<Vec<u8>>>,
+        ranges: bool,
+        /// Most bytes one ranged answer carries, like the kodi proxy's chunk cap.
+        cap: Option<usize>,
+        /// Answers every Range with a 206 that starts at 0.
+        bad_start: bool,
+        /// The next 200 sends only this many bytes of its body, then closes.
+        short_once: Arc<Mutex<Option<usize>>>,
+        etag: Arc<Mutex<Option<String>>>,
+        log: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Fake {
+        fn new(data: Vec<u8>, ranges: bool) -> Fake {
+            Fake {
+                data: Arc::new(Mutex::new(data)),
+                ranges,
+                cap: None,
+                bad_start: false,
+                short_once: Arc::new(Mutex::new(None)),
+                etag: Arc::new(Mutex::new(None)),
+                log: Arc::new(Mutex::new(vec![])),
+            }
+        }
+
+        fn serve(self) -> String {
+            use std::io::{Read, Write};
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = l.local_addr().unwrap();
+            std::thread::spawn(move || {
+                for mut s in l.incoming().flatten() {
+                    let mut req = vec![];
+                    let mut b = [0u8; 1];
+                    while !req.ends_with(b"\r\n\r\n") && s.read(&mut b).unwrap_or(0) == 1 {
+                        req.push(b[0]);
+                    }
+                    let req = String::from_utf8_lossy(&req).to_ascii_lowercase();
+                    self.log.lock().unwrap().push(req.clone());
+                    let data = self.data.lock().unwrap().clone();
+                    let etag = self.etag.lock().unwrap().clone();
+                    let header = |name: &str| {
+                        req.lines()
+                            .find_map(|l| l.strip_prefix(name))
+                            .map(|v| v.trim().to_string())
+                    };
+                    // An If-Range that no longer matches means "send the whole file".
+                    let same = header("if-range: ").is_none_or(|v| etag.as_deref() == Some(&v));
+                    let extra = etag.map(|e| format!("ETag: {e}\r\n")).unwrap_or_default();
+                    let path_ok = req.starts_with("get /vfs/%2fm%2fa.mp4 ");
+                    let auth = format!(
+                        "authorization: {}",
+                        basic("kodi", "pw").unwrap().to_ascii_lowercase()
+                    );
+                    let (head, body) = if !req.contains(&auth) {
+                        ("HTTP/1.1 401 Unauthorized\r\n".to_string(), vec![])
+                    } else if !path_ok {
+                        ("HTTP/1.1 404 Not Found\r\n".to_string(), vec![])
+                    } else {
+                        let range = header("range: bytes=")
+                            .and_then(|r| {
+                                let (a, b) = r.split_once('-')?;
+                                Some((a.to_string(), b.to_string()))
+                            })
+                            .map(|(a, b)| match a.parse::<usize>() {
+                                // An open range runs to the end.
+                                Ok(a) => (a, b.parse::<usize>().unwrap_or(usize::MAX)),
+                                // Suffix range: the last n bytes.
+                                Err(_) => {
+                                    (data.len() - b.parse::<usize>().unwrap(), data.len() - 1)
+                                }
+                            });
+                        match range.filter(|_| self.ranges && same) {
+                            Some((a, _)) if a >= data.len() => (
                                 format!(
-                                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {a}-{b}/{}\r\n",
+                                    "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{}\r\n",
                                     data.len()
                                 ),
-                                data[a..=b].to_vec(),
-                            )
+                                vec![],
+                            ),
+                            Some((a, b)) => {
+                                let a = if self.bad_start { 0 } else { a };
+                                let mut b = b.min(data.len() - 1);
+                                if let Some(cap) = self.cap {
+                                    b = b.min(a + cap - 1);
+                                }
+                                (
+                                    format!(
+                                        "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {a}-{b}/{}\r\n",
+                                        data.len()
+                                    ),
+                                    data[a..=b].to_vec(),
+                                )
+                            }
+                            None => ("HTTP/1.1 200 OK\r\n".to_string(), data.clone()),
                         }
-                        None => ("HTTP/1.1 200 OK\r\n".to_string(), data.clone()),
-                    }
-                };
-                let _ = write!(
-                    s,
-                    "{head}Content-Type: video/mp4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                let _ = s.write_all(&body);
-            }
-        });
-        format!("http://{addr}")
+                    };
+                    let _ = write!(
+                        s,
+                        "{head}{extra}Content-Type: video/mp4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let short = if head.starts_with("HTTP/1.1 200") {
+                        self.short_once.lock().unwrap().take()
+                    } else {
+                        None
+                    };
+                    let n = short.unwrap_or(body.len()).min(body.len());
+                    let _ = s.write_all(&body[..n]);
+                }
+            });
+            format!("http://{addr}")
+        }
     }
 
     #[test]
@@ -1655,6 +1815,146 @@ mod tests {
         .unwrap_err();
         assert_eq!(e, "Canceled");
         assert!(part.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn fetch(base: &str, part: &Path) -> Result<(), String> {
+        let url = format!("{base}/vfs/%2Fm%2FA.mp4");
+        fetch_to(
+            &url,
+            basic("kodi", "pw").as_deref(),
+            part,
+            &AtomicBool::new(false),
+            |_, _| {},
+        )
+    }
+
+    fn meta_of(part: &Path) -> PathBuf {
+        PathBuf::from(format!("{}.meta", part.display()))
+    }
+
+    #[test]
+    fn one_run_per_id() {
+        let d = Downloads::default();
+        let a = d.begin("x").unwrap();
+        assert_eq!(d.begin("x").unwrap_err(), "Already downloading");
+        assert!(d.begin("y").is_ok());
+        d.end("x", &a);
+        let b = d.begin("x").unwrap();
+        // A stale run ending must not drop the newer run's stop flag.
+        d.end("x", &a);
+        assert!(Arc::ptr_eq(d.0.lock().unwrap().get("x").unwrap(), &b));
+        d.end("x", &b);
+        assert!(!d.0.lock().unwrap().contains_key("x"));
+    }
+
+    #[test]
+    fn resume_restarts_when_the_206_starts_elsewhere() {
+        let data: Vec<u8> = (0..300_000).map(|i| (i % 251) as u8).collect();
+        let dir = scratch("badstart");
+        let mut f = Fake::new(data.clone(), true);
+        f.bad_start = true;
+        let base = f.serve();
+        let part = dir.join("a.mp4.part");
+        std::fs::write(&part, vec![0u8; 1000]).unwrap();
+        fetch(&base, &part).unwrap();
+        assert_eq!(std::fs::read(&part).unwrap(), data);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resume_sends_if_range_and_restarts_on_a_changed_file() {
+        let data: Vec<u8> = (0..300_000).map(|i| (i % 251) as u8).collect();
+        let dir = scratch("ifrange");
+        let f = Fake::new(data.clone(), true);
+        *f.etag.lock().unwrap() = Some("\"v1\"".into());
+        *f.short_once.lock().unwrap() = Some(1000);
+        let (log, etag) = (f.log.clone(), f.etag.clone());
+        let base = f.serve();
+
+        // The first answer is cut short; the validator is kept for the resume.
+        let part = dir.join("a.mp4.part");
+        if fetch(&base, &part).is_err() {
+            assert!(meta_of(&part).exists(), "validator saved");
+            assert!(std::fs::metadata(&part).unwrap().len() > 0);
+            fetch(&base, &part).unwrap();
+        }
+        assert_eq!(std::fs::read(&part).unwrap(), data);
+        assert!(
+            log.lock()
+                .unwrap()
+                .iter()
+                .any(|r| r.contains("range: bytes=") && r.contains("if-range: \"v1\"")),
+            "resume sent If-Range"
+        );
+        assert!(!meta_of(&part).exists(), "sidecar removed when done");
+
+        // The file changed on the server: the If-Range misses, the 200 starts over.
+        *etag.lock().unwrap() = Some("\"v2\"".into());
+        let part = dir.join("b.mp4.part");
+        std::fs::write(&part, vec![0u8; 1000]).unwrap();
+        std::fs::write(meta_of(&part), "\"v1\"").unwrap();
+        fetch(&base, &part).unwrap();
+        assert_eq!(std::fs::read(&part).unwrap(), data);
+        assert!(!meta_of(&part).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_shrunk_server_file_restarts_from_zero() {
+        let data: Vec<u8> = (0..500).map(|i| (i % 251) as u8).collect();
+        let dir = scratch("shrunk");
+        let base = fake_kodi(data.clone(), true);
+        let part = dir.join("a.mp4.part");
+        std::fs::write(&part, vec![0u8; 1000]).unwrap();
+        fetch(&base, &part).unwrap();
+        assert_eq!(std::fs::read(&part).unwrap(), data);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn capped_ranges_continue_in_one_call() {
+        let data: Vec<u8> = (0..700_000).map(|i| (i % 251) as u8).collect();
+        let dir = scratch("capped");
+        let mut f = Fake::new(data.clone(), true);
+        f.cap = Some(100_000);
+        let log = f.log.clone();
+        let base = f.serve();
+        let url = format!("{base}/vfs/%2Fm%2FA.mp4");
+        let auth = basic("kodi", "pw");
+        let part = dir.join("a.mp4.part");
+        std::fs::write(&part, &data[..1000]).unwrap();
+        let mut last = (0, 0);
+        let go = AtomicBool::new(false);
+        fetch_to(&url, auth.as_deref(), &part, &go, |d, t| last = (d, t)).unwrap();
+        assert_eq!(std::fs::read(&part).unwrap(), data);
+        assert_eq!(last, (data.len() as u64, data.len() as u64));
+        assert_eq!(log.lock().unwrap().len(), 7);
+
+        // Stop still works between capped requests.
+        let part = dir.join("b.mp4.part");
+        std::fs::write(&part, &data[..1000]).unwrap();
+        let stop = AtomicBool::new(false);
+        let e = fetch_to(&url, auth.as_deref(), &part, &stop, |d, _| {
+            if d >= 200_000 {
+                stop.store(true, Ordering::Relaxed);
+            }
+        })
+        .unwrap_err();
+        assert_eq!(e, "Canceled");
+        assert!(std::fs::metadata(&part).unwrap().len() < data.len() as u64);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn remove_takes_the_resume_sidecar_too() {
+        let dir = scratch("removemeta");
+        let part = dir.join("a.mp4.part");
+        std::fs::write(&part, b"x").unwrap();
+        std::fs::write(meta_of(&part), b"\"v1\"").unwrap();
+        remove_download(&dir, &part).unwrap();
+        assert!(!part.exists());
+        assert!(!meta_of(&part).exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 
