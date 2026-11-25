@@ -16,13 +16,16 @@ function relay(): string {
 export interface Peer { id: string; name: string; seen: number; online: boolean }
 export interface SyncState { paired: boolean; secret: string | null; device: string; name: string; status: 'off' | 'connecting' | 'online' | 'offline'; peers: Peer[] }
 
-type Msg =
+// `from` is the sending tab, so tabs of one browser exchange entries like separate writers; `dev` is
+// the device, which is what the device list shows. Messages without `dev` come from older builds.
+type Msg = (
   | { type: 'hello'; from: string; name: string }
   | { type: 'welcome'; from: string; name: string; to: string; rows: DigestRow[] }
   | { type: 'digest'; from: string; to: string; rows: DigestRow[] }
   | { type: 'entries'; from: string; to?: string; list: [string, Entry][] }
   | { type: 'bye'; from: string }
   | { type: 'beat'; from: string }
+) & { dev?: string }
 
 // Membership ('sync') is written only by join and leave. Everything else lives in its own record, and
 // per-group records carry their group's secret, so a write from a tab that has not caught up with a
@@ -50,6 +53,8 @@ const FRESH_MS = 75_000
 let beatTimer: ReturnType<typeof setInterval> | undefined
 // Sealed once per connection, so closing the page can still say goodbye synchronously.
 let byeSealed: string | null = null
+// This page's own writer id. Each tab gets its own, so one tab's entries reach the browser's other tabs.
+const tab = randomId()
 // Other tabs of this browser share the stored membership; tell them when it changes.
 const tabs = typeof BroadcastChannel === 'function' ? new BroadcastChannel('flick-sync') : null
 let saveTimer: ReturnType<typeof setTimeout> | undefined
@@ -102,10 +107,16 @@ async function adopt(stored: Saved) {
 
 // Save within 800 ms of the first unsaved change, however busy sync is, and right away
 // when the page is hidden, so a reload never loses entries.
-function saveDocNow() {
+async function saveDocNow() {
   clearTimeout(saveTimer)
   saveTimer = undefined
-  return db.put('kv', 'sync.doc', { secret: sync.value.secret, rows: [...doc] } satisfies SavedDoc).catch(() => {})
+  const secret = sync.value.secret
+  // Other tabs save this record too: keep the newer of each entry instead of overwriting theirs.
+  const rows = new Map(doc)
+  const stored = await db.get<SavedDoc>('kv', 'sync.doc').catch(() => undefined)
+  if (stored?.secret === secret) merge(rows, clock, stored.rows)
+  if (sync.value.secret !== secret) return
+  return db.put('kv', 'sync.doc', { secret, rows: [...rows] } satisfies SavedDoc).catch(() => {})
 }
 function saveDocSoon() {
   if (saveTimer === undefined) saveTimer = setTimeout(saveDocNow, 800)
@@ -128,7 +139,8 @@ export async function startSync(handler: (keys: string[]) => void, offer: () => 
   seed(offerLocal())
   addEventListener('online', () => { if (sync.value.secret && !ws) connect() })
   addEventListener('pagehide', () => {
-    if (saveTimer !== undefined) saveDocNow()
+    // A closing page has no time to read first, so it writes its doc as it is; the tabs that stay merge it back.
+    if (saveTimer !== undefined) { clearTimeout(saveTimer); saveTimer = undefined; db.put('kv', 'sync.doc', { secret: sync.value.secret, rows: [...doc] } satisfies SavedDoc).catch(() => {}) }
     if (ws?.readyState === WebSocket.OPEN && byeSealed) ws.send(byeSealed)
   })
   tabs?.addEventListener('message', async () => {
@@ -146,22 +158,22 @@ export const docKeys = (prefix: string) => [...doc.keys()].filter((k) => k.start
 // Record local changes and send them to every connected device.
 export function publish(changes: [key: string, value: unknown][]) {
   if (!changes.length) return
-  const list = changes.map(([k, v]) => [k, write(doc, clock, sync.value.device, k, v)] as [string, Entry])
+  const list = changes.map(([k, v]) => [k, write(doc, clock, tab, k, v)] as [string, Entry])
   saveDocSoon()
-  send({ type: 'entries', from: sync.value.device, list })
+  send({ type: 'entries', from: tab, list })
 }
 
 // Offer keys this device has and the doc does not. Seeded entries carry time 1, so any
 // value a peer ever wrote beats them, and a device rejoining never overwrites the group.
 export function seed(changes: [string, unknown][]) {
   const list = changes.filter(([k]) => !doc.has(k)).map(([k, v]) => {
-    const e: Entry = { v: v === undefined ? null : v, t: 1, d: sync.value.device }
+    const e: Entry = { v: v === undefined ? null : v, t: 1, d: tab }
     doc.set(k, e)
     return [k, e] as [string, Entry]
   })
   if (!list.length) return
   saveDocSoon()
-  send({ type: 'entries', from: sync.value.device, list })
+  send({ type: 'entries', from: tab, list })
 }
 
 // The device that starts a group writes its data with real times; devices that join later only seed
@@ -186,7 +198,7 @@ export async function leave() {
   // Say goodbye before closing, so the other devices show this one offline at once.
   const g = group, sock = ws
   if (g && sock?.readyState === WebSocket.OPEN) {
-    await seal(g.key, { type: 'bye', from: sync.value.device } satisfies Msg).then((m) => sock.send(m)).catch(() => {})
+    await seal(g.key, { type: 'bye', from: tab, dev: sync.value.device } satisfies Msg).then((m) => sock.send(m)).catch(() => {})
   }
   retire()
   clearTimeout(saveTimer)
@@ -211,7 +223,7 @@ function retire() {
 export async function rename(name: string) {
   sync.value = { ...sync.value, name: name.trim().slice(0, 40) || guessName() }
   await persist()
-  send({ type: 'hello', from: sync.value.device, name: sync.value.name })
+  send({ type: 'hello', from: tab, name: sync.value.name })
 }
 
 // The one way to open a connection: the network coming back, a retry and a join all land here, and
@@ -230,19 +242,19 @@ async function connect() {
     ws = sock
     sock.onopen = async () => {
       retry = 0
-      byeSealed = await seal(g.key, { type: 'bye', from: sync.value.device } satisfies Msg).catch(() => null)
+      byeSealed = await seal(g.key, { type: 'bye', from: tab, dev: sync.value.device } satisfies Msg).catch(() => null)
       if (ws !== sock) return
       beatTimer = setInterval(beat, BEAT_MS)
       sync.value = { ...sync.value, status: 'online' }
-      send({ type: 'hello', from: sync.value.device, name: sync.value.name })
+      send({ type: 'hello', from: tab, name: sync.value.name })
     }
     sock.onmessage = async (e) => {
       if (e.data === 'pong') return
       let m: Msg
       try { m = await unseal<Msg>(g.key, String(e.data)) } catch { return } // not from this group
       if (ws !== sock) return // retired while it was being opened
-      if (m.from === sync.value.device) return
-      if ('to' in m && m.to && m.to !== sync.value.device) return
+      if (m.from === tab) return
+      if ('to' in m && m.to && m.to !== tab) return
       receive(m)
     }
     sock.onclose = () => {
@@ -256,7 +268,7 @@ async function connect() {
 
 // Tell the group this device is here, and stop showing devices not heard from lately.
 function beat() {
-  send({ type: 'beat', from: sync.value.device })
+  send({ type: 'beat', from: tab })
   const now = Date.now()
   if (sync.value.peers.some((p) => p.online && now - p.seen > FRESH_MS)) {
     sync.value = { ...sync.value, peers: sync.value.peers.map((p) => (p.online && now - p.seen > FRESH_MS ? { ...p, online: false } : p)) }
@@ -272,14 +284,17 @@ function seePeer(id: string, name: string | undefined, online: boolean) {
 }
 
 function receive(m: Msg) {
-  const me = sync.value.device
+  const me = tab
+  // Another tab of this browser is not a peer, but its entries still count.
+  const who = m.dev ?? m.from
+  const peer = who !== sync.value.device
   switch (m.type) {
     case 'hello':
-      seePeer(m.from, m.name, true)
+      if (peer) seePeer(who, m.name, true)
       send({ type: 'welcome', from: me, name: sync.value.name, to: m.from, rows: digest(doc) })
       break
     case 'welcome':
-      seePeer(m.from, m.name, true)
+      if (peer) seePeer(who, m.name, true)
       send({ type: 'digest', from: me, to: m.from, rows: digest(doc) })
       sendEntries(m.from, missingFor(doc, m.rows))
       break
@@ -292,12 +307,13 @@ function receive(m: Msg) {
       break
     }
     case 'bye':
-      seePeer(m.from, undefined, false)
+      if (peer) seePeer(who, undefined, false)
       break
     case 'beat': {
       // A beat from a device this one has not met (it joined while this one was away) gets a hello back.
-      const known = sync.value.peers.find((p) => p.id === m.from)
-      seePeer(m.from, undefined, true)
+      if (!peer) break
+      const known = sync.value.peers.find((p) => p.id === who)
+      seePeer(who, undefined, true)
       if (!known?.online) send({ type: 'hello', from: me, name: sync.value.name })
       break
     }
@@ -310,15 +326,15 @@ function sendEntries(to: string, list: [string, Entry][]) {
   let size = 0
   for (const row of list) {
     const n = JSON.stringify(row).length
-    if (size + n > 150_000 && chunk.length) { send({ type: 'entries', from: sync.value.device, to, list: chunk }); chunk = []; size = 0 }
+    if (size + n > 150_000 && chunk.length) { send({ type: 'entries', from: tab, to, list: chunk }); chunk = []; size = 0 }
     chunk.push(row)
     size += n
   }
-  if (chunk.length) send({ type: 'entries', from: sync.value.device, to, list: chunk })
+  if (chunk.length) send({ type: 'entries', from: tab, to, list: chunk })
 }
 
 function send(m: Msg) {
   const g = group, sock = ws
   if (!g || !sock || sock.readyState !== WebSocket.OPEN) return
-  seal(g.key, m).then((s) => { if (sock.readyState === WebSocket.OPEN) sock.send(s) }).catch(() => {})
+  seal(g.key, { ...m, dev: sync.value.device }).then((s) => { if (sock.readyState === WebSocket.OPEN) sock.send(s) }).catch(() => {})
 }
