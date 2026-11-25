@@ -258,7 +258,8 @@ export interface KodiLibrary { movies?: KodiMovie[]; episodes?: KodiEpisode[]; s
 export function kodiMap(s: Server, lib: KodiLibrary): Item[] {
   const base = s.url
   // With a password, the poster is a marker that Card resolves through kodi_image.
-  const art = (a?: string) => (a ? `${s.token ? KODI_IMG : `${base}/image/`}${encodeURIComponent(a)}` : undefined)
+  // Phone apps block plain http in the web view, so their art comes through the shell like a locked Kodi's.
+  const art = (a?: string) => (a ? `${s.token || isMobileApp ? KODI_IMG : `${base}/image/`}${encodeURIComponent(a)}` : undefined)
   const when = (d?: string) => {
     const t = d ? Date.parse(d.replace(' ', 'T')) : NaN
     return Number.isNaN(t) ? 0 : t
@@ -348,7 +349,8 @@ async function kodiProxyUrl(s: Server, url: string): Promise<string> {
 /** A playable URL for a Kodi file: the plain URL or the kodi:// proxy when it can, else a local MP4 from prepare. */
 export async function kodiResolve(src: Extract<Source, { t: 'kodi' }>, onStatus?: (s: string) => void): Promise<string> {
   const s = await kodiServer(src.server)
-  if (NATIVE.test(decodeURIComponent(src.url))) return s?.token ? kodiProxyUrl(s, src.url) : src.url
+  // Phone apps block plain http media loads, so they always stream through the proxy.
+  if (NATIVE.test(decodeURIComponent(src.url))) return s && (s.token || isMobileApp) ? kodiProxyUrl(s, src.url) : src.url
   if (isMobileApp) throw new Error(KODI_DESKTOP_ONLY)
   const ff = await invoke<{ ffmpeg: string | null }>('ffmpeg_status').catch(() => ({ ffmpeg: null }))
   if (!ff.ffmpeg) throw new Error(kodiNeedsFfmpeg())

@@ -134,6 +134,15 @@ describe('kodi playback', () => {
     await expect(kodiResolve(src(open, '/m/A.mkv'))).rejects.toThrow(/install ffmpeg/i)
   })
 
+  it('streams through the proxy on a phone even without a password', async () => {
+    shell.mobile = true
+    shell.ffmpeg = null
+    expect(await kodiResolve(src(open, '/m/A.mp4'))).toBe(`kodi://localhost/${encodeURIComponent('kodi-a/vfs/%2Fm%2FA.mp4')}`)
+    expect(shell.calls).toEqual([['kodi_proxy_register', { id: 'kodi-a', base: open.url, user: '', pass: '' }]])
+    const [m] = kodiMap(open, lib)
+    expect(m.poster?.startsWith(KODI_IMG)).toBe(true)
+  })
+
   it('tells a phone that MKV needs the desktop app', async () => {
     shell.mobile = true
     await expect(kodiResolve(src(open, '/m/A.mkv'))).rejects.toThrow(KODI_DESKTOP_ONLY)
