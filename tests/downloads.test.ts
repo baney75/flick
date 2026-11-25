@@ -191,6 +191,15 @@ describe('downloads on the website', () => {
     expect(await getDownload('cw')).toMatchObject({ state: 'failed', error: BROWSER_BLOCKED })
   })
 
+  it('queues an item once when download is called twice in one tick', async () => {
+    vi.stubGlobal('fetch', serve(bytes(1000)))
+    const it = item('dd', { t: 'url', url: 'http://srv/dd.mp4' })
+    await Promise.all([download(it), download(it)])
+    await _test.idle()
+    expect(net.order).toEqual(['http://srv/dd.mp4'])
+    expect(await getDownload('dd')).toMatchObject({ state: 'done', total: 1000 })
+  })
+
   it('cancel keeps the partial file; remove deletes file and row', async () => {
     vi.stubGlobal('fetch', serve(bytes(8000), { chunks: 20, delay: 10 }))
     await download(item('cx', { t: 'url', url: 'http://srv/cx.mp4' }))
