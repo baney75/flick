@@ -15,6 +15,8 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npx tsc --noEmit && npx vitest run && npx vite build
       - run: SMOKE_CHANNEL=chromium node scripts/smoke.mjs
+      - name: Sync relay and two-device sync
+        run: node relay/test.mjs && SMOKE_CHANNEL=chromium node scripts/sync-e2e.mjs
   rust:
     runs-on: ubuntu-22.04
     steps:

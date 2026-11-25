@@ -8,7 +8,7 @@ let base = process.env.RELAY_URL
 let dev
 if (!base) {
   base = `http://127.0.0.1:${PORT}`
-  dev = spawn('npx', ['wrangler', 'dev', '--port', String(PORT), '--ip', '127.0.0.1'], { cwd: fileURLToPath(new URL('.', import.meta.url)), stdio: ['ignore', 'pipe', 'pipe'] })
+  dev = spawn('npx', ['wrangler', 'dev', '--port', String(PORT), '--ip', '127.0.0.1'], { cwd: fileURLToPath(new URL('.', import.meta.url)), stdio: ['ignore', 'pipe', 'pipe'], detached: true })
   await new Promise((ok, bad) => {
     const t = setTimeout(() => bad(new Error('wrangler dev did not start')), 60_000)
     const on = (b) => { if (/Ready on/.test(String(b))) { clearTimeout(t); ok() } }
@@ -48,7 +48,7 @@ try {
 } catch (e) {
   check(`relay reachable (${e.message ?? e})`, false)
 } finally {
-  dev?.kill()
+  if (dev) try { process.kill(-dev.pid) } catch { /* gone */ }
 }
 console.log(failed ? `relay: ${failed} failed` : 'relay: all checks passed')
 process.exit(failed ? 1 : 0)

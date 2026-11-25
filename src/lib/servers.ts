@@ -3,6 +3,7 @@
 import type { Item } from './library'
 import { hash } from './library'
 import * as db from './db'
+import { announce } from './sync/bus'
 
 export interface Server {
   id: string
@@ -32,12 +33,14 @@ export async function saveServer(s: Server) {
   const list = (await getServers()).filter((x) => x.id !== s.id)
   list.push(s)
   await db.put('kv', 'servers', list)
+  announce('servers')
 }
 
 export async function removeServer(s: Server) {
   await db.put('kv', 'servers', (await getServers()).filter((x) => x.id !== s.id))
   const items = await db.all<Item>('items')
   await db.delMany('items', items.filter((i) => i.server === s.id).map((i) => i.id))
+  announce('servers')
 }
 
 function cleanUrl(u: string) {
