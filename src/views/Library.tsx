@@ -7,8 +7,10 @@ import { addFolder, rescanAll, storeFiles, openFiles } from '../lib/actions'
 import { getFolders, removeFolder, deleteStored, removeItems, type Folder, type Item } from '../lib/library'
 import { formatBytes, formatTime } from '../lib/parse'
 import { hasOpfs } from '../lib/platform'
+import { downloads, cancelDownload, removeDownload } from '../lib/downloads'
+import { canDownload, isSaved, save, badgeFor } from '../lib/offline'
 
-type Tab = 'all' | 'movies' | 'shows' | 'music' | 'stored'
+type Tab = 'all' | 'movies' | 'shows' | 'music' | 'stored' | 'downloads'
 type Sort = 'added' | 'title' | 'year'
 
 const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
@@ -35,12 +37,14 @@ export function Library() {
   }, [])
 
   const all = items.value
+  const dl = downloads.value
   const list = useMemo(() => {
     const needle = norm(q.trim())
     let l = all.filter((i) => {
       if (tab === 'movies' && (i.kind !== 'video' || i.show)) return false
       if (tab === 'music' && i.kind !== 'audio') return false
       if (tab === 'stored' && i.origin !== 'stored') return false
+      if (tab === 'downloads' && !isSaved(dl.get(i.id))) return false
       if (needle && !norm(`${i.title} ${i.show ?? ''} ${i.year ?? ''} ${i.folder ?? ''}`).includes(needle)) return false
       return true
     })
@@ -51,7 +55,7 @@ export function Library() {
     }
     l = l.sort(by[sort])
     return l
-  }, [all, tab, q, sort])
+  }, [all, tab, q, sort, dl])
 
   const showGroups = useMemo(() => {
     const needle = norm(q.trim())
@@ -65,6 +69,7 @@ export function Library() {
     shows: shows.value.size,
     music: all.filter((i) => i.kind === 'audio').length,
     stored: all.filter((i) => i.origin === 'stored').length,
+    downloads: all.filter((i) => isSaved(dl.get(i.id))).length,
   }
 
   const posterMode = list.length > 0 && list.filter((i) => i.poster).length > list.length / 2
@@ -117,7 +122,7 @@ export function Library() {
 
       <div class="toolbar">
         <div class="chips" role="tablist">
-          {(['all', 'movies', 'shows', 'music', 'stored'] as Tab[]).filter((t) => t !== 'stored' || counts.stored).map((t) => (
+          {(['all', 'movies', 'shows', 'music', 'stored', 'downloads'] as Tab[]).filter((t) => (t !== 'stored' && t !== 'downloads') || counts[t] || tab === t).map((t) => (
             <button role="tab" aria-selected={tab === t} class={`chip ${tab === t ? 'on' : ''}`} onClick={() => setTab(t)}>
               {t === 'all' ? 'All' : t[0].toUpperCase() + t.slice(1)} <span>{counts[t]}</span>
             </button>
@@ -152,16 +157,32 @@ export function Library() {
       )}
 
       {menu && (
-        <div class="ctx" style={{ left: menu.x, top: menu.y }} onClick={(e) => e.stopPropagation()}>
+        <div class="ctx" style={{ left: `${Math.max(8, Math.min(menu.x, innerWidth - 240))}px`, top: `${Math.max(8, Math.min(menu.y, innerHeight - 300))}px` }} onClick={(e) => e.stopPropagation()}>
           <div class="ctx-title">{menu.it.title}</div>
           <div class="small dim">{[menu.it.folder, menu.it.size ? formatBytes(menu.it.size) : null, menu.it.duration ? formatTime(menu.it.duration) : null].filter(Boolean).join(' · ')}</div>
           <button onClick={() => { playItem(menu.it); setMenu(null) }}>Play</button>
           {progress.value[menu.it.id] && <button onClick={() => { const it = menu.it; setMenu(null); clearProgress(it.id) }}>Mark unwatched</button>}
           {menu.it.show && <button onClick={() => go(`/show/${encodeURIComponent(menu.it.show!.toLowerCase())}`)}>Go to show</button>}
+          <DownloadActions it={menu.it} done={() => setMenu(null)} />
           <button class="danger" onClick={() => remove(menu.it)}>{menu.it.origin === 'stored' ? 'Delete stored copy' : 'Remove from library'}</button>
         </div>
       )}
     </div>
+  )
+}
+
+/** Download, cancel or remove buttons for one item's menu. */
+export function DownloadActions({ it, done }: { it: Item; done: () => void }) {
+  const d = downloads.value.get(it.id)
+  if (!canDownload(it) && !d) return null
+  const act = (f: () => Promise<unknown>) => () => { done(); f().catch((e) => notify((e as Error).message)) }
+  if (d?.state === 'done') return <button onClick={act(async () => { await removeDownload(it.id); notify('Download removed.') })}>Remove download</button>
+  if (d?.state === 'queued' || d?.state === 'downloading') return <button onClick={act(() => cancelDownload(it.id))}>Cancel download</button>
+  return (
+    <>
+      {d?.state === 'failed' && d.error !== 'Canceled' && <div class="small err">{d.error}</div>}
+      <button onClick={act(() => save([it]))}>{d ? 'Download again' : 'Download for offline'}</button>
+    </>
   )
 }
 
@@ -174,6 +195,8 @@ export function ShowPage({ name }: { name: string }) {
   const list = eps.filter((e) => (e.season ?? 1) === cur)
   // Resume where you left off: the first episode that is started or not finished.
   const nextUp = eps.find((e) => { const p = progress.value[e.id]; return !p || !p.dur || p.pos < p.dur * 0.93 }) ?? eps[0]
+  const savable = list.filter(canDownload)
+  const left = savable.filter((e) => !isSaved(downloads.value.get(e.id)))
   return (
     <div class="page">
       <button class="btn ghost sm" onClick={() => history.back()}><Icon name="left" size={16} /> Back</button>
@@ -182,7 +205,14 @@ export function ShowPage({ name }: { name: string }) {
           <h1>{eps[0].show}</h1>
           <p class="dim">{seasons.length} season{seasons.length > 1 ? 's' : ''} · {eps.length} episodes</p>
         </div>
-        <button class="btn primary lg" onClick={() => playItem(nextUp)}><Icon name="play" size={18} /> {progress.value[nextUp.id] ? 'Resume' : 'Play'} {episodeLabel(nextUp)}</button>
+        <div class="row">
+          <button class="btn primary lg" onClick={() => playItem(nextUp)}><Icon name="play" size={18} /> {progress.value[nextUp.id] ? 'Resume' : 'Play'} {episodeLabel(nextUp)}</button>
+          {savable.length > 0 && (
+            <button class="btn lg" disabled={!left.length} onClick={() => save(left)}>
+              <Icon name="download" size={18} /> {left.length ? `Download season ${cur}` : `Season ${cur} saved`}
+            </button>
+          )}
+        </div>
       </header>
       {seasons.length > 1 && (
         <div class="chips">
@@ -200,6 +230,7 @@ function Episode({ it }: { it: Item }) {
   const img = useThumb(it)
   const p = progress.value[it.id]
   const pct = p && p.dur ? p.pos / p.dur : 0
+  const saved = badgeFor(downloads.value.get(it.id))
   return (
     <button class="episode" onClick={() => playItem(it)}>
       <div class="art">
@@ -209,7 +240,7 @@ function Episode({ it }: { it: Item }) {
       <div class="ep-meta">
         <div class="t2">Episode {it.episode}</div>
         <div class="t1">{it.title}</div>
-        {it.duration && <div class="small dim">{formatTime(it.duration)}{pct > 0.93 ? ' · Watched' : ''}</div>}
+        {(it.duration || saved) && <div class="small dim">{[it.duration ? formatTime(it.duration) : null, pct > 0.93 ? 'Watched' : null, saved].filter(Boolean).join(' · ')}</div>}
       </div>
     </button>
   )

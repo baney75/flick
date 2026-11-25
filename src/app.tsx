@@ -13,6 +13,7 @@ import { isDesktop, invoke, onDesktopEvent } from './lib/platform'
 import { kindOf } from './lib/parse'
 import { installSpatialNav } from './lib/spatial'
 import { resumeDownloads } from './lib/downloads'
+import { startOffline } from './lib/offline'
 
 const NAV = [
   { path: '/', label: 'Home', icon: 'home' },
@@ -52,6 +53,7 @@ export function App() {
     loadProgress()
     loadStremio()
     resumeDownloads().catch(() => {})
+    startOffline()
     if (isDesktop) {
       // Files opened from Finder before or after launch.
       invoke<string[]>('take_opened').then((p) => p.length && playPaths(p)).catch(() => {})

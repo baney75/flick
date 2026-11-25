@@ -3,6 +3,7 @@ import { settings, setSettings, notify, items, stremio, go } from '../lib/store'
 import { isDesktop, invoke } from '../lib/platform'
 import { formatBytes } from '../lib/parse'
 import { Icon } from '../components/icons'
+import { downloads, removeDownload } from '../lib/downloads'
 import { currentSetup, encodeSetup, validateSetup, SETUP_BASE } from '../lib/setup'
 
 async function shareSetup() {
@@ -96,6 +97,8 @@ export function Settings() {
         </div>
       </section>
 
+      <Downloads />
+
       <section class="panel">
         <h3>Storage</h3>
         <p class="dim small">{items.value.length} items in your library.{usage?.usage != null ? ` Flick uses ${formatBytes(usage.usage)}${usage.quota ? ` of ${formatBytes(usage.quota)} available` : ''} on this device.` : ''}</p>
@@ -106,5 +109,35 @@ export function Settings() {
         <p class="dim small">Your library, history and sign-in keys stay on this device. Flick has no account, no analytics and no ads. It only talks to the services you connect: Stremio and its addons, and your own servers.</p>
       </section>
     </div>
+  )
+}
+
+function Downloads() {
+  const s = settings.value
+  const rows = [...downloads.value.values()]
+  const done = rows.filter((d) => d.state === 'done')
+  const active = rows.filter((d) => d.state === 'queued' || d.state === 'downloading')
+  const [space, setSpace] = useState<{ used: number; free: number | null } | null>(null)
+  useEffect(() => {
+    if (isDesktop) invoke<{ used: number; free: number | null }>('downloads_space').then(setSpace).catch(() => {})
+    else setSpace({ used: done.reduce((n, d) => n + d.total, 0), free: null })
+  }, [done.length])
+  const clear = async () => {
+    if (!confirm(`Remove all ${done.length + active.length} downloads from this device? Your servers keep their files.`)) return
+    for (const d of rows) await removeDownload(d.id).catch(() => {})
+    notify('Downloads removed.')
+  }
+  return (
+    <section class="panel">
+      <h3>Downloads</h3>
+      <p class="dim small">
+        {done.length ? `${done.length} saved for offline` : 'Nothing saved yet. Open an item\'s menu, or a show, and choose Download.'}
+        {active.length ? ` · ${active.length} downloading` : ''}
+        {space && space.used ? ` · ${formatBytes(space.used)} used` : ''}
+        {space?.free != null ? ` · ${formatBytes(space.free)} free` : ''}
+      </p>
+      <label class="toggle"><input type="checkbox" checked={s.removeWatched} onChange={(e) => setSettings({ removeWatched: (e.target as HTMLInputElement).checked })} /> Remove a download after I watch it</label>
+      {rows.length > 0 && <button class="btn ghost sm" onClick={clear}>Remove all downloads</button>}
+    </section>
   )
 }

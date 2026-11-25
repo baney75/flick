@@ -24,8 +24,8 @@ export function notify(text: string, ms = 3200) {
 }
 
 // ---------- settings ----------
-export interface Settings { autoplayNext: boolean; speed: number; volume: number; skipSeconds: number; theme: 'system' | 'dark' | 'light' }
-const defaults: Settings = { autoplayNext: true, speed: 1, volume: 1, skipSeconds: 10, theme: 'system' }
+export interface Settings { autoplayNext: boolean; speed: number; volume: number; skipSeconds: number; theme: 'system' | 'dark' | 'light'; removeWatched: boolean }
+const defaults: Settings = { autoplayNext: true, speed: 1, volume: 1, skipSeconds: 10, theme: 'system', removeWatched: false }
 function loadSettings(): Settings {
   try { return { ...defaults, ...JSON.parse(localStorage.getItem('flick.settings') || '{}') } } catch { return defaults }
 }
