@@ -48,6 +48,19 @@ try {
   await b.reload()
   await b.goto(b.url().replace(/#.*$/, '#/settings'))
   check(await until(() => b.getByText('Online now').isVisible()), 'a reloaded device reconnects and sees the other again')
+  await until(() => a.getByText('Online now').isVisible())
+  await b.close({ runBeforeUnload: true })
+  check(await until(async () => !(await a.getByText('Online now').isVisible())), 'a device that closes its page shows offline on the other')
+
+  // Leaving in one tab reaches this browser's other tabs, so a stale tab cannot put the device back.
+  const a2 = await a.context().newPage()
+  await a2.goto(`${BASE}/#/settings`)
+  await until(() => a2.getByText('Connected').isVisible())
+  a.once('dialog', (d) => d.accept())
+  await a.getByRole('button', { name: 'Leave sync' }).click()
+  check(await until(() => a2.getByRole('button', { name: /Start sync on this device/ }).isVisible()), 'leaving sync in one tab leaves it in the other tabs too')
+  await a2.reload()
+  check(await until(() => a2.getByRole('button', { name: /Start sync on this device/ }).isVisible()), 'and it stays left after a reload')
   await browser.close()
 } catch (e) {
   fails.push(String(e))
