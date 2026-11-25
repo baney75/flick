@@ -46,7 +46,7 @@ export function Library() {
       if (tab === 'books' && i.kind !== 'book') return false
       if (tab === 'stored' && i.origin !== 'stored') return false
       if (tab === 'downloads' && !isSaved(dl.get(i.id))) return false
-      if (needle && !norm(`${i.title} ${i.show ?? ''} ${i.year ?? ''} ${i.folder ?? ''}`).includes(needle)) return false
+      if (needle && !norm(`${i.title} ${i.show ?? ''} ${i.author ?? ''} ${i.year ?? ''} ${i.folder ?? ''}`).includes(needle)) return false
       return true
     })
     const by: Record<Sort, (a: Item, b: Item) => number> = {
@@ -163,8 +163,8 @@ export function Library() {
         <div class="ctx" style={{ left: `${Math.max(8, Math.min(menu.x, innerWidth - 308))}px`, top: `${Math.max(8, Math.min(menu.y, innerHeight - 300))}px` }} onClick={(e) => e.stopPropagation()}>
           <div class="ctx-title">{menu.it.title}</div>
           <div class="small dim">{[menu.it.folder, menu.it.size ? formatBytes(menu.it.size) : null, menu.it.duration ? formatTime(menu.it.duration) : null].filter(Boolean).join(' · ')}</div>
-          <button onClick={() => { playItem(menu.it); setMenu(null) }}>Play</button>
-          {progress.value[menu.it.id] && <button onClick={() => { const it = menu.it; setMenu(null); clearProgress(it.id) }}>Mark unwatched</button>}
+          <button onClick={() => { playItem(menu.it); setMenu(null) }}>{menu.it.kind === 'book' ? 'Read' : 'Play'}</button>
+          {progress.value[menu.it.id] && <button onClick={() => { const it = menu.it; setMenu(null); clearProgress(it.id) }}>{menu.it.kind === 'book' ? 'Mark unread' : 'Mark unwatched'}</button>}
           {menu.it.show && <button onClick={() => go(`/show/${encodeURIComponent(menu.it.show!.toLowerCase())}`)}>Go to show</button>}
           <DownloadActions it={menu.it} done={() => setMenu(null)} />
           <button class="danger" onClick={() => remove(menu.it)}>{menu.it.origin === 'stored' ? 'Delete stored copy' : 'Remove from library'}</button>

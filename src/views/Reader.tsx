@@ -1,8 +1,8 @@
 // The book reader: one page at a time, sized to the window, so even a 1,000 page PDF opens at once.
 // pdf.js loads only when a book opens, so the rest of Flick stays as fast to start as before.
 
-import { useEffect, useRef, useState } from 'preact/hooks'
-import { items, saveProgress, type Progress } from '../lib/store'
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
+import { items, loaded, saveProgress, go, type Progress } from '../lib/store'
 import * as db from '../lib/db'
 import { resolve } from '../lib/library'
 import { clampPage } from '../lib/parse'
@@ -23,7 +23,6 @@ export function Reader({ id }: { id: string }) {
   const [err, setErr] = useState('')
   const [page, setPage] = useState(1)
   const [night, setNight] = useState(() => { try { return localStorage.getItem('flick.reader.night') === '1' } catch { return false } })
-  const stage = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   const [size, setSize] = useState({ w: 0, h: 0 })
 
@@ -31,8 +30,9 @@ export function Reader({ id }: { id: string }) {
     if (!it) return
     let live = true
     let revoke: (() => void) | undefined
-    resolve(it.src, undefined, it.id)
+    resolve(it.src, undefined, it.id, true)
       .then(async (r) => {
+        if (!live) return r.revoke?.()
         revoke = r.revoke
         // Read the saved page from the database, not the progress signal, which may not have loaded yet after a reload.
         const [d, saved] = await Promise.all([openPdf(r.url), db.get<Progress>('progress', it.id).catch(() => undefined)])
@@ -46,13 +46,19 @@ export function Reader({ id }: { id: string }) {
 
   useEffect(() => () => { pdf?.loadingTask.destroy() }, [pdf])
 
-  useEffect(() => {
-    const el = stage.current
+  // Watch the stage from the moment it mounts: after a reload it appears only once the library has loaded.
+  const ro = useRef<ResizeObserver | null>(null)
+  const stage = useCallback((el: HTMLDivElement | null) => {
+    ro.current?.disconnect()
+    ro.current = null
     if (!el) return
-    const ro = new ResizeObserver(([e]) => setSize({ w: e.contentRect.width, h: e.contentRect.height }))
-    ro.observe(el)
-    return () => ro.disconnect()
+    ro.current = new ResizeObserver(([e]) => setSize((s) => (s.w === e.contentRect.width && s.h === e.contentRect.height ? s : { w: e.contentRect.width, h: e.contentRect.height })))
+    ro.current.observe(el)
   }, [])
+  useEffect(() => () => ro.current?.disconnect(), [])
+
+  // A book opened from a link or a fresh tab has no page to go back to.
+  const leave = () => (history.length > 1 ? history.back() : go('/library'))
 
   // Draw the page to fit the stage, sharp on high-density screens.
   useEffect(() => {
@@ -92,7 +98,7 @@ export function Reader({ id }: { id: string }) {
       else if (['ArrowLeft', 'PageUp', 'ArrowUp'].includes(e.key)) { e.preventDefault(); turn(-1) }
       else if (e.key === 'Home') setPage(1)
       else if (e.key === 'End' && pdf) setPage(pdf.numPages)
-      else if (e.key === 'Escape') history.back()
+      else if (e.key === 'Escape') leave()
     }
     addEventListener('keydown', k)
     return () => removeEventListener('keydown', k)
@@ -103,12 +109,13 @@ export function Reader({ id }: { id: string }) {
     try { localStorage.setItem('flick.reader.night', night ? '0' : '1') } catch { /* private mode */ }
   }
 
+  if (!it && !loaded.value) return <div class="reader"><div class="reader-stage"><span class="spinner" aria-label="Opening" /></div></div>
   if (!it) return <div class="page"><p class="dim">This book is not in your library.</p><a href="#/library">Back to library</a></div>
 
   return (
     <div class={`reader ${night ? 'night' : ''}`}>
       <header class="reader-bar">
-        <button class="btn ghost sm" onClick={() => history.back()} aria-label="Back"><Icon name="left" size={18} /></button>
+        <button class="btn ghost sm" onClick={leave} aria-label="Back"><Icon name="left" size={18} /></button>
         <div class="reader-title"><div class="t1">{it.title}</div>{it.author && <div class="t2">{it.author}</div>}</div>
         {pdf && (
           <label class="reader-page">

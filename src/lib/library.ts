@@ -238,15 +238,17 @@ export async function sourceFile(src: Source): Promise<File | null> {
 
 export interface Resolved { url: string; revoke?: () => void; file?: File; sidecarSubs?: { name: string; text: string }[] }
 
-/** `itemId` names the library item, so a finished download plays from the device instead. */
-export async function resolve(src: Source, onStatus?: (s: string) => void, itemId?: string): Promise<Resolved> {
+/** `itemId` names the library item, so a finished download plays from the device instead.
+ *  `raw` hands back the file as it is, with no probe, convert or subtitle search (books). */
+export async function resolve(src: Source, onStatus?: (s: string) => void, itemId?: string, raw = false): Promise<Resolved> {
   const local = itemId ? await localFor(itemId).catch(() => null) : null
   if (local) {
     // A local copy that cannot play (no ffmpeg, an unreadable file) falls through to the network source.
-    try { return await resolve(local, onStatus) } catch { /* play from the server instead */ }
+    try { return await resolve(local, onStatus, undefined, raw) } catch { /* play from the server instead */ }
   }
   if (src.t === 'url') return { url: src.url }
   if (src.t === 'kodi') return { url: await kodiResolve(src, onStatus) }
+  if (src.t === 'path' && raw) return { url: await fileUrl(src.path) }
   if (src.t === 'path') {
     const probe = await invoke<Probe>('probe', { path: src.path }).catch(() => null)
     const path = probe && !probe.playable ? await prepared(src.path, onStatus) : src.path
@@ -257,7 +259,7 @@ export async function resolve(src: Source, onStatus?: (s: string) => void, itemI
   if (!file) throw new Error('This file was opened in an earlier session. Open it again, or store it in Flick to keep it.')
   const url = URL.createObjectURL(file)
   let sidecarSubs: { name: string; text: string }[] | undefined
-  if (src.t === 'handle') sidecarSubs = await findHandleSubs(src).catch(() => undefined)
+  if (src.t === 'handle' && !raw) sidecarSubs = await findHandleSubs(src).catch(() => undefined)
   return { url, file, revoke: () => URL.revokeObjectURL(url), sidecarSubs }
 }
 
