@@ -28,6 +28,7 @@ const paths: Record<string, string> = {
   trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13',
   refresh: 'M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6',
   music: 'M9 18V5l11-2v13M9 18a3 3 0 1 1-3-3 3 3 0 0 1 3 3zM20 16a3 3 0 1 1-3-3 3 3 0 0 1 3 3z',
+  book: 'M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2zM4 21V5M19 19v2H6M8 7h7',
   film: 'M4 4h16v16H4zM8 4v16M16 4v16M4 8h4M4 12h4M4 16h4M16 8h4M16 12h4M16 16h4',
   check: 'M5 12l5 5 9-10',
   download: 'M12 4v11M7 10l5 5 5-5M5 20h14',

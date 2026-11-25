@@ -268,3 +268,13 @@ describe('downloads in the apps', () => {
     expect((await resolve(it.src, undefined, it.id)).url).toBe((it.src as { url: string }).url)
   })
 })
+
+describe('books', () => {
+  it('opens a desktop book as the file itself, with no probe, convert or subtitle search', async () => {
+    shell.desktop = true
+    shell.playable = false
+    const r = await resolve({ t: 'path', path: '/Books/Dune.pdf' }, undefined, undefined, true)
+    expect(r.url).toBe(`asset://localhost/${encodeURIComponent('/Books/Dune.pdf')}`)
+    expect(shell.calls.map(([c]) => c)).toEqual([])
+  })
+})

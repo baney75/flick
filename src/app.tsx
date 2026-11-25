@@ -6,6 +6,7 @@ import { Stremio, StremioDetail } from './views/Stremio'
 import { Servers } from './views/Servers'
 import { Settings } from './views/Settings'
 import { Setup } from './views/Setup'
+import { Reader } from './views/Reader'
 import { Player } from './components/Player'
 import { Icon } from './components/icons'
 import { playFiles, playPaths } from './lib/actions'
@@ -29,6 +30,7 @@ function View() {
   const parts = path.split('/').filter(Boolean)
   const qs = new URLSearchParams(query ?? '')
   if (parts[0] === 'library') return <Library />
+  if (parts[0] === 'read' && parts[1]) return <Reader key={parts[1]} id={decodeURIComponent(parts[1])} />
   if (parts[0] === 'show' && parts[1]) return <ShowPage name={decodeURIComponent(parts[1])} />
   if (parts[0] === 'stremio' && parts[2]) return <StremioDetail key={r} type={parts[1]} id={decodeURIComponent(parts[2])} videoId={qs.get('v') ?? undefined} />
   if (parts[0] === 'stremio') return <Stremio />

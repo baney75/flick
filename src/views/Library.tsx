@@ -10,7 +10,7 @@ import { hasOpfs } from '../lib/platform'
 import { downloads, cancelDownload, removeDownload } from '../lib/downloads'
 import { canDownload, isSaved, save, badgeFor } from '../lib/offline'
 
-type Tab = 'all' | 'movies' | 'shows' | 'music' | 'stored' | 'downloads'
+type Tab = 'all' | 'movies' | 'shows' | 'music' | 'books' | 'stored' | 'downloads'
 type Sort = 'added' | 'title' | 'year'
 
 const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
@@ -43,9 +43,10 @@ export function Library() {
     let l = all.filter((i) => {
       if (tab === 'movies' && (i.kind !== 'video' || i.show)) return false
       if (tab === 'music' && i.kind !== 'audio') return false
+      if (tab === 'books' && i.kind !== 'book') return false
       if (tab === 'stored' && i.origin !== 'stored') return false
       if (tab === 'downloads' && !isSaved(dl.get(i.id))) return false
-      if (needle && !norm(`${i.title} ${i.show ?? ''} ${i.year ?? ''} ${i.folder ?? ''}`).includes(needle)) return false
+      if (needle && !norm(`${i.title} ${i.show ?? ''} ${i.author ?? ''} ${i.year ?? ''} ${i.folder ?? ''}`).includes(needle)) return false
       return true
     })
     const by: Record<Sort, (a: Item, b: Item) => number> = {
@@ -68,6 +69,7 @@ export function Library() {
     movies: all.filter((i) => i.kind === 'video' && !i.show).length,
     shows: shows.value.size,
     music: all.filter((i) => i.kind === 'audio').length,
+    books: all.filter((i) => i.kind === 'book').length,
     stored: all.filter((i) => i.origin === 'stored').length,
     downloads: all.filter((i) => isSaved(dl.get(i.id))).length,
   }
@@ -123,7 +125,7 @@ export function Library() {
 
       <div class="toolbar">
         <div class="chips" role="tablist">
-          {(['all', 'movies', 'shows', 'music', 'stored', 'downloads'] as Tab[]).filter((t) => (t !== 'stored' && t !== 'downloads') || counts[t] || tab === t).map((t) => (
+          {(['all', 'movies', 'shows', 'music', 'books', 'stored', 'downloads'] as Tab[]).filter((t) => !['books', 'stored', 'downloads'].includes(t) || counts[t] || tab === t).map((t) => (
             <button role="tab" aria-selected={tab === t} class={`chip ${tab === t ? 'on' : ''}`} onClick={() => setTab(t)}>
               {t === 'all' ? 'All' : t[0].toUpperCase() + t.slice(1)} <span>{counts[t]}</span>
             </button>
@@ -161,8 +163,8 @@ export function Library() {
         <div class="ctx" style={{ left: `${Math.max(8, Math.min(menu.x, innerWidth - 308))}px`, top: `${Math.max(8, Math.min(menu.y, innerHeight - 300))}px` }} onClick={(e) => e.stopPropagation()}>
           <div class="ctx-title">{menu.it.title}</div>
           <div class="small dim">{[menu.it.folder, menu.it.size ? formatBytes(menu.it.size) : null, menu.it.duration ? formatTime(menu.it.duration) : null].filter(Boolean).join(' · ')}</div>
-          <button onClick={() => { playItem(menu.it); setMenu(null) }}>Play</button>
-          {progress.value[menu.it.id] && <button onClick={() => { const it = menu.it; setMenu(null); clearProgress(it.id) }}>Mark unwatched</button>}
+          <button onClick={() => { playItem(menu.it); setMenu(null) }}>{menu.it.kind === 'book' ? 'Read' : 'Play'}</button>
+          {progress.value[menu.it.id] && <button onClick={() => { const it = menu.it; setMenu(null); clearProgress(it.id) }}>{menu.it.kind === 'book' ? 'Mark unread' : 'Mark unwatched'}</button>}
           {menu.it.show && <button onClick={() => go(`/show/${encodeURIComponent(menu.it.show!.toLowerCase())}`)}>Go to show</button>}
           <DownloadActions it={menu.it} done={() => setMenu(null)} />
           <button class="danger" onClick={() => remove(menu.it)}>{menu.it.origin === 'stored' ? 'Delete stored copy' : 'Remove from library'}</button>

@@ -355,3 +355,15 @@ html.tv .hrow { grid-auto-columns: 300px; padding: 10px 6px 14px; }
 .offline-note { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 16px; border-radius: 10px; background: var(--surface-2); }
 .offline-note span { flex: 1; min-width: 0; }
 .card { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+
+/* Reader: a bar on top, the page centered below, filling the window. */
+.reader { position: fixed; inset: 0; z-index: 30; display: flex; flex-direction: column; background: var(--bg); }
+.reader-bar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; padding-top: max(10px, env(safe-area-inset-top)); border-bottom: 1px solid var(--line); }
+.reader-title { flex: 1; min-width: 0; }
+.reader-title .t1, .reader-title .t2 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.reader-title .t2 { font-size: 13px; color: var(--dim); }
+.reader-page { display: flex; flex-direction: row; margin: 0; align-items: center; gap: 6px; font-size: 14px; color: var(--dim); white-space: nowrap; }
+.reader-page input { width: 4.5em; height: 32px; text-align: center; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); }
+.reader-stage { flex: 1; min-height: 0; display: grid; place-items: center; padding: 16px; padding-bottom: max(16px, env(safe-area-inset-bottom)); cursor: pointer; user-select: none; }
+.reader-stage canvas { box-shadow: var(--shadow); background: #fff; border-radius: 2px; }
+.reader.night .reader-stage canvas { filter: invert(.92) hue-rotate(180deg); }

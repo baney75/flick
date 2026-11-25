@@ -3,19 +3,40 @@
 export const VIDEO_EXT = ['mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', 'wmv', 'flv', 'ts', 'm2ts', 'mts', 'mpg', 'mpeg', 'ogv', '3gp']
 export const AUDIO_EXT = ['mp3', 'm4a', 'aac', 'flac', 'wav', 'ogg', 'opus', 'alac', 'aiff', 'aif', 'wma']
 export const SUB_EXT = ['srt', 'vtt', 'ass', 'ssa']
+export const BOOK_EXT = ['pdf']
 
-export type Kind = 'video' | 'audio'
+/** What the player plays. Library items can also be books, which open in the reader. */
+export type Playable = 'video' | 'audio'
+export type Kind = Playable | 'book'
 
 export function ext(name: string): string {
   const i = name.lastIndexOf('.')
   return i < 0 ? '' : name.slice(i + 1).toLowerCase()
 }
 
-export function kindOf(name: string): Kind | null {
+export function kindOf(name: string): Playable | null {
   const e = ext(name)
   if (VIDEO_EXT.includes(e)) return 'video'
   if (AUDIO_EXT.includes(e)) return 'audio'
   return null
+}
+
+/** The library kind of a file: playable media or a book. */
+export function itemKindOf(name: string): Kind | null {
+  return kindOf(name) ?? (BOOK_EXT.includes(ext(name)) ? 'book' : null)
+}
+
+/** Clamps a page number to the book. */
+export const clampPage = (n: number, pages: number) => Math.min(Math.max(1, Math.round(n) || 1), Math.max(1, pages))
+
+/** "Author - Title.pdf" or "Title (2019).pdf" to a clean title, author and year. */
+export function parseBook(name: string): { title: string; author?: string; year?: number } {
+  let base = name.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ').trim()
+  const y = base.match(/[([]((?:1[5-9]|20)\d\d)[)\]]/)
+  if (y) base = base.replace(y[0], '').trim()
+  const dash = base.split(/\s+-\s+/)
+  const [author, title] = dash.length > 1 ? [dash[0].trim(), dash.slice(1).join(' - ').trim()] : [undefined, base]
+  return { title: title || base, author, year: y ? Number(y[1]) : undefined }
 }
 
 export interface Parsed {

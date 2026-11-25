@@ -1,7 +1,7 @@
 // The library: folders, stored media, remote servers, all as one fast list of items.
 
 import * as db from './db'
-import { kindOf, parseName, type Kind, SUB_EXT, ext } from './parse'
+import { itemKindOf, parseName, parseBook, type Kind, SUB_EXT, ext } from './parse'
 import { isDesktop, invoke, fileUrl, onDesktopEvent, type ScanEntry, type Probe } from './platform'
 import { kodiResolve } from './servers'
 import { localFor } from './downloads'
@@ -35,6 +35,7 @@ export interface Item {
   season?: number
   episode?: number
   year?: number
+  author?: string
   folder?: string
   poster?: string
   server?: string
@@ -67,26 +68,23 @@ export function sessionFile(file: File): Source {
 }
 
 export function itemFromFile(file: File, src: Source, origin: Origin, folder?: string): Item | null {
-  const kind = kindOf(file.name)
+  const kind = itemKindOf(file.name)
   if (!kind) return null
-  const p = parseName(file.name)
   const key = src.t === 'handle' ? `${src.root}/${src.rel}` : src.t === 'opfs' ? `opfs:${src.name}` : `s:${file.name}:${file.size}`
-  return {
-    id: hash(key), kind, src, origin, folder,
-    title: p.title, show: p.show, season: p.season, episode: p.episode, year: p.year,
-    size: file.size, mtime: file.lastModified, addedAt: Date.now(),
-  }
+  return { id: hash(key), kind, src, origin, folder, ...named(file.name, kind), size: file.size, mtime: file.lastModified, addedAt: Date.now() }
+}
+
+/** Title fields for a file: release-name parsing for media, "Author - Title" for books. */
+function named(name: string, kind: Kind): Pick<Item, 'title' | 'show' | 'season' | 'episode' | 'year' | 'author'> {
+  if (kind === 'book') return parseBook(name)
+  const p = parseName(name)
+  return { title: p.title, show: p.show, season: p.season, episode: p.episode, year: p.year }
 }
 
 function itemFromEntry(e: ScanEntry, folder: string): Item | null {
-  const kind = kindOf(e.name)
+  const kind = itemKindOf(e.name)
   if (!kind) return null
-  const p = parseName(e.name)
-  return {
-    id: hash(e.path), kind, src: { t: 'path', path: e.path }, origin: 'local', folder,
-    title: p.title, show: p.show, season: p.season, episode: p.episode, year: p.year,
-    size: e.size, mtime: e.mtime, addedAt: Date.now(),
-  }
+  return { id: hash(e.path), kind, src: { t: 'path', path: e.path }, origin: 'local', folder, ...named(e.name, kind), size: e.size, mtime: e.mtime, addedAt: Date.now() }
 }
 
 // ---- folders ----
@@ -106,7 +104,7 @@ async function walkHandle(dir: FileSystemDirectoryHandle, root: string, prefix: 
     const rel = prefix ? `${prefix}/${name}` : name
     if (h.kind === 'directory') {
       await walkHandle(h as FileSystemDirectoryHandle, root, rel, out, folderName)
-    } else if (kindOf(name)) {
+    } else if (itemKindOf(name)) {
       const file = await (h as FileSystemFileHandle).getFile()
       const it = itemFromFile(file, { t: 'handle', root, rel }, 'local', folderName)
       if (it) out.push(it)
@@ -240,15 +238,17 @@ export async function sourceFile(src: Source): Promise<File | null> {
 
 export interface Resolved { url: string; revoke?: () => void; file?: File; sidecarSubs?: { name: string; text: string }[] }
 
-/** `itemId` names the library item, so a finished download plays from the device instead. */
-export async function resolve(src: Source, onStatus?: (s: string) => void, itemId?: string): Promise<Resolved> {
+/** `itemId` names the library item, so a finished download plays from the device instead.
+ *  `raw` hands back the file as it is, with no probe, convert or subtitle search (books). */
+export async function resolve(src: Source, onStatus?: (s: string) => void, itemId?: string, raw = false): Promise<Resolved> {
   const local = itemId ? await localFor(itemId).catch(() => null) : null
   if (local) {
     // A local copy that cannot play (no ffmpeg, an unreadable file) falls through to the network source.
-    try { return await resolve(local, onStatus) } catch { /* play from the server instead */ }
+    try { return await resolve(local, onStatus, undefined, raw) } catch { /* play from the server instead */ }
   }
   if (src.t === 'url') return { url: src.url }
   if (src.t === 'kodi') return { url: await kodiResolve(src, onStatus) }
+  if (src.t === 'path' && raw) return { url: await fileUrl(src.path) }
   if (src.t === 'path') {
     const probe = await invoke<Probe>('probe', { path: src.path }).catch(() => null)
     const path = probe && !probe.playable ? await prepared(src.path, onStatus) : src.path
@@ -259,7 +259,7 @@ export async function resolve(src: Source, onStatus?: (s: string) => void, itemI
   if (!file) throw new Error('This file was opened in an earlier session. Open it again, or store it in Flick to keep it.')
   const url = URL.createObjectURL(file)
   let sidecarSubs: { name: string; text: string }[] | undefined
-  if (src.t === 'handle') sidecarSubs = await findHandleSubs(src).catch(() => undefined)
+  if (src.t === 'handle' && !raw) sidecarSubs = await findHandleSubs(src).catch(() => undefined)
   return { url, file, revoke: () => URL.revokeObjectURL(url), sidecarSubs }
 }
 
