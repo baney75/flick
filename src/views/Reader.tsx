@@ -29,6 +29,8 @@ export function Reader({ id }: { id: string }) {
   const it = items.value.find((i) => i.id === id)
   const [pdf, setPdf] = useState<Pdf | null>(null)
   const [err, setErr] = useState('')
+  // Bumped by Try again: after a reload, a folder needs a click before the browser lets Flick read it again.
+  const [tries, setTries] = useState(0)
   const [page, setPage] = useState(1)
   const [night, setNight] = useState(() => { try { return localStorage.getItem('flick.reader.night') === '1' } catch { return false } })
   const canvas = useRef<HTMLCanvasElement>(null)
@@ -50,7 +52,7 @@ export function Reader({ id }: { id: string }) {
       })
       .catch((e) => live && setErr((e as Error).message || 'This book could not be opened.'))
     return () => { live = false; revoke?.() }
-  }, [it?.id])
+  }, [it?.id, tries])
 
   useEffect(() => () => { pdf?.loadingTask.destroy() }, [pdf])
 
@@ -138,7 +140,12 @@ export function Reader({ id }: { id: string }) {
         const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
         turn(e.clientX - r.left < r.width / 3 ? -1 : 1)
       }}>
-        {err ? <p class="err center">{err}</p> : !pdf ? <span class="spinner" aria-label="Opening" /> : <canvas ref={canvas} />}
+        {err ? (
+          <div class="center" onClick={(e) => e.stopPropagation()}>
+            <p class="err">{err}</p>
+            <button class="btn primary" onClick={() => { setErr(''); setTries((t) => t + 1) }}>Try again</button>
+          </div>
+        ) : !pdf ? <span class="spinner" aria-label="Opening" /> : <canvas ref={canvas} />}
       </div>
     </div>
   )
