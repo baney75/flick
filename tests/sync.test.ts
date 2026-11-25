@@ -51,7 +51,7 @@ describe('sync doc', () => {
     expect(wins({ v: 1, t: 5, d: 'B' }, { v: 2, t: 5, d: 'A' })).toBe(true)
     expect(wins({ v: 2, t: 5, d: 'A' }, { v: 1, t: 5, d: 'B' })).toBe(false)
     const a: Doc = new Map()
-    const changed = merge(a, new Clock(), [['k', { v: 1, t: Number.NaN, d: 'X' }], ['j', { v: 1, t: 1, d: '' }]])
+    const changed = merge(a, new Clock(), [['k', { v: 1, t: Number.NaN, d: 'X' }], ['j', { v: 1, t: 1, d: '' }], ['h', { v: 1, t: 1e300, d: 'X' }], ['g', { v: 1, t: 1.5, d: 'X' }]])
     expect(changed).toEqual([])
   })
 
@@ -63,7 +63,7 @@ describe('sync doc', () => {
     write(b, cb, 'B', 'p:k:x', 'fresh')
     sync(a, ca, b, cb)
     expect(a.get('p:k:x')?.v).toBe('fresh')
-    merge(a, ca, [['p:k:y', { v: 'stale', t: Number.MAX_SAFE_INTEGER - 1, d: 'Z' }]])
+    merge(a, ca, [['p:k:y', { v: 'stale', t: Number.MAX_SAFE_INTEGER - 2, d: 'Z' }]])
     write(a, ca, 'A', 'p:k:y', 'fresh')
     expect(a.get('p:k:y')?.v).toBe('fresh')
   })

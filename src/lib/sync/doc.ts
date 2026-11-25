@@ -60,5 +60,5 @@ export function merge(doc: Doc, clock: Clock, incoming: [string, Entry][]): stri
 }
 
 function valid(e: Entry): boolean {
-  return !!e && typeof e.t === 'number' && Number.isFinite(e.t) && typeof e.d === 'string' && e.d.length > 0 && e.d.length <= 64
+  return !!e && Number.isSafeInteger(e.t) && e.t > 0 && e.t < Number.MAX_SAFE_INTEGER && typeof e.d === 'string' && e.d.length > 0 && e.d.length <= 64
 }
