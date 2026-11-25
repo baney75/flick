@@ -486,6 +486,199 @@ fn take_opened(state: tauri::State<Opened>) -> Vec<String> {
     std::mem::take(&mut *state.0.lock().unwrap())
 }
 
+// ---------- YouTube through yt-dlp ----------
+
+fn yt_dlp() -> Result<PathBuf, String> {
+    find_tool("yt-dlp")
+        .ok_or_else(|| "YouTube needs yt-dlp. Install it with: brew install yt-dlp".to_string())
+}
+
+/// YouTube ids are short and URL safe; anything else is not passed to yt-dlp.
+fn yt_url(id: &str) -> Result<String, String> {
+    if id.is_empty()
+        || id.len() > 20
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!("Not a YouTube video id: {id}"));
+    }
+    Ok(format!("https://www.youtube.com/watch?v={id}"))
+}
+
+fn yt_json(args: &[&str]) -> Result<serde_json::Value, String> {
+    let out = Command::new(yt_dlp()?)
+        .arg("--no-warnings")
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        return Err(format!(
+            "yt-dlp: {}",
+            err.lines().last().unwrap_or("failed")
+        ));
+    }
+    serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())
+}
+
+/// Raw yt-dlp search JSON. The UI turns it into results (src/lib/youtube.ts).
+fn yt_search_blocking(query: &str) -> Result<serde_json::Value, String> {
+    yt_json(&["--flat-playlist", "-J", &format!("ytsearch25:{query}")])
+}
+
+#[tauri::command]
+async fn yt_search(query: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || yt_search_blocking(&query))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize, Debug)]
+struct YtStream {
+    url: String,
+    title: String,
+    channel: String,
+    duration: f64,
+    thumbnail: String,
+}
+
+// HLS up to 1080p with audio when YouTube offers it, else the best MP4 with audio and video.
+const YT_PLAY_FORMAT: &str =
+    "best[protocol^=m3u8][height<=1080][acodec!=none]/best[ext=mp4][acodec!=none][vcodec!=none]";
+
+fn yt_resolve_blocking(id: &str) -> Result<YtStream, String> {
+    let j = yt_json(&[
+        "-J",
+        "--no-playlist",
+        "-f",
+        YT_PLAY_FORMAT,
+        "--",
+        &yt_url(id)?,
+    ])?;
+    let hls = j["protocol"].as_str().unwrap_or("").starts_with("m3u8");
+    let url = if hls {
+        j["manifest_url"].as_str()
+    } else {
+        None
+    }
+    .or(j["url"].as_str())
+    .ok_or("yt-dlp found no stream this app can play")?;
+    let s = |k: &str| j[k].as_str().unwrap_or("").to_string();
+    Ok(YtStream {
+        url: url.to_string(),
+        title: s("title"),
+        channel: if j["channel"].is_string() {
+            s("channel")
+        } else {
+            s("uploader")
+        },
+        duration: j["duration"].as_f64().unwrap_or(0.0),
+        thumbnail: s("thumbnail"),
+    })
+}
+
+#[tauri::command]
+async fn yt_resolve(id: String) -> Result<YtStream, String> {
+    tauri::async_runtime::spawn_blocking(move || yt_resolve_blocking(&id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// "[download]  42.5% of 10.00MiB at 2.00MiB/s ETA 00:04" gives 42.5.
+fn parse_yt_progress(line: &str) -> Option<f64> {
+    let rest = line.strip_prefix("[download]")?.trim_start();
+    rest.split_once('%')?.0.trim().parse().ok()
+}
+
+/// Video and audio download one after the other, so scale each part into one 0 to 100 bar.
+fn yt_download_blocking(
+    dir: &Path,
+    id: &str,
+    mut on_pct: impl FnMut(f64),
+) -> Result<PathBuf, String> {
+    let url = yt_url(id)?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let out = dir.join(format!("{id}.mp4"));
+    if out.is_file() {
+        return Ok(out);
+    }
+    let template = dir.join("%(id)s.%(ext)s");
+    let mut cmd = Command::new(yt_dlp()?);
+    cmd.args([
+        "--no-warnings",
+        "--newline",
+        "--no-playlist",
+        "-f",
+        // H.264 first: every Mac and PC plays it, while AV1 needs newer hardware.
+        "bv[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]",
+        "--merge-output-format",
+        "mp4",
+        "-o",
+    ])
+    .arg(&template);
+    if let Some(ffmpeg) = find_tool("ffmpeg") {
+        cmd.arg("--ffmpeg-location").arg(ffmpeg);
+    }
+    let mut child = cmd
+        .args(["--", &url])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let (mut parts, mut part) = (1.0_f64, 0.0_f64);
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            // "[info] id: Downloading 1 format(s): 137+140" is two files.
+            if let Some((_, ids)) = line.split_once(" format(s): ") {
+                parts = (ids.matches('+').count() + 1) as f64;
+            } else if line.starts_with("[download] Destination:") {
+                part += 1.0;
+            } else if let Some(p) = parse_yt_progress(&line) {
+                on_pct((((part - 1.0).max(0.0) * 100.0 + p) / parts).clamp(0.0, 100.0));
+            }
+        }
+    }
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !output.status.success() || !out.is_file() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "yt-dlp could not save this video: {}",
+            err.lines().last().unwrap_or("")
+        ));
+    }
+    Ok(out)
+}
+
+#[derive(Serialize, Clone)]
+struct YtProgress {
+    id: String,
+    pct: f64,
+}
+
+#[tauri::command]
+async fn yt_download(app: tauri::AppHandle, id: String) -> Result<String, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("youtube");
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = yt_download_blocking(&dir, &id, |pct| {
+            let _ = app.emit(
+                "yt-progress",
+                YtProgress {
+                    id: id.clone(),
+                    pct,
+                },
+            );
+        })?;
+        Ok(path.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg(target_os = "macos")]
 mod default_app {
     use core_foundation::base::TCFType;
@@ -597,7 +790,10 @@ pub fn run() {
             thumbnail,
             ffmpeg_status,
             take_opened,
-            make_default_player
+            make_default_player,
+            yt_search,
+            yt_resolve,
+            yt_download
         ])
         .setup(|app| {
             // Files passed on the command line: `Flick movie.mkv`.
@@ -670,5 +866,67 @@ mod tests {
         let found = tauri::async_runtime::block_on(scan_folder(dir)).unwrap();
         assert!(found.iter().any(|e| e.name.ends_with(".mkv")));
         assert!(found.iter().all(|e| !e.name.ends_with(".srt")));
+    }
+
+    #[test]
+    fn parses_yt_dlp_progress_lines() {
+        assert_eq!(
+            parse_yt_progress("[download]  42.5% of   10.00MiB at    2.00MiB/s ETA 00:04"),
+            Some(42.5)
+        );
+        assert_eq!(
+            parse_yt_progress("[download] 100% of  190.70KiB in 00:00:00 at 1.2MiB/s"),
+            Some(100.0)
+        );
+        assert_eq!(
+            parse_yt_progress("[download] Destination: /tmp/abc.f160.mp4"),
+            None
+        );
+        assert_eq!(
+            parse_yt_progress("[info] abc: Downloading 2 format(s): 160+140"),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_bad_youtube_ids() {
+        assert!(yt_url("jNQXAC9IVRw").is_ok());
+        assert!(yt_url("--exec=rm").is_err());
+        assert!(yt_url("a b").is_err());
+    }
+
+    /// Real network run: `cargo test yt_live -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn yt_live() {
+        let t = std::time::Instant::now();
+        let found = yt_search_blocking("me at the zoo").unwrap();
+        let n = found["entries"].as_array().map(|a| a.len()).unwrap_or(0);
+        println!(
+            "search: {n} entries in {:?}, first {}",
+            t.elapsed(),
+            found["entries"][0]["id"]
+        );
+        assert!(n > 0);
+        let t = std::time::Instant::now();
+        match yt_resolve_blocking("jNQXAC9IVRw") {
+            Ok(s) => println!("resolve in {:?}: {s:?}", t.elapsed()),
+            Err(e) => println!("resolve failed in {:?}: {e}", t.elapsed()),
+        }
+        let dir = std::env::temp_dir().join("flick-yt-live");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut last = -1.0;
+        let path = yt_download_blocking(&dir, "jNQXAC9IVRw", |p| {
+            if p - last >= 25.0 || p >= 100.0 {
+                println!("progress {p:.1}");
+                last = p;
+            }
+        })
+        .unwrap();
+        println!(
+            "download: {} ({} bytes)",
+            path.display(),
+            std::fs::metadata(&path).unwrap().len()
+        );
     }
 }

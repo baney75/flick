@@ -4,6 +4,7 @@ import { Home } from './views/Home'
 import { Library, ShowPage } from './views/Library'
 import { Stremio, StremioDetail } from './views/Stremio'
 import { Servers } from './views/Servers'
+import { YouTube } from './views/YouTube'
 import { Settings } from './views/Settings'
 import { Player } from './components/Player'
 import { Icon } from './components/icons'
@@ -16,6 +17,7 @@ const NAV = [
   { path: '/', label: 'Home', icon: 'home' },
   { path: '/library', label: 'Library', icon: 'library' },
   { path: '/stremio', label: 'Stremio', icon: 'stremio' },
+  { path: '/youtube', label: 'YouTube', icon: 'youtube' },
   { path: '/servers', label: 'Servers', icon: 'server' },
   { path: '/settings', label: 'Settings', icon: 'settings' },
 ]
@@ -29,6 +31,7 @@ function View() {
   if (parts[0] === 'show' && parts[1]) return <ShowPage name={decodeURIComponent(parts[1])} />
   if (parts[0] === 'stremio' && parts[2]) return <StremioDetail key={r} type={parts[1]} id={decodeURIComponent(parts[2])} videoId={qs.get('v') ?? undefined} />
   if (parts[0] === 'stremio') return <Stremio />
+  if (parts[0] === 'youtube') return <YouTube />
   if (parts[0] === 'servers') return <Servers />
   if (parts[0] === 'settings') return <Settings />
   return <Home />

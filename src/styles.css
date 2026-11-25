@@ -195,6 +195,9 @@ label.toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
 
 /* ---------- show and title pages ---------- */
 .show-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin: 18px 0 24px; flex-wrap: wrap; }
+.yt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 18px 16px; }
+.yt-cell { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.yt-cell > .btn { align-self: flex-start; }
 .episodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 12px; }
 .episode { all: unset; display: flex; gap: 14px; padding: 10px; border-radius: 12px; cursor: pointer; align-items: center; }
 .episode:hover, .episode.sel { background: var(--surface); }
