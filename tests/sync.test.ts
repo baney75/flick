@@ -116,6 +116,17 @@ describe('sync keys', () => {
     expect(contentKey(plex)).toBe('id:px')
   })
 
+  it('keeps non-Latin titles, specials and repeated song titles apart', () => {
+    const jp = contentKey({ ...mac, title: '第1話', show: '進撃の巨人' })
+    const ru = contentKey({ ...mac, title: 'Брат', show: undefined, season: undefined, episode: undefined, year: 1997 })
+    expect(jp).toBe('ep:進撃の巨人:1:1')
+    expect(ru).toBe('mv:брат:1997')
+    const sp = (title: string) => contentKey({ ...mac, title, episode: undefined })
+    expect(sp('Behind the Scenes')).not.toBe(sp('Part Two'))
+    const song = (size: number) => contentKey({ ...mac, kind: 'audio', title: 'Intro', show: undefined, size })
+    expect(song(4_100_000)).not.toBe(song(5_200_000))
+  })
+
   it('maps progress to synced keys and back to local items', () => {
     const byId = new Map([[mac.id, mac]])
     const k = progressDocKey('m1', { ref: { t: 'item', id: 'm1' } }, byId)!

@@ -14,13 +14,17 @@ import type { Progress } from '../store'
 
 const LOCAL = new Set(['local', 'stored'])
 
-const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
+// Keeps letters and digits of every script, so 進撃の巨人 and Брат get real keys.
+const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/\p{M}/gu, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 
-export function contentKey(i: Pick<Item, 'id' | 'origin' | 'kind' | 'title' | 'show' | 'season' | 'episode' | 'year'>): string {
+export function contentKey(i: Pick<Item, 'id' | 'origin' | 'kind' | 'title' | 'show' | 'season' | 'episode' | 'year' | 'size'>): string {
   // Server items have the same id on every device that connects to the same server.
   if (!LOCAL.has(i.origin)) return `id:${i.id}`
-  if (i.show) return `ep:${norm(i.show)}:${i.season ?? 1}:${i.episode ?? 0}`
-  return `${i.kind === 'audio' ? 'au' : 'mv'}:${norm(i.title)}:${i.year ?? ''}`
+  // A special with no episode number keeps its own title so specials do not share a key.
+  if (i.show) return `ep:${norm(i.show)}:${i.season ?? 1}:${i.episode ?? `x ${norm(i.title)}`}`
+  // Song titles repeat across albums ("Intro"); the same file copied between devices keeps its size.
+  if (i.kind === 'audio') return `au:${norm(i.title)}:${i.size}`
+  return `mv:${norm(i.title)}:${i.year ?? ''}`
 }
 
 // The synced key for a progress row here, or null when the item is gone from this library.
