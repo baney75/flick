@@ -5,6 +5,8 @@ import { Library, ShowPage } from './views/Library'
 import { Stremio, StremioDetail } from './views/Stremio'
 import { Servers } from './views/Servers'
 import { Settings } from './views/Settings'
+import { PairPage } from './views/Sync'
+import { startSync } from './lib/sync/engine'
 import { Setup } from './views/Setup'
 import { Reader } from './views/Reader'
 import { Player } from './components/Player'
@@ -36,6 +38,7 @@ function View() {
   if (parts[0] === 'stremio') return <Stremio />
   if (parts[0] === 'servers') return <Servers />
   if (parts[0] === 'settings') return <Settings />
+  if (parts[0] === 'pair') return <PairPage k={qs.get('k')} />
   if (parts[0] === 'setup') return <Setup key={r} code={qs.get('c') ?? ''} />
   return <Home />
 }
@@ -53,6 +56,8 @@ export function App() {
     installSpatialNav(() => !!nowPlaying.value)
     reloadItems()
     loadProgress()
+    // Pairing and presence only for now; what syncs is wired up next.
+    startSync(() => {}).catch(() => {})
     loadStremio()
     resumeDownloads().catch(() => {})
     startOffline()
