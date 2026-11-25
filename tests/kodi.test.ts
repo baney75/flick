@@ -4,10 +4,11 @@ import { kodiMap, kodiNeedsFfmpeg, kodiResolve, kodiItems, saveServer, KODI_DESK
 import { hash, KODI_IMG } from '../src/lib/library'
 
 // The shell, faked: invoke answers per command; protocolUrl builds the macOS form of convertFileSrc.
-const shell = vi.hoisted(() => ({ mobile: false, ffmpeg: '/opt/homebrew/bin/ffmpeg' as string | null, calls: [] as [string, any][], rpc: (_m: string, _p: any): any => ({}) }))
+const shell = vi.hoisted(() => ({ mobile: false, apple: true, ffmpeg: '/opt/homebrew/bin/ffmpeg' as string | null, calls: [] as [string, any][], rpc: (_m: string, _p: any): any => ({}) }))
 vi.mock('../src/lib/platform', async (orig) => ({
   ...(await orig<typeof import('../src/lib/platform')>()),
   get isMobileApp() { return shell.mobile },
+  get isApple() { return shell.apple },
   fileUrl: async (p: string) => `asset://localhost/${encodeURIComponent(p)}`,
   protocolUrl: async (p: string, proto: string) => `${proto}://localhost/${encodeURIComponent(p)}`,
   onDesktopEvent: async () => () => {},
@@ -96,6 +97,7 @@ describe('kodi playback', () => {
   const src = (s: Server, file: string) => ({ t: 'kodi' as const, server: s.id, url: `${s.url}/vfs/${encodeURIComponent(file)}` })
   beforeEach(async () => {
     shell.mobile = false
+    shell.apple = true
     shell.ffmpeg = '/opt/homebrew/bin/ffmpeg'
     shell.calls = []
     await saveServer(open)
@@ -123,7 +125,18 @@ describe('kodi playback', () => {
     expect(await kodiResolve(src(lockedB, '/m/C.webm'))).toMatch(/^kodi:\/\/localhost\/kodi-b%2Fvfs%2F/)
   })
 
-  it('converts MKV, OGG and Opus through prepare on the desktop', async () => {
+  it('plays OGG and Opus as they are off Apple, and still converts MKV', async () => {
+    shell.apple = false
+    expect(await kodiResolve(src(open, '/m/a.ogg'))).toBe(src(open, '/m/a.ogg').url)
+    expect(await kodiResolve(src(lockedB, '/m/a.opus'))).toMatch(/^kodi:\/\/localhost\/kodi-b%2Fvfs%2F/)
+    shell.mobile = true
+    shell.ffmpeg = null
+    expect(await kodiResolve(src(lockedB, '/m/a.oga'))).toMatch(/^kodi:\/\/localhost\/kodi-b%2Fvfs%2F/)
+    await expect(kodiResolve(src(open, '/m/A.mkv'))).rejects.toThrow(KODI_DESKTOP_ONLY)
+    expect(shell.calls.filter(([c]) => c === 'prepare')).toEqual([])
+  })
+
+  it('converts MKV, OGG and Opus through prepare on the Mac', async () => {
     for (const f of ['/m/A.mkv', '/m/a.ogg', '/m/a.opus']) {
       shell.calls = []
       expect(await kodiResolve(src(lockedB, f))).toBe(`asset://localhost/${encodeURIComponent('/cache/remux/x.mp4')}`)
