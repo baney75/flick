@@ -4,11 +4,13 @@ import * as db from './db'
 import { kindOf, parseName, type Kind, SUB_EXT, ext } from './parse'
 import { isDesktop, invoke, fileUrl, onDesktopEvent, type ScanEntry, type Probe } from './platform'
 import { kodiResolve } from './servers'
+import { localFor } from './downloads'
 
 export type Source =
   | { t: 'path'; path: string }
   | { t: 'handle'; root: string; rel: string }
-  | { t: 'opfs'; name: string }
+  // A file in the site's private storage. dir defaults to 'media', where storeFile puts files.
+  | { t: 'opfs'; name: string; dir?: string }
   | { t: 'url'; url: string; fallback?: string }
   | { t: 'session'; key: string }
   // A file on a Kodi box. The URL never carries the login; the server record holds it.
@@ -230,7 +232,7 @@ export async function sourceFile(src: Source): Promise<File | null> {
   if (src.t === 'handle') return handleFile(src)
   if (src.t === 'opfs') {
     const root = await navigator.storage.getDirectory()
-    const dir = await root.getDirectoryHandle('media')
+    const dir = await root.getDirectoryHandle(src.dir ?? 'media')
     return (await dir.getFileHandle(src.name)).getFile()
   }
   return null
@@ -238,7 +240,10 @@ export async function sourceFile(src: Source): Promise<File | null> {
 
 export interface Resolved { url: string; revoke?: () => void; file?: File; sidecarSubs?: { name: string; text: string }[] }
 
-export async function resolve(src: Source, onStatus?: (s: string) => void): Promise<Resolved> {
+/** `itemId` names the library item, so a finished download plays from the device instead. */
+export async function resolve(src: Source, onStatus?: (s: string) => void, itemId?: string): Promise<Resolved> {
+  const local = itemId ? await localFor(itemId).catch(() => null) : null
+  if (local) return resolve(local, onStatus)
   if (src.t === 'url') return { url: src.url }
   if (src.t === 'kodi') return { url: await kodiResolve(src, onStatus) }
   if (src.t === 'path') {

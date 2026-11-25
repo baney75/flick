@@ -329,6 +329,12 @@ export async function kodiItems(s: Server): Promise<Item[]> {
 
 const kodiServer = async (id?: string) => (await getServers()).find((x) => x.id === id)
 
+/** The login for a Kodi server, for shell calls that send it as a header. */
+export async function kodiAuth(id?: string): Promise<[string, string]> {
+  const s = await kodiServer(id)
+  return s ? kodiLogin(s) : ['', '']
+}
+
 // What the web view plays without a remux. Not OGG or Opus: WKWebView on the Mac cannot play them.
 const NATIVE = /\.(mp4|m4v|mov|webm|mp3|m4a|aac|flac|wav)$/i
 
