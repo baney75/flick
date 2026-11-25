@@ -91,6 +91,16 @@ try {
   await page.getByText(/Interstellar/).first().waitFor({ timeout: 15000 })
   check(true, 'Stremio search finds Interstellar')
 
+  // Setup link: review first, apply only on Connect all.
+  const setupCode = Buffer.from(JSON.stringify({ v: 1, settings: { skipSeconds: 30 } })).toString('base64url')
+  await page.goto(`${BASE}/#/setup?c=${setupCode}`)
+  await page.getByText('Settings: skip 30 seconds').waitFor()
+  check(await page.evaluate(() => !localStorage.getItem('flick.settings')?.includes('"skipSeconds":30')), 'setup link changes nothing before the tap')
+  await page.getByRole('button', { name: 'Connect all' }).click()
+  await page.getByText('Done').waitFor()
+  check(await page.evaluate(() => JSON.parse(localStorage.getItem('flick.settings')).skipSeconds === 30), 'Connect all applies the setup')
+  await page.screenshot({ path: 'test-media/shots/setup.png' })
+
   // Phone layout.
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(`${BASE}/#/library`)
