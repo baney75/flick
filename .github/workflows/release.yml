@@ -50,15 +50,14 @@ jobs:
         with: { node-version: 24, cache: npm }
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 17 }
-      - uses: android-actions/setup-android@v3
-      - run: sdkmanager "ndk;27.0.12077973" "platforms;android-35" "build-tools;35.0.0"
+      - name: Android SDK packages (the runner ships the SDK; setup-android@v3 fails on the retired tools package)
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "platforms;android-35" "build-tools;35.0.0" > /dev/null
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: 'aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android' }
       - run: npm ci
       - name: Build APK (phones, tablets and Android TV)
-        env:
-          NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
         run: |
+          export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
           npx tauri android init --ci
           node scripts/android-tv.mjs
           npx tauri android build --apk --target aarch64 --target armv7 --target x86_64
