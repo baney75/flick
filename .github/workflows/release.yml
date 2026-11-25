@@ -56,9 +56,8 @@ jobs:
         with: { targets: 'aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android' }
       - run: npm ci
       - name: Build APK (phones, tablets and Android TV)
-        env:
-          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.0.12077973
         run: |
+          export NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
           npx tauri android init --ci
           node scripts/android-tv.mjs
           npx tauri android build --apk --target aarch64 --target armv7 --target x86_64
