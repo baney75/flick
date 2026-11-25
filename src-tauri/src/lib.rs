@@ -20,6 +20,7 @@ const AUDIO: &[&str] = &[
     "mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "alac", "aiff", "aif", "wma",
 ];
 const SUBS: &[&str] = &["srt", "vtt", "ass", "ssa"];
+const BOOKS: &[&str] = &["pdf"];
 // What WKWebView plays without help.
 const NATIVE_EXT: &[&str] = &[
     "mp4", "m4v", "mov", "webm", "mp3", "m4a", "aac", "wav", "flac", "aiff", "aif", "3gp",
@@ -37,7 +38,7 @@ fn ext_of(p: &Path) -> String {
 
 fn is_media(p: &Path) -> bool {
     let e = ext_of(p);
-    VIDEO.contains(&e.as_str()) || AUDIO.contains(&e.as_str())
+    VIDEO.contains(&e.as_str()) || AUDIO.contains(&e.as_str()) || BOOKS.contains(&e.as_str())
 }
 
 fn find_tool(name: &str) -> Option<PathBuf> {

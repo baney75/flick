@@ -104,6 +104,8 @@ export interface Progress {
   title: string
   subtitle?: string
   poster?: string
+  /** Set for books: pos and dur are pages, not seconds. */
+  book?: boolean
   ref: Ref
 }
 
@@ -125,7 +127,7 @@ export async function clearProgress(key: string) {
 
 export const continueList = computed(() =>
   Object.entries(progress.value)
-    .filter(([, p]) => p.pos > 15 && (!p.dur || p.pos < p.dur * 0.93))
+    .filter(([, p]) => p.book ? p.pos > 1 && p.pos < p.dur : p.pos > 15 && (!p.dur || p.pos < p.dur * 0.93))
     .sort((a, b) => b[1].at - a[1].at)
     .slice(0, 24),
 )
@@ -168,7 +170,7 @@ export function itemRequest(i: Item): PlayRequest {
     key: i.id,
     title: i.show ? `${i.show}` : i.title,
     subtitle: i.show ? `${episodeLabel(i)} · ${i.title}` : i.year ? String(i.year) : undefined,
-    kind: i.kind,
+    kind: i.kind === 'audio' ? 'audio' : 'video',
     src: i.src,
     fallbackUrl: i.src.t === 'url' ? i.src.fallback : undefined,
     poster: i.poster?.startsWith(KODI_IMG) ? undefined : i.poster,
@@ -177,7 +179,9 @@ export function itemRequest(i: Item): PlayRequest {
   }
 }
 
+/** Plays media, or opens a book in the reader. */
 export function playItem(i: Item) {
+  if (i.kind === 'book') return go(`/read/${encodeURIComponent(i.id)}`)
   play(itemRequest(i))
 }
 
