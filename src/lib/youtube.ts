@@ -1,10 +1,11 @@
 // YouTube on the desktop app: yt-dlp searches, finds a stream, and saves videos for offline play.
 
-import { invoke, onDesktopEvent } from './platform'
+import { invoke, fileUrl, onDesktopEvent } from './platform'
 import { hash, saveItems, type Item } from './library'
 
 export interface YtResult { id: string; title: string; channel: string; duration: number; thumbnail: string }
-export interface YtStream { url: string; title: string; channel: string; duration: number; thumbnail: string }
+export interface YtPart { url: string; headers: Record<string, string> }
+export interface YtStream { video: YtPart; audio: YtPart; title: string; channel: string; duration: number; thumbnail: string }
 
 interface RawEntry {
   id?: string
@@ -38,6 +39,11 @@ export async function ytSearch(query: string): Promise<YtResult[]> {
 
 export function ytResolve(id: string): Promise<YtStream> {
   return invoke<YtStream>('yt_resolve', { id })
+}
+
+/** ffmpeg joins the video and audio parts into a local HLS playlist; resolves once it can play. */
+export async function ytStream(id: string): Promise<string> {
+  return fileUrl(await invoke<string>('yt_stream', { id }))
 }
 
 /** Saves the video as MP4 and adds it to the library in a "YouTube" folder. */

@@ -6,8 +6,9 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
 const VIDEO: &[&str] = &[
@@ -535,17 +536,36 @@ async fn yt_search(query: String) -> Result<serde_json::Value, String> {
 }
 
 #[derive(Serialize, Debug)]
-struct YtStream {
+struct YtPart {
     url: String,
+    headers: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Serialize, Debug)]
+struct YtStream {
+    video: YtPart,
+    audio: YtPart,
     title: String,
     channel: String,
     duration: f64,
     thumbnail: String,
 }
 
-// HLS up to 1080p with audio when YouTube offers it, else the best MP4 with audio and video.
-const YT_PLAY_FORMAT: &str =
-    "best[protocol^=m3u8][height<=1080][acodec!=none]/best[ext=mp4][acodec!=none][vcodec!=none]";
+// YouTube answers the one muxed MP4 with 403, while the separate parts serve.
+// H.264 up to 1080p plays everywhere; ffmpeg joins it with the m4a audio (yt_stream).
+const YT_PLAY_FORMAT: &str = "bv[vcodec^=avc1][height<=1080]+ba[ext=m4a]";
+
+fn yt_part(f: &serde_json::Value) -> Option<YtPart> {
+    let headers = f["http_headers"].as_object().map(|h| {
+        h.iter()
+            .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+            .collect()
+    });
+    Some(YtPart {
+        url: f["url"].as_str()?.to_string(),
+        headers: headers.unwrap_or_default(),
+    })
+}
 
 fn yt_resolve_blocking(id: &str) -> Result<YtStream, String> {
     let j = yt_json(&[
@@ -556,17 +576,18 @@ fn yt_resolve_blocking(id: &str) -> Result<YtStream, String> {
         "--",
         &yt_url(id)?,
     ])?;
-    let hls = j["protocol"].as_str().unwrap_or("").starts_with("m3u8");
-    let url = if hls {
-        j["manifest_url"].as_str()
-    } else {
-        None
-    }
-    .or(j["url"].as_str())
-    .ok_or("yt-dlp found no stream this app can play")?;
+    let parts = j["requested_formats"].as_array();
+    let (video, audio) = match parts.map(|p| p.as_slice()) {
+        Some([v, a]) => (yt_part(v), yt_part(a)),
+        _ => (None, None),
+    };
+    let (Some(video), Some(audio)) = (video, audio) else {
+        return Err("yt-dlp found no H.264 video and m4a audio for this video".into());
+    };
     let s = |k: &str| j[k].as_str().unwrap_or("").to_string();
     Ok(YtStream {
-        url: url.to_string(),
+        video,
+        audio,
         title: s("title"),
         channel: if j["channel"].is_string() {
             s("channel")
@@ -583,6 +604,148 @@ async fn yt_resolve(id: String) -> Result<YtStream, String> {
     tauri::async_runtime::spawn_blocking(move || yt_resolve_blocking(&id))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// The one ffmpeg job that turns a YouTube video into HLS. A new stream or app exit kills it.
+#[derive(Default)]
+struct YtJob(Mutex<Option<Child>>);
+
+fn stop_job(job: &Mutex<Option<Child>>) {
+    if let Some(mut c) = job.lock().unwrap().take() {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+}
+
+/// The URL Tauri's convertFileSrc gives a path. Segment names need it in full: the
+/// playlist URL encodes every slash, so a relative name would resolve to the root.
+fn asset_url(path: &Path) -> String {
+    let mut out = String::from(if cfg!(windows) {
+        "http://asset.localhost/"
+    } else {
+        "asset://localhost/"
+    });
+    for b in path.to_string_lossy().bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn hls_segments(playlist: &Path) -> usize {
+    std::fs::read_to_string(playlist)
+        .map(|t| {
+            t.lines()
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// yt-dlp's headers for one part: User-Agent through -user_agent, the rest through -headers.
+fn ffmpeg_input(cmd: &mut Command, part: &YtPart) {
+    let mut headers = String::new();
+    for (k, v) in &part.headers {
+        if k.eq_ignore_ascii_case("user-agent") {
+            cmd.arg("-user_agent").arg(v);
+        } else {
+            headers.push_str(&format!("{k}: {v}\r\n"));
+        }
+    }
+    if !headers.is_empty() {
+        cmd.arg("-headers").arg(headers);
+    }
+    cmd.arg("-i").arg(&part.url);
+}
+
+/// Starts ffmpeg writing `<cache>/<id>/index.m3u8` and returns it once it lists a segment.
+/// `base` gives the prefix for segment names in the playlist.
+fn yt_stream_blocking(
+    cache: &Path,
+    id: &str,
+    base: impl Fn(&Path) -> String,
+    job: &Mutex<Option<Child>>,
+) -> Result<PathBuf, String> {
+    yt_url(id)?;
+    stop_job(job);
+    let dir = cache.join(id);
+    let playlist = dir.join("index.m3u8");
+    if std::fs::read_to_string(&playlist).is_ok_and(|t| t.contains("#EXT-X-ENDLIST")) {
+        return Ok(playlist);
+    }
+    let ffmpeg = find_tool("ffmpeg")
+        .ok_or("YouTube playback needs ffmpeg. Install it with: brew install ffmpeg")?;
+    let s = yt_resolve_blocking(id)?;
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let log_path = dir.join("ffmpeg.log");
+    let log = std::fs::File::create(&log_path).map_err(|e| e.to_string())?;
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args(["-nostdin", "-loglevel", "error"]);
+    ffmpeg_input(&mut cmd, &s.video);
+    ffmpeg_input(&mut cmd, &s.audio);
+    cmd.args(["-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-f", "hls"])
+        .args(["-hls_time", "4", "-hls_playlist_type", "event"])
+        .args(["-hls_flags", "independent_segments", "-hls_base_url"])
+        .arg(base(&dir))
+        .arg(&playlist)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(log);
+    *job.lock().unwrap() = Some(cmd.spawn().map_err(|e| e.to_string())?);
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(20) {
+        if hls_segments(&playlist) > 0 {
+            return Ok(playlist);
+        }
+        let exited = job
+            .lock()
+            .unwrap()
+            .as_mut()
+            .is_none_or(|c| !matches!(c.try_wait(), Ok(None)));
+        if exited && hls_segments(&playlist) == 0 {
+            let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+            return Err(format!(
+                "ffmpeg could not stream this video: {}",
+                log.lines().last().unwrap_or("it stopped early")
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    stop_job(job);
+    Err("YouTube sent no video within 20 seconds. Try again.".into())
+}
+
+#[tauri::command]
+async fn yt_stream(app: tauri::AppHandle, id: String) -> Result<String, String> {
+    let cache = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("yt");
+    tauri::async_runtime::spawn_blocking(move || {
+        let job = &app.state::<YtJob>().0;
+        let p = yt_stream_blocking(&cache, &id, |d| asset_url(&d.join("")), job)?;
+        Ok(p.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Streams are a cache: drop any older than a day.
+fn clean_yt_cache(cache: &Path) {
+    let Ok(dirs) = std::fs::read_dir(cache) else {
+        return;
+    };
+    for d in dirs.flatten() {
+        let age = d.metadata().and_then(|m| m.modified()).ok();
+        if age.and_then(|t| t.elapsed().ok()) > Some(Duration::from_secs(86_400)) {
+            let _ = std::fs::remove_dir_all(d.path());
+        }
+    }
 }
 
 /// "[download]  42.5% of 10.00MiB at 2.00MiB/s ETA 00:04" gives 42.5.
@@ -781,6 +944,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Opened::default())
+        .manage(YtJob::default())
         .invoke_handler(tauri::generate_handler![
             scan_folder,
             probe,
@@ -793,7 +957,8 @@ pub fn run() {
             make_default_player,
             yt_search,
             yt_resolve,
-            yt_download
+            yt_download,
+            yt_stream
         ])
         .setup(|app| {
             // Files passed on the command line: `Flick movie.mkv`.
@@ -803,6 +968,9 @@ pub fn run() {
                 .collect();
             if !args.is_empty() {
                 queue_open(app.handle(), args);
+            }
+            if let Ok(cache) = app.path().app_cache_dir() {
+                std::thread::spawn(move || clean_yt_cache(&cache.join("yt")));
             }
             Ok(())
         })
@@ -818,6 +986,9 @@ pub fn run() {
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect();
             queue_open(handle, paths);
+        }
+        if let tauri::RunEvent::Exit = event {
+            stop_job(&handle.state::<YtJob>().0);
         }
         let _ = (handle, event);
     });
@@ -910,7 +1081,7 @@ mod tests {
         assert!(n > 0);
         let t = std::time::Instant::now();
         match yt_resolve_blocking("jNQXAC9IVRw") {
-            Ok(s) => println!("resolve in {:?}: {s:?}", t.elapsed()),
+            Ok(s) => println!("resolve in {:?}: {} by {}", t.elapsed(), s.title, s.channel),
             Err(e) => println!("resolve failed in {:?}: {e}", t.elapsed()),
         }
         let dir = std::env::temp_dir().join("flick-yt-live");
@@ -928,5 +1099,69 @@ mod tests {
             path.display(),
             std::fs::metadata(&path).unwrap().len()
         );
+    }
+
+    #[test]
+    fn asset_urls_match_convert_file_src() {
+        let u = asset_url(Path::new("/Users/a b/yt/x/"));
+        let root = if cfg!(windows) {
+            "http://asset.localhost/"
+        } else {
+            "asset://localhost/"
+        };
+        assert_eq!(u, format!("{root}%2FUsers%2Fa%20b%2Fyt%2Fx%2F"));
+    }
+
+    fn probe_codecs(playlist: &Path) -> Vec<String> {
+        let out = Command::new(find_tool("ffprobe").unwrap())
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_name",
+                "-of",
+                "json",
+            ])
+            .arg(playlist)
+            .output()
+            .unwrap();
+        // Top-level streams only: the "programs" section lists the same streams again.
+        let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let mut c: Vec<String> = j["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|s| s["codec_name"].as_str().map(String::from))
+            .collect();
+        c.sort();
+        c
+    }
+
+    /// Real network run: `cargo test yt_stream_live -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn yt_stream_live() {
+        let cache = std::env::temp_dir().join("flick-yt-stream-live");
+        let _ = std::fs::remove_dir_all(&cache);
+        let job = Mutex::new(None);
+        for (id, check_growth) in [("jNQXAC9IVRw", false), ("aqz-KE-bpKQ", true)] {
+            let t = Instant::now();
+            let playlist = yt_stream_blocking(&cache, id, |_| String::new(), &job).unwrap();
+            let first = hls_segments(&playlist);
+            println!(
+                "{id}: first segment ready in {:?} ({first} listed)",
+                t.elapsed()
+            );
+            let codecs = probe_codecs(&playlist);
+            println!("{id}: ffprobe streams {codecs:?}");
+            assert_eq!(codecs, ["aac", "h264"]);
+            if check_growth {
+                std::thread::sleep(Duration::from_secs(10));
+                let later = hls_segments(&playlist);
+                println!("{id}: {first} segments, then {later} after 10s");
+                assert!(later > first);
+            }
+        }
+        stop_job(&job);
     }
 }

@@ -109,10 +109,12 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   async function attach(v: HTMLVideoElement, url: string) {
     hls.current?.destroy()
     hls.current = null
+    // A local event playlist (YouTube through ffmpeg) is still growing; start it at the top, not the live edge.
+    const local = isHls(url) && /^(asset:|https?:\/\/asset\.localhost\/)/.test(url)
     if (isHls(url) && !v.canPlayType('application/vnd.apple.mpegurl')) {
       const { default: Hls } = await import('hls.js')
       if (!Hls.isSupported()) throw new Error('This browser cannot play HLS streams.')
-      const h = new Hls({ enableWorker: true, lowLatencyMode: false, startFragPrefetch: true, maxBufferLength: 60 }) as unknown as HlsLike
+      const h = new Hls({ enableWorker: true, lowLatencyMode: false, startFragPrefetch: true, maxBufferLength: 60, startPosition: local ? 0 : -1 }) as unknown as HlsLike
       h.on(Hls.Events.ERROR, (_e: unknown, d: { fatal: boolean; details: string }) => {
         if (d.fatal) onFail(`Stream error: ${d.details}`)
       })
@@ -121,6 +123,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
       hls.current = h
     } else {
       v.src = url
+      if (local && !req.startAt) v.addEventListener('loadedmetadata', () => { v.currentTime = 0 }, { once: true })
     }
     v.playbackRate = speed
     v.volume = volume

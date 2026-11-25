@@ -4,7 +4,7 @@ import { Card } from '../components/Card'
 import { Icon } from '../components/icons'
 import { isDesktop } from '../lib/platform'
 import { formatTime } from '../lib/parse'
-import { ytSearch, ytResolve, ytSave, type YtResult } from '../lib/youtube'
+import { ytSearch, ytStream, ytSave, type YtResult } from '../lib/youtube'
 
 export function YouTube() {
   const [q, setQ] = useState('')
@@ -56,8 +56,8 @@ function YtCard({ r }: { r: YtResult }) {
     if (saved) return playItem(saved)
     notify('Finding the stream…')
     try {
-      const s = await ytResolve(r.id)
-      play({ key: 'yt:' + r.id, url: s.url, title: s.title || r.title, subtitle: s.channel || r.channel, kind: 'video', poster: s.thumbnail || r.thumbnail,
+      const url = await ytStream(r.id)
+      play({ key: 'yt:' + r.id, url, title: r.title, subtitle: r.channel, kind: 'video', poster: r.thumbnail,
         ref: { t: 'url', url: 'https://www.youtube.com/watch?v=' + r.id } })
     } catch (err) { notify((err as Error).message ?? String(err), 6000) }
   }
