@@ -481,6 +481,58 @@ fn ffmpeg_status() -> FfmpegStatus {
     }
 }
 
+/// Calls Kodi's JSON-RPC API. Kodi sends no CORS headers, so the web view cannot call it directly.
+#[tauri::command]
+async fn kodi_rpc(
+    url: String,
+    user: String,
+    pass: String,
+    method: String,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || kodi_call(&url, &user, &pass, &method, params))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn kodi_call(
+    url: &str,
+    user: &str,
+    pass: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use base64::Engine;
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .http_status_as_error(false)
+        .build();
+    let agent: ureq::Agent = config.into();
+    let mut req = agent.post(format!("{}/jsonrpc", url.trim_end_matches('/')));
+    if !user.is_empty() {
+        let token = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"));
+        req = req.header("Authorization", format!("Basic {token}"));
+    }
+    let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+    let mut resp = req
+        .send_json(&body)
+        .map_err(|e| format!("No Kodi answered at that address ({e})."))?;
+    match resp.status().as_u16() {
+        200 => {}
+        401 => return Err("Wrong username or password.".into()),
+        code => return Err(format!("Kodi said {code}")),
+    }
+    let mut j: serde_json::Value = resp.body_mut().read_json().map_err(|e| e.to_string())?;
+    if let Some(err) = j.get("error") {
+        let msg = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("error");
+        return Err(format!("Kodi said: {msg}"));
+    }
+    Ok(j["result"].take())
+}
+
 #[tauri::command]
 fn take_opened(state: tauri::State<Opened>) -> Vec<String> {
     std::mem::take(&mut *state.0.lock().unwrap())
@@ -597,6 +649,7 @@ pub fn run() {
             thumbnail,
             ffmpeg_status,
             take_opened,
+            kodi_rpc,
             make_default_player
         ])
         .setup(|app| {

@@ -11,7 +11,7 @@ export type Source =
   | { t: 'url'; url: string; fallback?: string }
   | { t: 'session'; key: string }
 
-export type Origin = 'local' | 'stored' | 'jellyfin' | 'plex'
+export type Origin = 'local' | 'stored' | 'jellyfin' | 'plex' | 'kodi'
 
 export interface Item {
   id: string
