@@ -1,9 +1,9 @@
 // Media servers: Jellyfin (and Emby, same API), Plex and Kodi. Items come back as library Items.
 
-import type { Item } from './library'
-import { hash } from './library'
+import type { Item, Source } from './library'
+import { hash, prepared, thumbUrl, KODI_IMG } from './library'
 import * as db from './db'
-import { invoke } from './platform'
+import { invoke, fileUrl } from './platform'
 
 export interface Server {
   id: string
@@ -222,7 +222,8 @@ export async function plexItems(s: Server): Promise<Item[]> {
 
 // ---------------- Kodi ----------------
 // Kodi's web server sends no CORS headers, so JSON-RPC goes through the desktop shell (kodi_rpc).
-// <video> and <img> cannot send Basic auth headers, so media URLs carry the login in the URL itself.
+// <video> and <img> cannot send Basic auth headers, and Chromium blocks a login inside subresource URLs,
+// so media URLs never carry it. The shell sends it instead: prepare (ffmpeg) for media, kodi_image for art.
 
 const b64 = (t: string) => btoa(String.fromCharCode(...new TextEncoder().encode(t)))
 const unb64 = (t: string) => new TextDecoder().decode(Uint8Array.from(atob(t), (c) => c.charCodeAt(0)))
@@ -253,20 +254,11 @@ export interface KodiEpisode { episodeid: number; title: string; showtitle?: str
 export interface KodiSong { songid: number; title: string; artist?: string[]; album?: string; duration?: number; file: string; thumbnail?: string }
 export interface KodiLibrary { movies?: KodiMovie[]; episodes?: KodiEpisode[]; songs?: KodiSong[] }
 
-/** The server address with the login embedded, for URLs that <video> and <img> load. */
-export function kodiBase(s: Server): string {
-  const [user, pass] = kodiLogin(s)
-  if (!user) return s.url
-  const u = new URL(s.url)
-  u.username = user
-  u.password = pass
-  return u.toString().replace(/\/+$/, '')
-}
-
 /** Maps Kodi JSON-RPC results to library Items. Pure, so tests run without a Kodi box. */
 export function kodiMap(s: Server, lib: KodiLibrary): Item[] {
-  const base = kodiBase(s)
-  const art = (a?: string) => (a ? `${base}/image/${encodeURIComponent(a)}` : undefined)
+  const base = s.url
+  // With a password, the poster is a marker that Card resolves through kodi_image.
+  const art = (a?: string) => (a ? `${s.token ? KODI_IMG : `${base}/image/`}${encodeURIComponent(a)}` : undefined)
   const when = (d?: string) => {
     const t = d ? Date.parse(d.replace(' ', 'T')) : NaN
     return Number.isNaN(t) ? 0 : t
@@ -275,7 +267,7 @@ export function kodiMap(s: Server, lib: KodiLibrary): Item[] {
     id: hash(`${s.id}:${type}:${id}`),
     title,
     kind,
-    src: { t: 'url', url: `${base}/vfs/${encodeURIComponent(file)}` },
+    src: { t: 'kodi', server: s.id, url: `${base}/vfs/${encodeURIComponent(file)}` },
     origin: 'kodi',
     server: s.id,
     folder: s.name,
@@ -317,6 +309,34 @@ export async function kodiItems(s: Server): Promise<Item[]> {
     call<KodiLibrary>('AudioLibrary.GetSongs', ['title', 'artist', 'album', 'duration', 'file', 'thumbnail']),
   ])
   return kodiMap(s, { movies: m.movies, episodes: e.episodes, songs: t.songs })
+}
+
+const kodiServer = async (id?: string) => (await getServers()).find((x) => x.id === id)
+
+// What the web view plays without a remux.
+const NATIVE = /\.(mp4|m4v|mov|webm|mp3|m4a|aac|flac|wav|ogg|opus)$/i
+
+/** A playable URL for a Kodi file: the plain URL when it can, else a local MP4 from prepare. */
+export async function kodiResolve(src: Extract<Source, { t: 'kodi' }>, onStatus?: (s: string) => void): Promise<string> {
+  const s = await kodiServer(src.server)
+  if (!s?.token && NATIVE.test(decodeURIComponent(src.url))) return src.url
+  const [user, pass] = s ? kodiLogin(s) : ['', '']
+  return fileUrl(await prepared(src.url, onStatus, user, pass))
+}
+
+/** Fetches a password-protected Kodi poster once, then serves it from the thumbs store. */
+export async function kodiPoster(it: Item): Promise<string | null> {
+  const hit = await thumbUrl(it.id)
+  if (hit || !it.poster?.startsWith(KODI_IMG)) return hit
+  const s = await kodiServer(it.server)
+  if (!s) return null
+  const [user, pass] = kodiLogin(s)
+  const data = await invoke<string>('kodi_image', { url: `${s.url}/image/${it.poster.slice(KODI_IMG.length)}`, user, pass }).catch(() => null)
+  if (!data) return null
+  const [head, body] = data.split(',', 2)
+  const bytes = Uint8Array.from(atob(body), (c) => c.charCodeAt(0))
+  await db.put('thumbs', it.id, new Blob([bytes], { type: head.slice(5, head.indexOf(';')) }))
+  return thumbUrl(it.id)
 }
 
 export async function syncServer(s: Server): Promise<number> {

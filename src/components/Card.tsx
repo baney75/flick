@@ -1,20 +1,22 @@
 import { useEffect, useRef, useState, useLayoutEffect } from 'preact/hooks'
 import type { ComponentChildren } from 'preact'
-import { thumbUrl, type Item } from '../lib/library'
+import { thumbUrl, KODI_IMG, type Item } from '../lib/library'
+import { kodiPoster } from '../lib/servers'
 import { thumbTick, progress, episodeLabel } from '../lib/store'
 import { formatTime } from '../lib/parse'
 import { Icon } from './icons'
 
 export function useThumb(it: Item | undefined) {
-  const [url, setUrl] = useState<string | null>(it?.poster ?? null)
+  const plain = it?.poster && !it.poster.startsWith(KODI_IMG) ? it.poster : null
+  const [url, setUrl] = useState<string | null>(null)
   const tick = thumbTick.value
   useEffect(() => {
-    if (!it || it.poster) return
+    if (!it || plain) return
     let live = true
-    thumbUrl(it.id).then((u) => live && u && setUrl(u))
+    ;(it.poster ? kodiPoster(it) : thumbUrl(it.id)).then((u) => live && u && setUrl(u))
     return () => { live = false }
   }, [it?.id, tick])
-  return url
+  return plain ?? url
 }
 
 export function Card(props: {

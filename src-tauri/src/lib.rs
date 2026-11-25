@@ -108,10 +108,34 @@ struct Probe {
     subs: Vec<(usize, String, String)>,
 }
 
-fn run_probe(path: &str) -> Option<Probe> {
+fn is_url(input: &str) -> bool {
+    let l = input.get(..8).unwrap_or(input).to_ascii_lowercase();
+    l.starts_with("http://") || l.starts_with("https://")
+}
+
+/// The Basic auth header value, or None with no username.
+fn basic(user: &str, pass: &str) -> Option<String> {
+    use base64::Engine;
+    (!user.is_empty()).then(|| {
+        format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}")))
+    })
+}
+
+/// ffmpeg/ffprobe input arguments. An http(s) input gets the login as a header, never in the URL.
+fn input_args(input: &str, auth: Option<&str>) -> Vec<String> {
+    let mut a = vec![];
+    if let (true, Some(auth)) = (is_url(input), auth) {
+        a.extend(["-headers".into(), format!("Authorization: {auth}\r\n")]);
+    }
+    a.extend(["-i".into(), input.into()]);
+    a
+}
+
+fn run_probe(path: &str, auth: Option<&str>) -> Option<Probe> {
     let ffprobe = find_tool("ffprobe")?;
     let out = Command::new(ffprobe)
-        .args(["-v", "error", "-show_entries", "format=format_name,duration:stream=index,codec_type,codec_name:stream_tags=language,title", "-of", "json", path])
+        .args(["-v", "error", "-show_entries", "format=format_name,duration:stream=index,codec_type,codec_name:stream_tags=language,title", "-of", "json"])
+        .args(input_args(path, auth))
         .output()
         .ok()?;
     let j: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
@@ -189,9 +213,10 @@ fn run_probe(path: &str) -> Option<Probe> {
 }
 
 #[tauri::command]
-async fn probe(path: String) -> Result<Probe, String> {
+async fn probe(path: String, user: Option<String>, pass: Option<String>) -> Result<Probe, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        Ok(run_probe(&path).unwrap_or_else(|| Probe {
+        let auth = basic(&user.unwrap_or_default(), &pass.unwrap_or_default());
+        Ok(run_probe(&path, auth.as_deref()).unwrap_or_else(|| Probe {
             // No ffprobe: trust the extension.
             playable: NATIVE_EXT.contains(&ext_of(Path::new(&path)).as_str()),
             ..Default::default()
@@ -221,8 +246,14 @@ struct PrepareProgress {
 
 /// Turn a file WKWebView cannot open (MKV, AVI, DTS audio...) into an MP4 it can.
 /// Streams are copied when possible, so this takes seconds, not minutes.
+/// `path` is a local file or an http(s) URL; the login, if any, goes to ffmpeg as a header.
 #[tauri::command]
-async fn prepare(app: tauri::AppHandle, path: String) -> Result<String, String> {
+async fn prepare(
+    app: tauri::AppHandle,
+    path: String,
+    user: Option<String>,
+    pass: Option<String>,
+) -> Result<String, String> {
     let dir = app
         .path()
         .app_cache_dir()
@@ -233,91 +264,80 @@ async fn prepare(app: tauri::AppHandle, path: String) -> Result<String, String> 
     if out.is_file() {
         return Ok(out.to_string_lossy().into_owned());
     }
-    let ffmpeg = find_tool("ffmpeg")
-        .ok_or("This format needs ffmpeg. Install it with: brew install ffmpeg")?;
-    let app2 = app.clone();
+    let auth = basic(&user.unwrap_or_default(), &pass.unwrap_or_default());
     tauri::async_runtime::spawn_blocking(move || {
-        let probe = run_probe(&path).unwrap_or_default();
-        let tmp = out.with_extension("part.mp4");
-        let mut args: Vec<String> = vec![
-            "-y".into(),
-            "-v".into(),
-            "error".into(),
-            "-i".into(),
-            path.clone(),
-            "-map".into(),
-            "0:v:0?".into(),
-            "-map".into(),
-            "0:a:0?".into(),
-        ];
-        match probe.video.as_deref() {
-            Some("h264") => args.extend(["-c:v".into(), "copy".into()]),
-            Some("hevc") => {
-                args.extend(["-c:v".into(), "copy".into(), "-tag:v".into(), "hvc1".into()])
-            }
-            Some(_) => args.extend([
-                "-c:v".into(),
-                "h264_videotoolbox".into(),
-                "-b:v".into(),
-                "10M".into(),
-                "-pix_fmt".into(),
-                "yuv420p".into(),
-            ]),
-            None => {}
-        }
-        match probe.audio.as_deref() {
-            Some("aac") | Some("mp3") | Some("alac") => args.extend(["-c:a".into(), "copy".into()]),
-            Some(_) => args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "320k".into()]),
-            None => {}
-        }
-        args.extend([
-            "-sn".into(),
-            "-movflags".into(),
-            "+faststart".into(),
-            "-progress".into(),
-            "pipe:1".into(),
-            "-nostats".into(),
-        ]);
-        args.push(tmp.to_string_lossy().into_owned());
-
-        let mut child = Command::new(ffmpeg)
-            .args(&args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        if let Some(stdout) = child.stdout.take() {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if let Some(us) = line.strip_prefix("out_time_us=") {
-                    if let (Ok(us), true) = (us.parse::<f64>(), probe.duration > 0.0) {
-                        let pct = (us / 1e6 / probe.duration * 100.0).clamp(0.0, 100.0);
-                        let _ = app2.emit(
-                            "prepare-progress",
-                            PrepareProgress {
-                                path: path.clone(),
-                                pct,
-                            },
-                        );
-                    }
-                }
-            }
-        }
-        let output = child.wait_with_output().map_err(|e| e.to_string())?;
-        if !output.status.success() {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!(
-                "ffmpeg could not convert this file: {}",
-                String::from_utf8_lossy(&output.stderr)
-                    .lines()
-                    .last()
-                    .unwrap_or("")
-            ));
-        }
-        std::fs::rename(&tmp, &out).map_err(|e| e.to_string())?;
+        remux(&path, auth.as_deref(), &out, |pct| {
+            let _ = app.emit("prepare-progress", PrepareProgress { path: path.clone(), pct });
+        })?;
         Ok(out.to_string_lossy().into_owned())
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn remux(input: &str, auth: Option<&str>, out: &Path, on_pct: impl Fn(f64)) -> Result<(), String> {
+    let ffmpeg = find_tool("ffmpeg")
+        .ok_or("This format needs ffmpeg. Install it with: brew install ffmpeg")?;
+    let probe = run_probe(input, auth).unwrap_or_default();
+    let tmp = out.with_extension("part.mp4");
+    let mut args: Vec<String> = vec!["-y".into(), "-v".into(), "error".into()];
+    args.extend(input_args(input, auth));
+    args.extend(["-map".into(), "0:v:0?".into(), "-map".into(), "0:a:0?".into()]);
+    match probe.video.as_deref() {
+        Some("h264") => args.extend(["-c:v".into(), "copy".into()]),
+        Some("hevc") => args.extend(["-c:v".into(), "copy".into(), "-tag:v".into(), "hvc1".into()]),
+        Some(_) => args.extend([
+            "-c:v".into(),
+            "h264_videotoolbox".into(),
+            "-b:v".into(),
+            "10M".into(),
+            "-pix_fmt".into(),
+            "yuv420p".into(),
+        ]),
+        None => {}
+    }
+    match probe.audio.as_deref() {
+        Some("aac") | Some("mp3") | Some("alac") => args.extend(["-c:a".into(), "copy".into()]),
+        Some(_) => args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "320k".into()]),
+        None => {}
+    }
+    args.extend([
+        "-sn".into(),
+        "-movflags".into(),
+        "+faststart".into(),
+        "-progress".into(),
+        "pipe:1".into(),
+        "-nostats".into(),
+    ]);
+    args.push(tmp.to_string_lossy().into_owned());
+
+    let mut child = Command::new(ffmpeg)
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    if let Some(stdout) = child.stdout.take() {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if let Some(us) = line.strip_prefix("out_time_us=") {
+                if let (Ok(us), true) = (us.parse::<f64>(), probe.duration > 0.0) {
+                    on_pct((us / 1e6 / probe.duration * 100.0).clamp(0.0, 100.0));
+                }
+            }
+        }
+    }
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!(
+            "ffmpeg could not convert this file: {}",
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .last()
+                .unwrap_or("")
+        ));
+    }
+    std::fs::rename(&tmp, out).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -359,7 +379,7 @@ async fn embedded_subs(path: String) -> Result<Vec<SubFile>, String> {
         let Some(ffmpeg) = find_tool("ffmpeg") else {
             return Ok(vec![]);
         };
-        let Some(probe) = run_probe(&path) else {
+        let Some(probe) = run_probe(&path, None) else {
             return Ok(vec![]);
         };
         let mut out = vec![];
@@ -407,7 +427,7 @@ struct Thumb {
 #[tauri::command]
 async fn thumbnail(path: String) -> Result<Thumb, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let duration = run_probe(&path).map(|p| p.duration).unwrap_or(0.0);
+        let duration = run_probe(&path, None).map(|p| p.duration).unwrap_or(0.0);
         if let Some(ffmpeg) = find_tool("ffmpeg") {
             let at = (duration * 0.12).clamp(1.0, 120.0);
             let o = Command::new(ffmpeg)
@@ -495,6 +515,45 @@ async fn kodi_rpc(
         .map_err(|e| e.to_string())?
 }
 
+fn kodi_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
+/// Fetches Kodi art with the login and returns it as a data URL, since <img> cannot send the header.
+#[tauri::command]
+async fn kodi_image(url: String, user: String, pass: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use base64::Engine;
+        let mut req = kodi_agent().get(&url);
+        if let Some(auth) = basic(&user, &pass) {
+            req = req.header("Authorization", auth);
+        }
+        let mut resp = req.call().map_err(|e| e.to_string())?;
+        if resp.status() != 200 {
+            return Err(format!("Kodi said {}", resp.status().as_u16()));
+        }
+        let mime = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("image/jpeg")
+            .to_string();
+        let bytes = resp
+            .body_mut()
+            .with_config()
+            .limit(2 * 1024 * 1024)
+            .read_to_vec()
+            .map_err(|e| e.to_string())?;
+        Ok(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn kodi_call(
     url: &str,
     user: &str,
@@ -502,16 +561,9 @@ fn kodi_call(
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    use base64::Engine;
-    let config = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(10)))
-        .http_status_as_error(false)
-        .build();
-    let agent: ureq::Agent = config.into();
-    let mut req = agent.post(format!("{}/jsonrpc", url.trim_end_matches('/')));
-    if !user.is_empty() {
-        let token = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"));
-        req = req.header("Authorization", format!("Basic {token}"));
+    let mut req = kodi_agent().post(format!("{}/jsonrpc", url.trim_end_matches('/')));
+    if let Some(auth) = basic(user, pass) {
+        req = req.header("Authorization", auth);
     }
     let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
     let mut resp = req
@@ -650,6 +702,7 @@ pub fn run() {
             ffmpeg_status,
             take_opened,
             kodi_rpc,
+            kodi_image,
             make_default_player
         ])
         .setup(|app| {
@@ -694,14 +747,14 @@ mod tests {
             eprintln!("skipped: needs ffprobe and test-media");
             return;
         }
-        let mp4 = run_probe(&media("Test.Movie.2024.1080p.mp4")).unwrap();
+        let mp4 = run_probe(&media("Test.Movie.2024.1080p.mp4"), None).unwrap();
         assert!(mp4.playable, "H.264/AAC MP4 plays natively");
         assert_eq!(mp4.video.as_deref(), Some("h264"));
         assert!((mp4.duration - 20.0).abs() < 0.5);
-        let mkv = run_probe(&media("Demo.Show.S01E02.Pilot.mkv")).unwrap();
+        let mkv = run_probe(&media("Demo.Show.S01E02.Pilot.mkv"), None).unwrap();
         assert!(!mkv.playable, "MKV must go through prepare");
         assert_eq!(mkv.audio.as_deref(), Some("ac3"));
-        assert!(run_probe(&media("Sample.Clip.2023.webm")).unwrap().playable, "WebM plays natively");
+        assert!(run_probe(&media("Sample.Clip.2023.webm"), None).unwrap().playable, "WebM plays natively");
     }
 
     #[test]
@@ -712,6 +765,34 @@ mod tests {
         }
         assert_eq!(subs.len(), 1);
         assert!(subs[0].text.contains("Hello from Flick"));
+    }
+
+    #[test]
+    fn http_input_gets_auth_header() {
+        let auth = basic("kodi", "p@ss").unwrap();
+        assert_eq!(auth, "Basic a29kaTpwQHNz");
+        let url = "http://192.168.1.30:8080/vfs/%2Fa.mkv";
+        assert_eq!(input_args(url, Some(&auth)), ["-headers", "Authorization: Basic a29kaTpwQHNz\r\n", "-i", url]);
+        assert_eq!(input_args("HTTPS://h/x.mkv", Some(&auth))[0], "-headers");
+        assert_eq!(input_args(url, None), ["-i", url]);
+        // A local file never gets the header, even with a login.
+        assert_eq!(input_args("/media/http:/a.mkv", Some(&auth)), ["-i", "/media/http:/a.mkv"]);
+        assert!(basic("", "x").is_none());
+    }
+
+    /// Needs a local server with Basic auth. Set FLICK_HTTP_MKV (URL), FLICK_HTTP_USER, FLICK_HTTP_PASS.
+    #[test]
+    #[ignore]
+    fn remux_reads_http_with_basic_auth() {
+        let url = std::env::var("FLICK_HTTP_MKV").unwrap();
+        let auth = basic(&std::env::var("FLICK_HTTP_USER").unwrap(), &std::env::var("FLICK_HTTP_PASS").unwrap());
+        let p = run_probe(&url, auth.as_deref()).expect("ffprobe reads the URL");
+        assert!(!p.playable, "MKV over http still needs prepare");
+        let out = std::env::temp_dir().join(format!("flick-http-{}.mp4", cache_key(&url)));
+        remux(&url, auth.as_deref(), &out, |_| {}).unwrap();
+        let mp4 = run_probe(out.to_str().unwrap(), None).unwrap();
+        eprintln!("output {} container={} video={:?} audio={:?} duration={}", out.display(), mp4.container, mp4.video, mp4.audio, mp4.duration);
+        assert!(mp4.playable && mp4.duration > 0.5);
     }
 
     #[test]

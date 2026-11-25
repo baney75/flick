@@ -96,7 +96,7 @@ export function ShowCard({ eps }: { eps: import('../lib/library').Item[] }) {
   const first = eps[0]
   const thumb = useThumb(first)
   const seasons = new Set(eps.map((e) => e.season ?? 1)).size
-  return <Card image={first.poster ?? thumb} title={first.show!} sub={`${seasons > 1 ? `${seasons} seasons · ` : ''}${eps.length} episodes`}
+  return <Card image={thumb} title={first.show!} sub={`${seasons > 1 ? `${seasons} seasons · ` : ''}${eps.length} episodes`}
     shape="wide" onClick={() => go(`/show/${encodeURIComponent(first.show!.toLowerCase())}`)} />
 }
 

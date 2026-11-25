@@ -101,7 +101,7 @@ function KodiForm({ onAdd }: { onAdd: (s: Srv.Server) => void }) {
   return (
     <form class="panel" onSubmit={submit}>
       <h3>Kodi</h3>
-      <p class="dim small">In Kodi, turn on Settings, Services, Control, Allow remote control via HTTP. Flick plays files straight from Kodi. A username and password ride inside each media address, so on a home network Kodi with no password is simplest.</p>
+      <p class="dim small">In Kodi, turn on Settings, Services, Control, Allow remote control via HTTP. Flick plays files straight from Kodi. MKV and AVI files play after a quick convert.</p>
       <label>Kodi address<input required placeholder="http://192.168.1.30:8080" value={url} onInput={(e) => setUrl((e.target as HTMLInputElement).value)} /></label>
       <label>Username<input autocomplete="username" placeholder="Empty if Kodi has no password" value={user} onInput={(e) => setUser((e.target as HTMLInputElement).value)} /></label>
       <label>Password<input type="password" autocomplete="current-password" value={pw} onInput={(e) => setPw((e.target as HTMLInputElement).value)} /></label>

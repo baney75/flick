@@ -11,7 +11,7 @@ A fast media player and library. It plays your videos and music the moment you o
 - **Stored media.** In the browser, copy files into Flick's private storage so they stay available offline.
 - **Stremio.** Sign in to bring your installed addons, your Stremio library and Continue Watching. Search and browse catalogs, open a title, pick a stream. Direct streams play in Flick; torrent streams play through the Stremio streaming server when it runs on the same computer. You can also add addons by URL without an account.
 - **Plex and Jellyfin.** Sign in with Plex (PIN on plex.tv) or connect Jellyfin/Emby with a username. Everything joins your library and search.
-- **Kodi.** In the desktop and mobile apps, connect a Kodi box (turn on Settings > Services > Control > Allow remote control via HTTP). Movies, episodes and songs join your library and play straight from Kodi. Video and image tags cannot send a login header, so a Kodi username and password ride inside each media address; on a home network, Kodi with no password is simplest.
+- **Kodi.** In the desktop and mobile apps, connect a Kodi box (turn on Settings > Services > Control > Allow remote control via HTTP). Movies, episodes and songs join your library and play straight from Kodi, with or without a Kodi password. MKV and AVI files play after a quick convert, like local files.
 - **TV.** D-pad navigation and a 10-foot focus style for Android TV and remotes.
 - **Private.** No account, no analytics, no ads. Everything stays on the device.
 

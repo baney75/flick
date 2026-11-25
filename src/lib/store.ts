@@ -3,7 +3,7 @@
 import { signal, computed } from '@preact/signals'
 import * as db from './db'
 import type { Item, Source } from './library'
-import { allItems, makeThumb, hasThumb, saveItems } from './library'
+import { allItems, makeThumb, hasThumb, saveItems, KODI_IMG } from './library'
 import type { Addon, LibraryItem } from './stremio'
 import { CINEMETA, OPENSUBS, accountAddons, accountLibrary, fetchManifest } from './stremio'
 
@@ -171,7 +171,7 @@ export function itemRequest(i: Item): PlayRequest {
     kind: i.kind,
     src: i.src,
     fallbackUrl: i.src.t === 'url' ? i.src.fallback : undefined,
-    poster: i.poster,
+    poster: i.poster?.startsWith(KODI_IMG) ? undefined : i.poster,
     ref: { t: 'item', id: i.id },
     next: list && idx >= 0 && idx < list.length - 1 ? () => itemRequest(list[idx + 1]) : undefined,
   }
