@@ -626,3 +626,49 @@ pub fn run() {
         let _ = (handle, event);
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn media(name: &str) -> String {
+        format!("{}/../test-media/{name}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    #[test]
+    fn probe_tells_native_from_needs_conversion() {
+        if find_tool("ffprobe").is_none() || !Path::new(&media("Demo.Show.S01E02.Pilot.mkv")).exists() {
+            eprintln!("skipped: needs ffprobe and test-media");
+            return;
+        }
+        let mp4 = run_probe(&media("Test.Movie.2024.1080p.mp4")).unwrap();
+        assert!(mp4.playable, "H.264/AAC MP4 plays natively");
+        assert_eq!(mp4.video.as_deref(), Some("h264"));
+        assert!((mp4.duration - 20.0).abs() < 0.5);
+        let mkv = run_probe(&media("Demo.Show.S01E02.Pilot.mkv")).unwrap();
+        assert!(!mkv.playable, "MKV must go through prepare");
+        assert_eq!(mkv.audio.as_deref(), Some("ac3"));
+        assert!(run_probe(&media("Sample.Clip.2023.webm")).unwrap().playable, "WebM plays natively");
+    }
+
+    #[test]
+    fn finds_sidecar_subtitles() {
+        let subs = sidecar_subs(media("Test.Movie.2024.1080p.mp4"));
+        if subs.is_empty() && !Path::new(&media("Test.Movie.2024.1080p.srt")).exists() {
+            return;
+        }
+        assert_eq!(subs.len(), 1);
+        assert!(subs[0].text.contains("Hello from Flick"));
+    }
+
+    #[test]
+    fn scan_finds_media_only() {
+        let dir = media("");
+        if !Path::new(&dir).exists() {
+            return;
+        }
+        let found = tauri::async_runtime::block_on(scan_folder(dir)).unwrap();
+        assert!(found.iter().any(|e| e.name.ends_with(".mkv")));
+        assert!(found.iter().all(|e| !e.name.ends_with(".srt")));
+    }
+}
