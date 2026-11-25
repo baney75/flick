@@ -64,6 +64,16 @@ try {
   const a2 = await a.context().newPage()
   await a2.goto(`${BASE}/#/settings`)
   await until(() => a2.getByText('Connected').isVisible())
+  // Two tabs share one stored doc. A change made in one tab must survive the other tab saving later.
+  const savedDoc = (page) => page.evaluate(() => new Promise((ok) => {
+    const r = indexedDB.open('flick')
+    r.onsuccess = () => { const g = r.result.transaction('kv').objectStore('kv').get('sync.doc'); g.onsuccess = () => ok(Object.fromEntries((g.result?.rows ?? []).map(([k, e]) => [k, e.v]))) }
+  }))
+  await a2.getByLabel('Default speed').selectOption('2')
+  await until(async () => (await savedDoc(a2))['s:speed'] === 2)
+  await a.getByLabel('Skip buttons jump').selectOption('5')
+  check(await until(async () => { const d = await savedDoc(a); return d['s:skipSeconds'] === 5 && d['s:speed'] === 2 }), 'a change in one tab survives another tab saving after it')
+  check(!(await a.getByText('Online now').isVisible()), 'another tab of the same browser is not listed as a device')
   a.once('dialog', (d) => d.accept())
   await a.getByRole('button', { name: 'Leave sync' }).click()
   check(await until(() => a2.getByRole('button', { name: /Start sync on this device/ }).isVisible()), 'leaving sync in one tab leaves it in the other tabs too')
