@@ -7,6 +7,7 @@ import { Servers } from './views/Servers'
 import { Settings } from './views/Settings'
 import { PairPage } from './views/Sync'
 import { startSyncBinding } from './lib/sync/bind'
+import { Setup } from './views/Setup'
 import { Player } from './components/Player'
 import { Icon } from './components/icons'
 import { playFiles, playPaths } from './lib/actions'
@@ -34,6 +35,7 @@ function View() {
   if (parts[0] === 'servers') return <Servers />
   if (parts[0] === 'settings') return <Settings />
   if (parts[0] === 'pair') return <PairPage k={qs.get('k')} />
+  if (parts[0] === 'setup') return <Setup key={r} code={qs.get('c') ?? ''} />
   return <Home />
 }
 

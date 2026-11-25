@@ -51,8 +51,21 @@ describe('sync doc', () => {
     expect(wins({ v: 1, t: 5, d: 'B' }, { v: 2, t: 5, d: 'A' })).toBe(true)
     expect(wins({ v: 2, t: 5, d: 'A' }, { v: 1, t: 5, d: 'B' })).toBe(false)
     const a: Doc = new Map()
-    const changed = merge(a, new Clock(), [['k', { v: 1, t: Number.NaN, d: 'X' }], ['j', { v: 1, t: 1, d: '' }]])
+    const changed = merge(a, new Clock(), [['k', { v: 1, t: Number.NaN, d: 'X' }], ['j', { v: 1, t: 1, d: '' }], ['h', { v: 1, t: 1e300, d: 'X' }], ['g', { v: 1, t: 1.5, d: 'X' }]])
     expect(changed).toEqual([])
+  })
+
+  it('a value stamped by a far-future clock does not pin the key', () => {
+    const a: Doc = new Map(), b: Doc = new Map()
+    const ca = new Clock(), cb = new Clock()
+    merge(a, ca, [['p:k:x', { v: 'stale', t: Date.now() + 365 * 864e5, d: 'Z' }]])
+    sync(a, ca, b, cb)
+    write(b, cb, 'B', 'p:k:x', 'fresh')
+    sync(a, ca, b, cb)
+    expect(a.get('p:k:x')?.v).toBe('fresh')
+    merge(a, ca, [['p:k:y', { v: 'stale', t: Number.MAX_SAFE_INTEGER - 2, d: 'Z' }]])
+    write(a, ca, 'A', 'p:k:y', 'fresh')
+    expect(a.get('p:k:y')?.v).toBe('fresh')
   })
 
   it('a device clock far in the future cannot pin every later write', () => {
@@ -101,6 +114,17 @@ describe('sync keys', () => {
   it('matches the same episode across devices by name, not path', () => {
     expect(contentKey(mac)).toBe(contentKey(phone))
     expect(contentKey(plex)).toBe('id:px')
+  })
+
+  it('keeps non-Latin titles, specials and repeated song titles apart', () => {
+    const jp = contentKey({ ...mac, title: '第1話', show: '進撃の巨人' })
+    const ru = contentKey({ ...mac, title: 'Брат', show: undefined, season: undefined, episode: undefined, year: 1997 })
+    expect(jp).toBe('ep:進撃の巨人:1:1')
+    expect(ru).toBe('mv:брат:1997')
+    const sp = (title: string) => contentKey({ ...mac, title, episode: undefined })
+    expect(sp('Behind the Scenes')).not.toBe(sp('Part Two'))
+    const song = (size: number) => contentKey({ ...mac, kind: 'audio', title: 'Intro', show: undefined, size })
+    expect(song(4_100_000)).not.toBe(song(5_200_000))
   })
 
   it('maps progress to synced keys and back to local items', () => {

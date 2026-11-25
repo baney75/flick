@@ -26,8 +26,11 @@ export class Clock {
   }
 }
 
+// A local write always beats the value it replaces, even one stamped by a device whose
+// clock ran far ahead: it takes a time just past that entry's.
 export function write(doc: Doc, clock: Clock, device: string, key: string, v: unknown): Entry {
-  const e = { v: v === undefined ? null : v, t: clock.now(), d: device }
+  const prev = doc.get(key)
+  const e = { v: v === undefined ? null : v, t: Math.max(clock.now(), (prev?.t ?? 0) + 1), d: device }
   doc.set(key, e)
   return e
 }
@@ -57,5 +60,5 @@ export function merge(doc: Doc, clock: Clock, incoming: [string, Entry][]): stri
 }
 
 function valid(e: Entry): boolean {
-  return !!e && typeof e.t === 'number' && Number.isFinite(e.t) && typeof e.d === 'string' && e.d.length > 0 && e.d.length <= 64
+  return !!e && Number.isSafeInteger(e.t) && e.t > 0 && e.t < Number.MAX_SAFE_INTEGER && typeof e.d === 'string' && e.d.length > 0 && e.d.length <= 64
 }
