@@ -661,21 +661,21 @@ fn kodi_proxy_register(
 }
 
 /// Splits a proxy URI path ("/<id>%2F<path>", as convertFileSrc builds it) into id and path.
-/// Returns None for a path that could leave the Kodi base: "..", ".", a scheme, or a leading slash.
+/// Returns None unless the path is vfs/<one segment>, Kodi's file endpoint, so the login never
+/// reaches jsonrpc or any other Kodi URL.
 fn proxy_target(uri_path: &str) -> Option<(String, String)> {
     let decoded = percent_encoding::percent_decode_str(uri_path.trim_start_matches('/'))
         .decode_utf8()
         .ok()?;
     let (id, rest) = decoded.split_once('/')?;
-    let leaves = rest.starts_with('/') || rest.contains(':') || rest.contains('\\');
-    if id.is_empty() || rest.is_empty() || leaves {
+    // Only Kodi's file endpoint, vfs/<one encoded segment>: never jsonrpc, image or a query.
+    let file = rest.strip_prefix("vfs/")?;
+    let bad = |c: char| matches!(c, '/' | '?' | '#' | ':' | '\\');
+    if id.is_empty() || file.is_empty() || file.contains(bad) {
         return None;
     }
-    let bad = |seg: &str| {
-        let d = percent_encoding::percent_decode_str(seg).decode_utf8_lossy();
-        d == ".." || d == "."
-    };
-    if rest.split(['/', '?', '#']).any(bad) {
+    let d = percent_encoding::percent_decode_str(file).decode_utf8_lossy();
+    if d == ".." || d == "." {
         return None;
     }
     Some((id.to_string(), rest.to_string()))
@@ -1110,6 +1110,12 @@ mod tests {
         }
         for bad in [
             "/kodi-a%2F..%2Fjsonrpc",
+            "/kodi-a%2Fjsonrpc",
+            "/kodi-a%2Fjsonrpc%3Frequest%3D%257B%257D",
+            "/kodi-a%2Fimage%2Fx",
+            "/kodi-a%2Fvfs%2Fx%3Fa%3Db",
+            "/kodi-a%2Fvfs%2Fa%2Fb",
+            "/kodi-a%2Fvfs%2F",
             "/kodi-a%2Fvfs%2F..%2F..%2Fx",
             "/kodi-a%2Fvfs%2F%252E%252E%2Fx",
             "/kodi-a%2Fhttp%3A%2F%2Fevil.example%2Fx",
