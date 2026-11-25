@@ -2,6 +2,7 @@
 
 import { signal, computed } from '@preact/signals'
 import * as db from './db'
+import { announce } from './sync/bus'
 import type { Item, Source } from './library'
 import { allItems, makeThumb, hasThumb, saveItems, KODI_IMG } from './library'
 import type { Addon, LibraryItem } from './stremio'
@@ -214,6 +215,7 @@ export async function loadStremio() {
 export async function saveStremio(patch: { authKey?: string | null; email?: string | null; extra?: string[] }) {
   const saved = (await db.get<{ authKey: string | null; email: string | null; extra: string[] }>('kv', 'stremio')) ?? { authKey: null, email: null, extra: [] }
   await db.put('kv', 'stremio', { ...saved, ...patch })
+  if (patch.extra) announce('addons')
 }
 
 export async function stremioExtra(): Promise<string[]> {
