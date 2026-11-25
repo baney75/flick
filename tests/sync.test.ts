@@ -55,6 +55,19 @@ describe('sync doc', () => {
     expect(changed).toEqual([])
   })
 
+  it('a value stamped by a far-future clock does not pin the key', () => {
+    const a: Doc = new Map(), b: Doc = new Map()
+    const ca = new Clock(), cb = new Clock()
+    merge(a, ca, [['p:k:x', { v: 'stale', t: Date.now() + 365 * 864e5, d: 'Z' }]])
+    sync(a, ca, b, cb)
+    write(b, cb, 'B', 'p:k:x', 'fresh')
+    sync(a, ca, b, cb)
+    expect(a.get('p:k:x')?.v).toBe('fresh')
+    merge(a, ca, [['p:k:y', { v: 'stale', t: Number.MAX_SAFE_INTEGER - 1, d: 'Z' }]])
+    write(a, ca, 'A', 'p:k:y', 'fresh')
+    expect(a.get('p:k:y')?.v).toBe('fresh')
+  })
+
   it('a device clock far in the future cannot pin every later write', () => {
     const c = new Clock()
     c.see(Date.now() + 365 * 864e5)

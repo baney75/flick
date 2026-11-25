@@ -26,8 +26,11 @@ export class Clock {
   }
 }
 
+// A local write always beats the value it replaces, even one stamped by a device whose
+// clock ran far ahead: it takes a time just past that entry's.
 export function write(doc: Doc, clock: Clock, device: string, key: string, v: unknown): Entry {
-  const e = { v: v === undefined ? null : v, t: clock.now(), d: device }
+  const prev = doc.get(key)
+  const e = { v: v === undefined ? null : v, t: Math.max(clock.now(), (prev?.t ?? 0) + 1), d: device }
   doc.set(key, e)
   return e
 }
