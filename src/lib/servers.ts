@@ -359,7 +359,14 @@ export async function kodiResolve(src: Extract<Source, { t: 'kodi' }>, onStatus?
   const s = await kodiServer(src.server)
   // Phone apps block plain http media loads, so they always stream through the proxy.
   if (playsNatively(decodeURIComponent(src.url))) return s && (s.token || isMobileApp) ? kodiProxyUrl(s, src.url) : src.url
+  return kodiConvert(src, onStatus)
+}
+
+/** A local MP4 of a Kodi file, converted with ffmpeg on a computer. Also the retry when a file the web view
+ *  should play fails, such as an MP4 with AC-3 or DTS audio. */
+export async function kodiConvert(src: Extract<Source, { t: 'kodi' }>, onStatus?: (s: string) => void): Promise<string> {
   if (isMobileApp) throw new Error(KODI_DESKTOP_ONLY)
+  const s = await kodiServer(src.server)
   const ff = await invoke<{ ffmpeg: string | null }>('ffmpeg_status').catch(() => ({ ffmpeg: null }))
   if (!ff.ffmpeg) throw new Error(kodiNeedsFfmpeg())
   const [user, pass] = s ? kodiLogin(s) : ['', '']

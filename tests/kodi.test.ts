@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { kodiMap, kodiNeedsFfmpeg, kodiResolve, kodiItems, saveServer, KODI_DESKTOP_ONLY, type Server, type KodiLibrary } from '../src/lib/servers'
+import { kodiConvert, kodiMap, kodiNeedsFfmpeg, kodiResolve, kodiItems, saveServer, KODI_DESKTOP_ONLY, type Server, type KodiLibrary } from '../src/lib/servers'
 import { hash, KODI_IMG } from '../src/lib/library'
 
 // The shell, faked: invoke answers per command; protocolUrl builds the macOS form of convertFileSrc.
@@ -145,6 +145,16 @@ describe('kodi playback', () => {
     }
     shell.ffmpeg = null
     await expect(kodiResolve(src(open, '/m/A.mkv'))).rejects.toThrow(/install ffmpeg/i)
+  })
+
+  it('converts an MP4 the web view could not play, with the server login', async () => {
+    // kodiResolve plays this MP4 as it is; the player calls kodiConvert when the web view rejects it.
+    expect(await kodiResolve(src(lockedB, '/m/ac3.mp4'))).toMatch(/^kodi:\/\//)
+    shell.calls = []
+    expect(await kodiConvert(src(lockedB, '/m/ac3.mp4'))).toBe(`asset://localhost/${encodeURIComponent('/cache/remux/x.mp4')}`)
+    expect(shell.calls.find(([c]) => c === 'prepare')![1]).toEqual({ path: src(lockedB, '/m/ac3.mp4').url, user: 'kodi', pass: 'p@ss word' })
+    shell.mobile = true
+    await expect(kodiConvert(src(lockedB, '/m/ac3.mp4'))).rejects.toThrow(KODI_DESKTOP_ONLY)
   })
 
   it('streams through the proxy on a phone even without a password', async () => {

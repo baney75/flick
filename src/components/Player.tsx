@@ -5,7 +5,8 @@ import { nowPlaying, saveProgress, settings, setSettings, notify, type PlayReque
 import { resolve, storeFile, type Resolved } from '../lib/library'
 import { formatTime } from '../lib/parse'
 import { vttUrl, toVtt } from '../lib/subs'
-import { isDesktop, hasOpfs, invoke } from '../lib/platform'
+import { isDesktop, isMobileApp, hasOpfs, invoke } from '../lib/platform'
+import { kodiConvert } from '../lib/servers'
 import { Icon } from './icons'
 
 const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
@@ -31,6 +32,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   const hls = useRef<HlsLike | null>(null)
   const resolved = useRef<Resolved | null>(null)
   const triedFallback = useRef(false)
+  const triedConvert = useRef(false)
 
   const [status, setStatus] = useState<string | null>('Loading')
   const [error, setError] = useState<string | null>(null)
@@ -128,8 +130,19 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     v.play().catch(() => setPlaying(false))
   }
 
-  function onFail(msg: string) {
+  function onFail(msg: string, unsupported = false) {
     const v = video.current!
+    const src = req.src
+    if (unsupported && src?.t === 'kodi' && isDesktop && !isMobileApp && !triedConvert.current) {
+      // The web view cannot decode this file (AC-3 or DTS audio in an MP4, say): convert it and pick up where it stopped.
+      triedConvert.current = true
+      const at = v.currentTime
+      setStatus('Converting for playback')
+      kodiConvert(src, setStatus)
+        .then((url) => { req.startAt = at || req.startAt; return attach(v, url) })
+        .catch((e) => { setStatus(null); setError((e as Error).message || msg) })
+      return
+    }
     if (req.fallbackUrl && !triedFallback.current) {
       triedFallback.current = true
       setStatus('Switching to a compatible stream')
@@ -421,7 +434,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         onError={() => {
           const err = video.current?.error
           const hint = isDesktop ? '' : ' Formats like MKV with AC3 or HEVC play best in the Flick desktop app.'
-          onFail(err?.code === 4 ? `This file's format is not supported here.${hint}` : `Playback failed (${err?.message || 'unknown error'}).`)
+          onFail(err?.code === 4 ? `This file's format is not supported here.${hint}` : `Playback failed (${err?.message || 'unknown error'}).`, err?.code === 4)
         }}
       >
         {subs.map((s, i) => <track key={s.url} kind="subtitles" label={s.label} srcLang={s.lang} src={s.url} default={i === subOn} />)}
