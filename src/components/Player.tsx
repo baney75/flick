@@ -72,7 +72,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
       try {
         let url = req.url
         if (!url && req.src) {
-          const r = await resolve(req.src, (s) => !cancelled && setStatus(s))
+          const r = await resolve(req.src, (s) => !cancelled && setStatus(s), req.ref.t === 'item' ? req.ref.id : undefined)
           if (cancelled) { r.revoke?.(); return }
           resolved.current = r
           url = r.url

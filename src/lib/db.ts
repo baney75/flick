@@ -1,8 +1,9 @@
 // Tiny IndexedDB wrapper. One database, a few object stores, promise API.
 
 const DB_NAME = 'flick'
-const DB_VERSION = 1
-export const STORES = ['items', 'progress', 'kv', 'thumbs'] as const
+// Bump on every new store: onupgradeneeded adds only the stores an existing database lacks.
+const DB_VERSION = 2
+export const STORES = ['items', 'progress', 'kv', 'thumbs', 'downloads'] as const
 export type StoreName = (typeof STORES)[number]
 
 let dbPromise: Promise<IDBDatabase> | null = null
