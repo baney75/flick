@@ -1,6 +1,24 @@
-import { describe, it, expect } from 'vitest'
-import { kodiMap, kodiNeedsFfmpeg, type Server, type KodiLibrary } from '../src/lib/servers'
+import 'fake-indexeddb/auto'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { kodiMap, kodiNeedsFfmpeg, kodiResolve, kodiItems, saveServer, KODI_DESKTOP_ONLY, type Server, type KodiLibrary } from '../src/lib/servers'
 import { hash, KODI_IMG } from '../src/lib/library'
+
+// The shell, faked: invoke answers per command; protocolUrl builds the macOS form of convertFileSrc.
+const shell = vi.hoisted(() => ({ mobile: false, ffmpeg: '/opt/homebrew/bin/ffmpeg' as string | null, calls: [] as [string, any][], rpc: (_m: string, _p: any): any => ({}) }))
+vi.mock('../src/lib/platform', async (orig) => ({
+  ...(await orig<typeof import('../src/lib/platform')>()),
+  get isMobileApp() { return shell.mobile },
+  fileUrl: async (p: string) => `asset://localhost/${encodeURIComponent(p)}`,
+  protocolUrl: async (p: string, proto: string) => `${proto}://localhost/${encodeURIComponent(p)}`,
+  onDesktopEvent: async () => () => {},
+  invoke: async (cmd: string, args: any) => {
+    shell.calls.push([cmd, args])
+    if (cmd === 'ffmpeg_status') return { ffmpeg: shell.ffmpeg }
+    if (cmd === 'prepare') return '/cache/remux/x.mp4'
+    if (cmd === 'kodi_rpc') return shell.rpc(args.method, args.params)
+    return null
+  },
+}))
 
 const open: Server = { id: 'kodi-a', type: 'kodi', name: 'Living Room', url: 'http://192.168.1.30:8080', token: '' }
 const locked: Server = { ...open, token: btoa('kodi:p@ss word') }
@@ -69,8 +87,77 @@ describe('kodi mapping', () => {
   })
 
   it('says what to do when ffmpeg is missing', () => {
-    expect(kodiNeedsFfmpeg(true)).toMatch(/password/)
-    expect(kodiNeedsFfmpeg(true)).toMatch(/install ffmpeg/i)
-    expect(kodiNeedsFfmpeg(false)).toMatch(/MKV and AVI/)
+    expect(kodiNeedsFfmpeg()).toMatch(/install ffmpeg/i)
+    expect(kodiNeedsFfmpeg()).toMatch(/MKV and AVI/)
+  })
+})
+
+describe('kodi playback', () => {
+  const src = (s: Server, file: string) => ({ t: 'kodi' as const, server: s.id, url: `${s.url}/vfs/${encodeURIComponent(file)}` })
+  beforeEach(async () => {
+    shell.mobile = false
+    shell.ffmpeg = '/opt/homebrew/bin/ffmpeg'
+    shell.calls = []
+    await saveServer(open)
+    await saveServer({ ...locked, id: 'kodi-b' })
+  })
+  const lockedB = { ...locked, id: 'kodi-b' }
+
+  it('plays a native file straight from a Kodi without a password', async () => {
+    const s = src(open, '/m/A.mp4')
+    expect(await kodiResolve(s)).toBe(s.url)
+    expect(shell.calls).toEqual([])
+  })
+
+  it('streams a native file through the kodi:// proxy when Kodi has a password', async () => {
+    const url = await kodiResolve(src(lockedB, '/m/A.mp4'))
+    expect(url).toBe(`kodi://localhost/${encodeURIComponent('kodi-b/vfs/%2Fm%2FA.mp4')}`)
+    expect(url).not.toContain('p%40ss')
+    expect(shell.calls).toEqual([['kodi_proxy_register', { id: 'kodi-b', base: lockedB.url, user: 'kodi', pass: 'p@ss word' }]])
+    // Registered once per session.
+    await kodiResolve(src(lockedB, '/m/B.m4v'))
+    expect(shell.calls.filter(([c]) => c === 'kodi_proxy_register')).toHaveLength(1)
+    // Works on a phone too: no ffmpeg needed.
+    shell.mobile = true
+    shell.ffmpeg = null
+    expect(await kodiResolve(src(lockedB, '/m/C.webm'))).toMatch(/^kodi:\/\/localhost\/kodi-b%2Fvfs%2F/)
+  })
+
+  it('converts MKV, OGG and Opus through prepare on the desktop', async () => {
+    for (const f of ['/m/A.mkv', '/m/a.ogg', '/m/a.opus']) {
+      shell.calls = []
+      expect(await kodiResolve(src(lockedB, f))).toBe(`asset://localhost/${encodeURIComponent('/cache/remux/x.mp4')}`)
+      const prep = shell.calls.find(([c]) => c === 'prepare')!
+      expect(prep[1]).toEqual({ path: src(lockedB, f).url, user: 'kodi', pass: 'p@ss word' })
+    }
+    shell.ffmpeg = null
+    await expect(kodiResolve(src(open, '/m/A.mkv'))).rejects.toThrow(/install ffmpeg/i)
+  })
+
+  it('tells a phone that MKV needs the desktop app', async () => {
+    shell.mobile = true
+    await expect(kodiResolve(src(open, '/m/A.mkv'))).rejects.toThrow(KODI_DESKTOP_ONLY)
+    expect(KODI_DESKTOP_ONLY).toMatch(/desktop app \(Mac, Windows or Linux\)/)
+    expect(shell.calls.some(([c]) => c === 'prepare')).toBe(false)
+  })
+
+  it('pages library calls until the total is reached', async () => {
+    const total = 4500
+    const asked: Record<string, [number, number][]> = {}
+    shell.rpc = (method, p) => {
+      const { start, end } = p.limits
+      ;(asked[method] ??= []).push([start, end])
+      const n = method === 'VideoLibrary.GetMovies' ? total : method === 'VideoLibrary.GetEpisodes' ? 3 : 0
+      const ids = Array.from({ length: Math.max(0, Math.min(end, n) - start) }, (_, i) => start + i)
+      if (method === 'VideoLibrary.GetMovies') return { movies: ids.map((i) => ({ movieid: i, title: `M${i}`, file: `/m/${i}.mp4` })), limits: { start, end, total: n } }
+      if (method === 'VideoLibrary.GetEpisodes') return { episodes: ids.map((i) => ({ episodeid: i, title: `E${i}`, file: `/e/${i}.mkv` })), limits: { start, end, total: n } }
+      return { limits: { start: 0, end: 0, total: 0 } }
+    }
+    const items = await kodiItems(open)
+    expect(asked['VideoLibrary.GetMovies']).toEqual([[0, 2000], [2000, 4000], [4000, 6000]])
+    expect(asked['VideoLibrary.GetEpisodes']).toEqual([[0, 2000]])
+    expect(asked['AudioLibrary.GetSongs']).toEqual([[0, 2000]])
+    expect(items).toHaveLength(total + 3)
+    expect(new Set(items.map((i) => i.id)).size).toBe(total + 3)
   })
 })
