@@ -237,6 +237,12 @@ label.toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
 .stream-tags .ok { color: var(--ok); }
 .stream-tags .warn { color: var(--warn); }
 .stream-go { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); color: var(--accent); }
+.stream-item { display: grid; gap: 6px; align-content: start; }
+.stream-dl { justify-self: end; }
+.saved-list { display: grid; gap: 6px; margin: 10px 0; }
+.saved-row { display: flex; align-items: center; gap: 10px; }
+.saved-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-status { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 14px; color: var(--dim); }
 
 /* ---------- context menu, toast, dropzone ---------- */
 .ctx { position: fixed; z-index: 40; min-width: 220px; max-width: 300px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px; box-shadow: var(--shadow); }
@@ -362,6 +368,7 @@ label.toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
   h1 { font-size: 24px; }
   .hrow { grid-auto-columns: 200px; }
   .episodes, .episodes.compact, .stream-list { grid-template-columns: 1fr; }
+  .stream-dl, .saved-row .btn { height: 44px; }
   .episode .art, .episodes.compact .art { width: 120px; }
   .detail-head { flex-direction: column; align-items: flex-start; gap: 18px; }
   .detail-poster { width: 140px; }

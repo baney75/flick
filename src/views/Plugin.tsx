@@ -6,12 +6,14 @@ import type { ComponentChildren } from 'preact'
 import { go, play, notify, progress } from '../lib/store'
 import { Card, Row } from '../components/Card'
 import { Icon } from '../components/icons'
-import { isDesktop } from '../lib/platform'
+import { isDesktop, isMobileApp } from '../lib/platform'
+import { downloads, savedId, cancelDownload, removeDownload, type Saved } from '../lib/downloads'
+import { saveStream, playSaved, badgeFor } from '../lib/offline'
 import { callPlugin } from '../lib/plugins/runtime'
 import { installed } from '../lib/plugins/registry'
 import { sources, sourceById, searchAll, titlePath, progressKey, libraries, loadLibrary, continueOf, type Source, type Found } from '../lib/plugins/use'
 import type { CatalogDef, Meta, Stream, Video } from '../lib/plugins/validate'
-import { sections, best, qualityOf, hdrOf, sizeOf } from '../lib/plugins/streams'
+import { sections, best, qualityOf, hdrOf, sizeOf, downloadable } from '../lib/plugins/streams'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
 
@@ -214,6 +216,8 @@ export function PluginTitle({ p, type, id, videoId }: { p: string; type: string;
   )
 }
 
+const dlKind = (s: Stream) => downloadable(s, { desktop: isDesktop, mobile: isMobileApp })
+
 const epLabel = (v?: Video) => (v && v.season != null && v.episode != null ? `S${v.season} E${v.episode}` : '')
 
 function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; videoId: string; video?: Video }) {
@@ -221,19 +225,36 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   const [err, setErr] = useState('')
   const [group, setGroup] = useState('all')
   const [opened, setOpened] = useState<string[]>([])
+  const [dlId, setDlId] = useState<string | null>(null)
   useEffect(() => {
     callPlugin(rec, 'streams', [{ type: meta.type, id: meta.id, videoId }]).then(setList).catch((e) => { setErr((e as Error).message); setList([]) })
   }, [videoId])
+  const key = progressKey(rec.id, videoId)
+  useEffect(() => { savedId(key).then(setDlId) }, [key])
+  const dl = dlId ? downloads.value.get(dlId) : undefined
 
   const groups = [...new Set((list ?? []).map((s) => s.group).filter(Boolean))] as string[]
   const shown = (list ?? []).filter((s) => group === 'all' || s.group === group)
   const ref = { t: 'plugin' as const, p: rec.id, type: meta.type, id: meta.id, videoId }
 
-  const saved = progress.value[progressKey(rec.id, videoId)]
-  const resumeAt = unfinished(saved) ? saved.pos : 0
+  const label = video ? [epLabel(video), video.title].filter(Boolean).join(' · ') : meta.year
+  let sent = 0
+  const onSave = rec.manifest.has.progress ? (pos: number, dur: number) => {
+    // Tell the source at most every 30 seconds; the player saves locally every 5.
+    if (Date.now() - sent < 30_000) return
+    sent = Date.now()
+    callPlugin(rec, 'progress', [{ type: meta.type, id: meta.id, videoId, pos, dur }]).catch(() => {})
+  } : undefined
+
+  const save = (s: Stream) => {
+    const saved: Saved = { key, plugin: rec.id, title: meta.name, subtitle: label, poster: video?.thumbnail ?? meta.background ?? meta.poster, kind: s.kind === 'audio' ? 'audio' : 'video', url: s.url, ref }
+    saveStream(saved)
+  }
+
+  const last = progress.value[key]
+  const resumeAt = unfinished(last) ? last.pos : 0
   const start = async (s: Stream, startAt?: number) => {
     if (s.external) { window.open(s.url, '_blank', 'noopener'); return }
-    if (s.url.startsWith('flick-tool:')) { notify('This stream needs a desktop tool this Flick does not have yet.'); return }
     if (s.kind === 'book') {
       go(`/read-url?u=${encodeURIComponent(s.url)}&t=${encodeURIComponent(meta.name)}&r=${encodeURIComponent(JSON.stringify(ref))}`)
       return
@@ -242,44 +263,47 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     if (rec.manifest.has.subtitles) subs.push(...(await callPlugin(rec, 'subtitles', [{ type: meta.type, id: meta.id, videoId }]).catch(() => [])))
     const langs = navigator.languages.map((l) => l.slice(0, 2))
     subs.sort((a, b) => Number(langs.some((l) => b.lang.startsWith(l))) - Number(langs.some((l) => a.lang.startsWith(l))))
-    let sent = 0
     play({
-      key: progressKey(rec.id, videoId),
+      key,
       title: meta.name,
-      subtitle: video ? [epLabel(video), video.title].filter(Boolean).join(' · ') : meta.year,
+      subtitle: label,
       kind: s.kind === 'audio' ? 'audio' : 'video',
       url: s.url,
       poster: video?.thumbnail ?? meta.background ?? meta.poster,
       subs: subs.slice(0, 12).map((x) => ({ label: x.label ?? x.lang, lang: x.lang, url: x.url })),
       ref,
       startAt,
-      onSave: rec.manifest.has.progress ? (pos, dur) => {
-        // Tell the source at most every 30 seconds; the player saves locally every 5.
-        if (Date.now() - sent < 30_000) return
-        sent = Date.now()
-        callPlugin(rec, 'progress', [{ type: meta.type, id: meta.id, videoId, pos, dur }]).catch(() => {})
-      } : undefined,
+      onSave,
     })
   }
 
   const secs = sections(shown)
   const top = best(shown)
+  // One download per title: rows offer Download until one is queued, running or saved.
+  const free = !dl || dl.state === 'failed'
   const row = (s: Stream) => {
     const q = qualityOf(s), hdr = hdrOf(s), size = sizeOf(s)
+    const how = dlKind(s)
+    // On the website no stream host is contacted before a tap (a debrid link acts on the account);
+    // a host that refuses the browser fails the download with the message to use the Flick app.
+    const canSave = free && how !== null
     return (
-      <button class="stream" onClick={() => start(s)}>
-        <div class="stream-name">{s.group ?? rec.manifest.name}</div>
-        <div class="stream-detail">{s.title ?? ''}</div>
-        <div class="stream-tags">
-          {q !== 'Other' && <span class="q">{q}</span>}
-          {hdr && <span class="q">{hdr}</span>}
-          {size && <span>{size}</span>}
-          {s.kind === 'book' && <span>Book</span>}
-          {s.external && <span>Opens in your browser</span>}
-          {s.needsDesktop && !isDesktop && <span class="warn">May need the desktop app</span>}
-        </div>
-        <Icon name={s.external ? 'external' : 'play'} size={18} class="stream-go" />
-      </button>
+      <div class="stream-item">
+        <button class="stream" onClick={() => start(s)}>
+          <div class="stream-name">{s.group ?? rec.manifest.name}</div>
+          <div class="stream-detail">{s.title ?? ''}</div>
+          <div class="stream-tags">
+            {q !== 'Other' && <span class="q">{q}</span>}
+            {hdr && <span class="q">{hdr}</span>}
+            {size && <span>{size}</span>}
+            {s.kind === 'book' && <span>Book</span>}
+            {s.external && <span>Opens in your browser</span>}
+            {s.needsDesktop && !isDesktop && <span class="warn">May need the desktop app</span>}
+            </div>
+          <Icon name={s.external ? 'external' : 'play'} size={18} class="stream-go" />
+        </button>
+      {canSave && <button class="btn ghost sm stream-dl" onClick={() => save(s)} aria-label={`Download ${s.title ?? meta.name}`}><Icon name="download" size={16} /> Download</button>}
+      </div>
     )
   }
 
@@ -288,9 +312,19 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       <div class="row-head">
         <h2>Streams{video ? ` · ${epLabel(video) || video.title}` : ''}</h2>
         {list === null && <span class="spinner sm" />}
-        {top && <button class="btn primary play-best" onClick={() => start(top)}><Icon name="play" size={16} /> {resumeAt ? `Resume ${formatTime(resumeAt)}` : `Play${qualityOf(top) !== 'Other' ? ` ${qualityOf(top)}` : ''}`}</button>}
-        {top && resumeAt > 0 && <button class="btn ghost start-over" onClick={() => start(top, 0)}>Start over</button>}
+        {dl?.state === 'done'
+          ? <button class="btn primary play-best" onClick={() => playSaved(dl, { onSave })}><Icon name="play" size={16} /> {resumeAt ? `Resume downloaded ${formatTime(resumeAt)}` : 'Play downloaded'}</button>
+          : top && <button class="btn primary play-best" onClick={() => start(top)}><Icon name="play" size={16} /> {resumeAt ? `Resume ${formatTime(resumeAt)}` : `Play${qualityOf(top) !== 'Other' ? ` ${qualityOf(top)}` : ''}`}</button>}
+        {(dl?.state === 'done' || top) && resumeAt > 0 && <button class="btn ghost start-over" onClick={() => (dl?.state === 'done' ? playSaved(dl, { onSave, startAt: 0 }) : start(top!, 0))}>Start over</button>}
       </div>
+      {dl && !(dl.state === 'failed' && dl.error === 'Canceled' && !dl.part) && (
+        <p class="dl-status small">
+          {dl.state === 'done' ? 'Downloaded. Plays offline.' : dl.error === 'Canceled' ? 'Download canceled. Download again to resume.' : dl.state === 'failed' ? `Download failed: ${dl.error}` : dl.state === 'queued' ? 'Waiting to download' : `Downloading ${badgeFor(dl)}`}
+          {dl.state === 'done' || dl.state === 'failed'
+            ? <button class="btn ghost sm" onClick={async () => { await removeDownload(dl.id); notify('Download removed.') }}>Remove download</button>
+            : <button class="btn ghost sm" onClick={() => cancelDownload(dl.id)}>Cancel</button>}
+        </p>
+      )}
       {groups.length > 1 && (
         <div class="chips">
           <button class={`chip ${group === 'all' ? 'on' : ''}`} onClick={() => setGroup('all')}>All <span>{list!.length}</span></button>

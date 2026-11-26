@@ -89,6 +89,7 @@ export default {
       { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream SD 480p', quality: '480p' },
       { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream 1080p HDR 1.2 GB', quality: '1080p' },
       { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream 720p', quality: '720p' },
+      { url: '$BASE/media/a1/index.m3u8?t=${FLICK_CODE}', title: 'Smoke stream HLS 480p', quality: '480p' },
     ]
   },
 }`
@@ -526,6 +527,24 @@ try {
   check(restarted > 0 && restarted < 5, `Start over plays from the beginning (${restarted.toFixed(1)}s)`)
   await page.keyboard.press('Escape')
   await page.locator('.player').waitFor({ state: 'detached' })
+
+  // SPEC P4: Download on a direct file stream, none on an HLS playlist; the saved title plays offline.
+  const dlOn = (t) => page.locator('.stream-item', { hasText: t }).locator('.stream-dl')
+  check(await dlOn('Smoke stream 720p').waitFor({ timeout: 10000 }).then(() => true, () => false), 'Download shows on a direct file stream')
+  check(await dlOn('Smoke stream HLS').count() === 0 && await page.locator('.stream-item', { hasText: 'Smoke stream HLS' }).count() === 1, 'no Download on an .m3u8 stream')
+  await dlOn('Smoke stream 720p').click()
+  check(await page.getByText('Downloaded. Plays offline.').waitFor({ timeout: 15000 }).then(() => true, () => false), 'a plugin stream downloads in the browser')
+  await page.screenshot({ path: 'test-media/shots/plugin-download.png' })
+  await page.context().setOffline(true)
+  await page.locator('.play-best', { hasText: /downloaded/ }).click()
+  await page.locator('.player').waitFor()
+  check(await page.waitForFunction(() => { const v = document.querySelector('.player video'); return v && v.currentTime > 0.5 && v.src.startsWith('blob:') }, null, { timeout: 8000 }).then(() => true, () => false), 'the downloaded plugin title plays offline from the file')
+  await page.keyboard.press('Escape')
+  await page.locator('.player').waitFor({ state: 'detached' })
+  await page.context().setOffline(false)
+  await page.getByRole('button', { name: 'Remove download' }).click()
+  check(await page.locator('.play-best', { hasText: /Play 1080p|Resume \d/ }).waitFor({ timeout: 5000 }).then(() => true, () => false) && await dlOn('Smoke stream 720p').count() === 1, 'removing the download brings back streaming and Download')
+
   await page.goto(`${BASE}/#/`)
   await page.getByLabel('Search your plugins').fill('smoke')
   await page.keyboard.press('Enter')

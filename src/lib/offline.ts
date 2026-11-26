@@ -4,8 +4,8 @@
 import { signal, effect } from '@preact/signals'
 import type { Item } from './library'
 import { isDesktop } from './platform'
-import { downloads, download, removeDownload, type Download } from './downloads'
-import { progress, settings, notify } from './store'
+import { downloads, download, downloadStream, removeDownload, localFor, type Download, type Saved } from './downloads'
+import { progress, settings, notify, play, type PlayRequest } from './store'
 
 /** Server items can be saved. Kodi needs the app, which sends the Kodi login. */
 export function canDownload(it: Item): boolean {
@@ -37,6 +37,23 @@ export async function save(list: Item[]) {
   else if (queued) notify(queued === 1 ? 'Downloading. It plays offline when done.' : `Downloading ${queued} items.`)
 }
 
+/** Saves a plugin stream the viewer picked and says so. */
+export async function saveStream(saved: Saved) {
+  try {
+    await downloadStream(saved)
+    notify('Downloading. It plays offline when done.')
+  } catch (e) { notify((e as Error).message) }
+}
+
+/** Plays a saved plugin title from its file, under the title's own progress key. Needs no network. */
+export async function playSaved(d: Download, extra: Partial<PlayRequest> = {}): Promise<boolean> {
+  const s = d.saved
+  const local = s ? await localFor(d.id) : null
+  if (!s || !local) { notify('This download is no longer on this device.'); return false }
+  play({ key: s.key, title: s.title, subtitle: s.subtitle, kind: s.kind, src: local, poster: s.poster, ref: s.ref, ...extra })
+  return true
+}
+
 export const online = signal(typeof navigator === 'undefined' ? true : navigator.onLine)
 
 const WATCHED = 0.93
@@ -44,7 +61,7 @@ const WATCHED = 0.93
 /** Item ids whose download is done and that were watched after the download started. */
 export function watchedDownloads(rows: Map<string, Download>, prog: Record<string, { pos: number; dur: number; at: number }>): string[] {
   return [...rows.values()].filter((d) => {
-    const p = prog[d.id]
+    const p = prog[d.saved?.key ?? d.id]
     return d.state === 'done' && !!p?.dur && p.pos / p.dur >= WATCHED && p.at > d.at
   }).map((d) => d.id)
 }
