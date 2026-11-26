@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'preact/hooks'
 import { notify, settings, setSettings } from '../lib/store'
 import { isDesktop } from '../lib/platform'
-import { acceptUpdate, absolute, installed, officialList, prepare, type Candidate, type OfficialEntry } from '../lib/plugins/registry'
+import { acceptUpdate, absolute, installed, officialList, prepare, setEnabled, type Candidate, type OfficialEntry } from '../lib/plugins/registry'
 import { callPlugin } from '../lib/plugins/runtime'
 import { accountLine, allServices, checkAndSave, hasKey, keyField, moveService, removeService, type Service } from '../lib/plugins/services'
 import type { PluginManifest } from '../lib/plugins/validate'
@@ -33,18 +33,24 @@ function Services() {
         <input type="checkbox" checked={settings.value.debridNeedsVpn} onChange={(e) => setSettings({ debridNeedsVpn: (e.target as HTMLInputElement).checked })} />
         Require a VPN for debrid services too
       </label>
-      <p class="dim small">Off, these services play with or without a VPN, and the player says which. Torrents Flick plays itself always need the VPN.</p>
+      <p class="dim small">Off, services that send the video only from their own servers (all four from Flick) play with or without a VPN, and the player says which. Torrents Flick plays itself always need the VPN.</p>
     </>
   )
 }
 
 function ServiceRow({ s, first, last }: { s: Service; first: boolean; last: boolean }) {
   const [line, setLine] = useState<string | null>(null)
+  const [bad, setBad] = useState(false)
+  const [change, setChange] = useState(false)
   const keyed = hasKey(s)
   useEffect(() => {
     if (!keyed || !s.enabled) return
     setLine(null)
-    callPlugin(s, 'account', []).then((r) => setLine(accountLine(s.manifest.name, r)), (e) => setLine(`${s.manifest.name}: ${(e as Error).message}`))
+    setBad(false)
+    callPlugin(s, 'account', []).then(
+      (r) => { setLine(accountLine(s.manifest.name, r)); setBad(!r.ok) },
+      (e) => { setLine(`${s.manifest.name}: ${(e as Error).message}`); setBad(true) },
+    )
   }, [s.sha256, keyed && String(s.settings[keyField(s.manifest)!]), s.enabled])
   const drop = async () => { await removeService(s.id); notify(`${s.manifest.name} removed, with its key.`) }
   return (
@@ -54,6 +60,8 @@ function ServiceRow({ s, first, last }: { s: Service; first: boolean; last: bool
           <div>{s.manifest.name} {!s.official && <span class="tag">Not from Flick</span>}</div>
           <div class="small dim service-status">{!keyed ? 'No key yet' : !s.enabled ? 'Off' : line ?? 'Checking…'}</div>
         </div>
+        <label class="toggle"><input type="checkbox" checked={s.enabled} onChange={(e) => setEnabled(s.id, (e.target as HTMLInputElement).checked)} aria-label={`Turn ${s.manifest.name} on`} /></label>
+        {keyed && <button class="btn ghost sm" onClick={() => setChange(!change)} aria-expanded={change}>{change ? 'Keep key' : 'Change key'}</button>}
         {!first && <button class="btn ghost sm" onClick={() => moveService(s.id, -1)} aria-label={`Move ${s.manifest.name} up`}>Up</button>}
         {!last && <button class="btn ghost sm" onClick={() => moveService(s.id, 1)} aria-label={`Move ${s.manifest.name} down`}>Down</button>}
         <button class="btn ghost sm" onClick={drop} aria-label={`Remove ${s.manifest.name}`}>Remove</button>
@@ -64,7 +72,7 @@ function ServiceRow({ s, first, last }: { s: Service; first: boolean; last: bool
           <button class="btn sm" onClick={() => acceptUpdate(s.id)}>Allow and update</button>
         </div>
       )}
-      {!keyed && <KeyForm from={s} />}
+      {(!keyed || bad || change) && <KeyForm from={s} onSaved={() => setChange(false)} />}
     </div>
   )
 }
@@ -74,7 +82,9 @@ function AddService({ offer }: { offer: OfficialEntry[] }) {
   const [cand, setCand] = useState<Candidate | null>(null)
   useEffect(() => {
     setCand(null)
-    if (url) prepare({ url }).then(setCand, (e) => notify(`${offer.find((o) => o.url === url)?.name ?? 'Service'}: ${(e as Error).message}`))
+    let stale = false
+    if (url) prepare({ url }).then((c) => { if (!stale) setCand(c) }, (e) => { if (!stale) notify(`${offer.find((o) => o.url === url)?.name ?? 'Service'}: ${(e as Error).message}`) })
+    return () => { stale = true }
   }, [url])
   return (
     <div class="plugin-form">
@@ -99,9 +109,14 @@ function KeyForm({ from, onSaved }: { from: Candidate | Service; onSaved?: () =>
     e.preventDefault()
     setBusy(true)
     setMsg(null)
-    const r = await checkAndSave(from, key)
-    setBusy(false)
-    if (r.ok) { setKey(''); notify(r.line); onSaved?.() } else setMsg({ ok: false, text: r.line })
+    try {
+      const r = await checkAndSave(from, key)
+      if (r.ok) { setKey(''); notify(r.line); onSaved?.() } else setMsg({ ok: false, text: r.line })
+    } catch (err) {
+      setMsg({ ok: false, text: (err as Error).message })
+    } finally {
+      setBusy(false)
+    }
   }
   return (
     <form class="plugin-form" onSubmit={save}>

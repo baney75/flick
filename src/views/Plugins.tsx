@@ -105,7 +105,7 @@ export function PluginsPanel() {
     <section class="panel">
       <h3>Plugins</h3>
       <p class="dim small">Plugins add sources (catalogs, search, streams) and themes; debrid services are under Streaming services. Each source runs in its own sandbox. Flick never installs one without your tap.</p>
-      {installed.value.filter((p) => p.kind !== 'service').map((p) => <PluginRow p={p} open={open === p.id} onToggle={() => setOpen(open === p.id ? null : p.id)} />)}
+      {installed.value.filter((p) => !isDesktop || p.kind !== 'service').map((p) => <PluginRow p={p} open={open === p.id} onToggle={() => setOpen(open === p.id ? null : p.id)} />)}
       <form class="url-form" onSubmit={(e) => { e.preventDefault(); if (url.trim()) review({ url: url.trim() }) }}>
         <Icon name="link" size={16} />
         <input value={url} onInput={(e) => setUrl((e.target as HTMLInputElement).value)} placeholder="https://…/plugin.js or theme.json" aria-label="Plugin address" />

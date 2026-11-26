@@ -53,6 +53,8 @@ describe('adding a service', () => {
     const r = await S.checkAndSave(candidate, 'wrong-key', viaFixture(F.user_bad, seen))
     expect(r).toEqual({ ok: false, line: 'TorBox: Your token is invalid or has expired. Please log in again or reset your token.' })
     expect(seen[0].settings.apiKey).toBe('wrong-key')
+    // The trial runs in a sandbox of its own, so a running TorBox is not stopped by it.
+    expect(seen[0].id).toBe('app.torbox#trial')
     expect(R.installed.value).toEqual([])
     expect(await (await import('../src/lib/db')).get('plugins', 'app.torbox')).toBeUndefined()
     expect(settings.value.serviceOrder).toEqual([])
@@ -106,11 +108,14 @@ describe('order and removal', () => {
     expect(S.allServices.value).toHaveLength(1)
     expect(S.services.value).toEqual([])
   })
-  it('requiring a VPN is read fresh as off', async () => {
+  it('settings saved before this change read as: VPN not required for debrid, no order', async () => {
     vi.resetModules()
+    vi.stubGlobal('localStorage', { getItem: (k: string) => (k === 'flick.settings' ? '{"speed":1.5,"look":"x"}' : null), setItem() {} })
     const fresh = await import('../src/lib/store')
+    expect(fresh.settings.value.speed).toBe(1.5)
     expect(fresh.settings.value.debridNeedsVpn).toBe(false)
     expect(fresh.settings.value.serviceOrder).toEqual([])
+    vi.unstubAllGlobals()
   })
 })
 
@@ -138,6 +143,31 @@ describe('resolving a torrent', () => {
     // The last ask is at 10:00, one every 3 s from 0:00.
     expect(c.now()).toBe(10 * 60_000)
     expect(call).toHaveBeenCalledTimes(201)
+  })
+  it('a link off the service\'s hosts is refused at once', async () => {
+    const call = vi.fn(async () => ({ url: 'https://evil.example/f.mkv' }))
+    await expect(S.resolveTorrent(svc(), { infoHash: 'c'.repeat(40) }, { call: call as never, ...clock() })).rejects.toThrow(/not https on the plugin's hosts/)
+    expect(call).toHaveBeenCalledOnce()
+  })
+  it('one failed call is asked again at the next step', async () => {
+    const answers: (() => V.ResolveResult)[] = [() => ({ wait: { message: 'a' } }), () => { throw new Error('Plugin did not answer in time') }, () => ({ url: 'https://x.tb-cdn.st/f' })]
+    const call = vi.fn(async () => answers.shift()!())
+    expect(await S.resolveTorrent(svc(), { infoHash: 'c'.repeat(40) }, { call: call as never, ...clock() })).toBe('https://x.tb-cdn.st/f')
+    expect(call).toHaveBeenCalledTimes(3)
+  })
+  it('closing the player during a call that then answers with a link plays nothing', async () => {
+    const stop = new AbortController()
+    const call = vi.fn(async () => { stop.abort(); return { url: 'https://x.tb-cdn.st/f' } })
+    await expect(S.resolveTorrent(svc(), { infoHash: 'c'.repeat(40) }, { call: call as never, ...clock(), signal: stop.signal })).rejects.toThrow('Stopped')
+  })
+  it('closing the player during the 3 s wait ends it at once', async () => {
+    const stop = new AbortController()
+    const call = vi.fn(async () => ({ wait: { message: 'x' } }))
+    const p = S.resolveTorrent(svc(), { infoHash: 'c'.repeat(40) }, { call: call as never, signal: stop.signal })
+    await new Promise((r) => setTimeout(r, 10))
+    stop.abort()
+    await expect(p).rejects.toThrow('Stopped')
+    expect(call).toHaveBeenCalledOnce()
   })
   it('a service error stops it, and so does closing the player', async () => {
     const c = clock()

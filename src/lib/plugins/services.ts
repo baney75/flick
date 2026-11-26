@@ -4,8 +4,8 @@
 import { computed } from '@preact/signals'
 import { settings, setSettings } from '../store'
 import { installed, install, remove, setPluginSettings, type Candidate } from './registry'
-import { callPlugin, platformName, stopPlugin, type Installed } from './runtime'
-import type { AccountResult, PluginManifest, ResolveResult } from './validate'
+import { callPlugin, platformName, registerHosts, stopPlugin, type Installed } from './runtime'
+import { PluginError, validateResolve, type AccountResult, type PluginManifest, type ResolveResult } from './validate'
 
 export type Service = Installed & { kind: 'service'; manifest: PluginManifest }
 type Call = typeof callPlugin
@@ -60,13 +60,17 @@ export async function checkAndSave(from: Candidate | Service, key: string, call:
   if (!key) return { ok: false, line: `Paste your ${name} API key.` }
   const isRec = 'installedAt' in from
   const old = isRec ? from : from.replaces
+  // The trial runs in its own sandbox under its own id, so a running copy of the service is left alone;
+  // the desktop app checks its fetches against this manifest's hosts, registered when it starts.
   const trial: Installed = {
-    id: m.id, kind: 'service', url: from.url, code: from.code, sha256: from.sha256, manifest: m, enabled: true,
+    id: `${m.id}#trial`, kind: 'service', url: from.url, code: from.code, sha256: from.sha256, manifest: m, enabled: true,
     official: from.official, settings: { ...old?.settings, [field]: key }, installedAt: 0, checkedAt: 0,
   }
   let r: AccountResult
-  stopPlugin(m.id)
-  try { r = await call(trial, 'account', []) } catch (e) { r = { ok: false, message: (e as Error).message } } finally { stopPlugin(m.id) }
+  try { r = await call(trial, 'account', []) } catch (e) { r = { ok: false, message: (e as Error).message } } finally {
+    stopPlugin(trial.id)
+    await registerHosts({ ...trial, enabled: false }).catch(() => {})
+  }
   if (!r.ok) return { ok: false, line: accountLine(name, r) }
   if (isRec) await setPluginSettings(from.id, { [field]: key })
   else await install(from, { [field]: key })
@@ -78,7 +82,7 @@ export interface PollOptions {
   onWait?: (w: { pct?: number; message: string }) => void
   signal?: AbortSignal
   call?: Call
-  sleep?: (ms: number) => Promise<void>
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>
   now?: () => number
   every?: number
   limit?: number
@@ -90,18 +94,28 @@ export interface PollOptions {
  */
 export async function resolveTorrent(s: Service, torrent: { infoHash: string; fileIdx?: number; name?: string }, o: PollOptions = {}): Promise<string> {
   const call = o.call ?? callPlugin
-  const sleep = o.sleep ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms)))
+  const sleep = o.sleep ?? ((ms, signal) => new Promise<void>((r) => { const t = setTimeout(r, ms); signal?.addEventListener('abort', () => { clearTimeout(t); r() }, { once: true }) }))
   const now = o.now ?? Date.now
   const every = o.every ?? 3000
   const limit = o.limit ?? 10 * 60_000
   const start = now()
+  const stopped = () => { if (o.signal?.aborted) throw new Error('Stopped.') }
   for (;;) {
-    if (o.signal?.aborted) throw new Error('Stopped.')
-    const r: ResolveResult = await call(s, 'resolve', [torrent])
-    if ('url' in r) return r.url
-    if ('error' in r) throw new Error(r.error)
-    o.onWait?.(r.wait)
-    if (now() - start + every > limit) throw new Error(`${s.manifest.name} could not fetch this torrent in time.`)
-    await sleep(every)
+    stopped()
+    let r: ResolveResult | null = null
+    let failed: Error | null = null
+    // One failed call (a dropped connection, a slow answer) is asked again at the next step; a bad
+    // answer (a link off the plugin's hosts) is not.
+    try { r = validateResolve(await call(s, 'resolve', [torrent]), s.manifest.hosts) } catch (e) {
+      if (e instanceof PluginError) throw e
+      failed = e as Error
+    }
+    stopped()
+    if (r && 'url' in r) return r.url
+    if (r && 'error' in r) throw new Error(r.error)
+    if (r) o.onWait?.(r.wait)
+    if (now() - start + every > limit) throw failed && !r ? failed : new Error(`${s.manifest.name} could not fetch this torrent in time.`)
+    await sleep(every, o.signal)
+    stopped()
   }
 }
