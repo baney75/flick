@@ -24,6 +24,8 @@ import { sources, themes, startPlugins } from './lib/plugins/use'
 import { applyTheme } from './lib/plugins/themes'
 import { migrateStremio } from './lib/plugins/migrate'
 import type { BookLink } from './views/Reader'
+import { UpdateBanner } from './views/Updates'
+import { startUpdates } from './lib/updater'
 
 function bookLink(qs: URLSearchParams): BookLink | undefined {
   try {
@@ -79,7 +81,8 @@ export function App() {
   useEffect(() => {
     installSpatialNav(() => !!nowPlaying.value)
     // Plugins load first so the one-time Stremio move can see them, then progress loads already moved.
-    startPlugins().then(() => migrateStremio()).catch(() => {})
+    // The one update check (app and plugins) starts once plugins are loaded.
+    startPlugins().then(() => migrateStremio()).catch(() => {}).finally(() => startUpdates())
       .finally(() => { Promise.all([reloadItems(), loadProgress()]).then(startSyncBinding).catch(() => {}).then(startShare) })
     resumeDownloads().catch(() => {})
     startOffline()
@@ -158,6 +161,7 @@ export function App() {
         <View />
       </main>
       <Player />
+      <UpdateBanner />
       {drag && <div class="dropzone"><div><Icon name="play" size={40} /><p>Drop to play</p></div></div>}
       {toast.value && <div class="toast" role="status" key={toast.value.id}>{toast.value.text}</div>}
     </div>

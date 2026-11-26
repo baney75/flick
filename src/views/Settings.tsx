@@ -8,6 +8,7 @@ import { Icon } from '../components/icons'
 import { downloads, removeDownload } from '../lib/downloads'
 import { currentSetup, encodeSetup, validateSetup, SETUP_BASE } from '../lib/setup'
 import { PluginsPanel, ThemePicker } from './Plugins'
+import { UpdatesPanel } from './Updates'
 
 async function shareSetup() {
   const link = SETUP_BASE + encodeSetup(await currentSetup())
@@ -85,6 +86,8 @@ export function Settings() {
       </section>
 
       <PluginsPanel />
+
+      <UpdatesPanel />
 
       {isDesktop && (
         <section class="panel">

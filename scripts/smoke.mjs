@@ -95,6 +95,7 @@ const SMOKE_THEME = {
   light: { bg: '#f4f1ea', surface: '#ffffff', fg: '#1d2420', dim: '#5c675f', line: '#dcd6c8', accent: '#2f7a4f' },
   dark: { bg: '#101512', surface: '#18201b', fg: '#eef2ec', dim: '#9aa79d', line: '#26302a', accent: '#2f7a4f' },
 }
+let pluginV2 = false
 const flick = createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Headers', 'Authorization, Range')
@@ -105,7 +106,12 @@ const flick = createServer((req, res) => {
   const json = (code, o) => res.writeHead(code, { 'content-type': 'application/json' }).end(JSON.stringify(o))
   if (u.pathname === '/api/info') return json(200, { app: 'flick-server', v: 1, name: 'Smoke NAS', version: '0.0.0' })
   // A test source plugin and theme, installed through Settings > Plugins.
-  if (u.pathname === '/plugin.js') return res.writeHead(200, { 'content-type': 'text/javascript' }).end(SMOKE_PLUGIN.replaceAll('$BASE', `http://127.0.0.1:${flick.address().port}`))
+  if (u.pathname === '/plugin.js') {
+    let code = SMOKE_PLUGIN.replaceAll('$BASE', `http://127.0.0.1:${flick.address().port}`)
+    // Version 1.1.0 asks for one more host, so its update waits in Settings > Updates for a tap.
+    if (pluginV2) code = code.replace("version: '1.0.0'", "version: '1.1.0'").replace("hosts: ['127.0.0.1']", "hosts: ['127.0.0.1', 'new.example']")
+    return res.writeHead(200, { 'content-type': 'text/javascript' }).end(code)
+  }
   if (u.pathname === '/theme.json') return json(200, SMOKE_THEME)
   if (req.headers.authorization !== `Bearer ${FLICK_CODE}` && u.searchParams.get('t') !== FLICK_CODE) return json(401, { error: 'wrong code' })
   if (u.pathname === '/api/library') {
@@ -528,6 +534,17 @@ try {
   check(accent0 !== "#2f7a4f" && await accent() === "#2f7a4f", `a theme sets --accent (${accent0} -> ${await accent()})`)
   await page.screenshot({ path: 'test-media/shots/plugin-theme.png' })
   await page.getByLabel('Colors').selectOption('')
+
+  // Settings > Updates on the website: no app updater, and a plugin update with a new host waits for Allow.
+  const updatesPanel = page.locator('#updates')
+  check(await updatesPanel.getByText('The website updates itself').isVisible() && await updatesPanel.getByRole('button', { name: 'Restart to update' }).count() === 0, 'Updates panel renders on the website without the app part')
+  pluginV2 = true
+  await updatesPanel.getByRole('button', { name: 'Check now' }).click()
+  const waiting = updatesPanel.locator('.update-plugin', { hasText: 'Smoke Films 1.1.0 asks to reach new.example' })
+  check(await waiting.waitFor({ timeout: 10000 }).then(() => true, () => false), 'a plugin update with a new host is listed in Updates')
+  await waiting.getByRole('button', { name: 'Allow' }).click()
+  check(await waiting.waitFor({ state: 'detached', timeout: 5000 }).then(() => true, () => false), 'Allow installs the plugin update')
+  await page.screenshot({ path: 'test-media/shots/updates.png' })
 
   // The Stremio plugin from Flick's list, without an account: Cinemeta rows, a title page, search.
   await page.locator('.list-row', { hasText: 'Stremio' }).getByRole('button', { name: 'Install' }).click()
