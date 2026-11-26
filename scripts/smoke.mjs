@@ -4,6 +4,8 @@ import { chromium } from 'playwright'
 import { spawn, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
+import { make as makeAudio } from '../tests/media-setup.mjs'
+import { makeEpub, EVIL } from './epub-fixture.mjs'
 
 const PORT = 4178
 // SMOKE_BASE=https://flick-player.pages.dev checks a deployed site instead of a local build.
@@ -39,12 +41,25 @@ function writePdf(path, pages = 3) {
 }
 const book = 'test-media/Jane Doe - Test Book (2020).pdf'
 writePdf(book)
+// An M4B with three chapters and a cover, and two MP3 parts for a book in a folder (tests/media-setup.mjs).
+if (!existsSync('test-media/audiobook/book.m4b')) makeAudio()
+const m4b = 'test-media/Jane Doe - Test Audiobook.m4b'
+writeFileSync(m4b, readFileSync('test-media/audiobook/book.m4b'))
+// EPUBs: one with a cover, nav contents and every trick a hostile book might try; one EPUB 2 with NCX contents.
+execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x8a2be2:s=120x180', '-frames:v', '1', 'test-media/cover.png'])
+const epub = 'test-media/Jane Doe - Test Epub (2020).epub'
+writeFileSync(epub, makeEpub({ title: 'Test Epub', author: 'Jane Doe', cover: readFileSync('test-media/cover.png'), chapters: [['Chapter One', EVIL], ['Chapter Two'], ['Chapter Three']] }))
+const serverEpub = makeEpub({ title: 'Server Epub', author: 'John Roe', ncx: true, chapters: [['First Part'], ['Second Part']] })
 
 // A mock flick-server (see the flick-server API): info, library, media with Range, CORS and an access code.
 const FLICK_CODE = 'smoke_code_0123456789abcdefghijklmnopqrstuvwx'
 const flickFiles = {
   a1: { folder: 'Movies', name: 'Server.Movie.2024.webm', kind: 'video', ext: 'webm', type: 'video/webm', body: readFileSync(media) },
   b2: { folder: 'Books', name: 'John Roe - Server Book (2021).pdf', kind: 'book', ext: 'pdf', type: 'application/pdf', body: readFileSync(book) },
+  d4: { folder: 'Audiobooks', path: 'John Roe/Part Book/01 Part.mp3', name: '01 Part.mp3', kind: 'audio', ext: 'mp3', type: 'audio/mpeg', body: readFileSync('test-media/audiobook/01 Part.mp3') },
+  e5: { folder: 'Audiobooks', path: 'John Roe/Part Book/02 Part.mp3', name: '02 Part.mp3', kind: 'audio', ext: 'mp3', type: 'audio/mpeg', body: readFileSync('test-media/audiobook/02 Part.mp3') },
+  f6: { folder: 'Audiobooks', name: 'John Roe - Server Audiobook.m4b', kind: 'audio', ext: 'm4b', type: 'audio/mp4', body: readFileSync('test-media/audiobook/book.m4b') },
+  c3: { folder: 'Books', name: 'John Roe - Server Epub (2022).epub', kind: 'book', ext: 'epub', type: 'application/epub+zip', body: serverEpub },
 }
 const SMOKE_PLUGIN = `
 const r = {}
@@ -94,7 +109,7 @@ const flick = createServer((req, res) => {
   if (u.pathname === '/theme.json') return json(200, SMOKE_THEME)
   if (req.headers.authorization !== `Bearer ${FLICK_CODE}` && u.searchParams.get('t') !== FLICK_CODE) return json(401, { error: 'wrong code' })
   if (u.pathname === '/api/library') {
-    return json(200, { name: 'Smoke NAS', folders: ['Movies', 'Books'], items: Object.entries(flickFiles).map(([id, f]) => ({ id, folder: f.folder, path: f.name, name: f.name, kind: f.kind, ext: f.ext, size: f.body.length, mtime: 1732550400000 })) })
+    return json(200, { name: 'Smoke NAS', folders: ['Movies', 'Books'], items: Object.entries(flickFiles).map(([id, f]) => ({ id, folder: f.folder, path: f.path ?? f.name, name: f.name, kind: f.kind, ext: f.ext, size: f.body.length, mtime: 1732550400000 })) })
   }
   const f = flickFiles[u.pathname.slice('/media/'.length)]
   if (!u.pathname.startsWith('/media/') || !f) return json(404, { error: 'not found' })
@@ -153,9 +168,16 @@ try {
   const subChooser = page.waitForEvent('filechooser')
   await page.getByText('Load subtitle file…').click()
   await (await subChooser).setFiles('test-media/sample.srt')
-  await page.waitForFunction(() => { const t = document.querySelector('.player video').textTracks; return t.length === 1 && t[0].mode === 'showing' })
-  check(true, 'SRT subtitles load and show')
+  await page.waitForFunction(() => document.querySelector('.player .subs .cue')?.textContent === 'Hello from Flick', null, { timeout: 5000 }).catch(() => {})
+  check(await page.locator('.player .subs .cue').count() === 1, 'SRT subtitles load and show')
   await page.mouse.move(640, 400)
+  await page.waitForTimeout(300)
+  const clear = await page.evaluate(() => {
+    const cue = document.querySelector('.player .subs .cue')?.getBoundingClientRect()
+    const bar = document.querySelector('.player .bottom-bar .scrub')?.getBoundingClientRect()
+    return cue && bar ? Math.round(bar.top - cue.bottom) : null
+  })
+  check(clear !== null && clear >= 0, `subtitles sit above the controls (${clear}px clear)`)
   await page.screenshot({ path: 'test-media/shots/player.png' })
 
   await page.keyboard.press('Escape')
@@ -212,6 +234,129 @@ try {
   await fresh.screenshot({ path: 'test-media/shots/reader.png' })
   await fresh.close()
 
+  // Audiobooks: store an M4B, see its chapters, cover and sleep timer; speed stays with the book.
+  await page.goto(`${BASE}/#/library`)
+  const abChooser = page.waitForEvent('filechooser')
+  await page.getByRole('button', { name: /Store files/ }).click()
+  await (await abChooser).setFiles(m4b)
+  await page.getByRole('tab', { name: /Audiobooks/ }).click()
+  await page.getByText('Test Audiobook').first().click()
+  const chaptersBtn = page.getByRole('button', { name: /^Chapters/ })
+  check(await chaptersBtn.filter({ hasText: 'Chapters (3)' }).waitFor({ timeout: 8000 }).then(() => true, () => false), 'M4B chapters are read in the browser')
+  check(await page.locator('img.listen-cover').waitFor({ timeout: 3000 }).then(() => true, () => false), 'audiobook cover art shows')
+  await chaptersBtn.click()
+  const chapterNames = await page.locator('.listen-pop button').allInnerTexts()
+  check(chapterNames.length === 3 && chapterNames[1].startsWith('The Middle'), `chapter list (${chapterNames.map((c) => c.split('\n')[0]).join(', ')})`)
+  await page.locator('.listen-pop button', { hasText: 'The Middle' }).click()
+  await page.getByRole('button', { name: 'Play', exact: true }).click()
+  await page.getByRole('button', { name: 'Sleep' }).click()
+  const sleepItems = await page.locator('.listen-pop button').allInnerTexts()
+  check(['15 minutes', '30 minutes', '45 minutes', '60 minutes', 'End of chapter'].every((s) => sleepItems.includes(s)), `sleep timer menu (${sleepItems.join(', ')})`)
+  const popFits = await page.evaluate(() => { const r = document.querySelector('.listen-pop').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight })
+  check(popFits, 'sleep menu opens fully inside the window')
+  await page.screenshot({ path: 'test-media/shots/audiobook.png' })
+  await page.locator('.listen-pop button', { hasText: 'End of chapter' }).click()
+  // Play fast so timeupdates land past the chapter's end, the way a slow phone does.
+  await page.evaluate(() => { document.querySelector('.listen audio').playbackRate = 4 })
+  const stopped = await page.waitForFunction(() => { const a = document.querySelector('.listen audio'); return a && a.paused && a.currentTime > 8 }, null, { timeout: 9000 }).then(() => true, () => false)
+  await page.waitForTimeout(300)
+  const stopAt = await page.evaluate(() => document.querySelector('.listen audio')?.currentTime)
+  check(stopped && stopAt > 8 && stopAt < 8.5, `sleep timer stops inside the chapter it ends (${stopAt?.toFixed(2)}s, chapter ends at 8.5s)`)
+  await page.getByRole('button', { name: 'Speed' }).click()
+  await page.locator('.listen-pop button', { hasText: /^1\.5×$/ }).click()
+  await page.goto(`${BASE}/#/library`)
+  await page.getByText('Test Audiobook').first().click()
+  check(await page.getByRole('button', { name: 'Speed' }).filter({ hasText: '1.5×' }).waitFor({ timeout: 5000 }).then(() => true, () => false), 'audiobook speed is remembered for the book')
+  check(await page.locator('.listen-book', { hasText: /left at 1\.5×/ }).waitFor({ timeout: 3000 }).then(() => true, () => false), 'time left counts the book speed')
+  check(await page.locator('.listen-chapter', { hasText: 'The Middle' }).waitFor({ timeout: 5000 }).then(() => true, () => false), 'audiobook resumes in the chapter it stopped in')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.waitForTimeout(200)
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'audiobook player fits a phone without sideways scroll')
+  await page.screenshot({ path: 'test-media/shots/phone-audiobook.png' })
+  await page.setViewportSize({ width: 1280, height: 800 })
+  // EPUB: store one, see its cover, page through it, use the contents, and prove the book's scripts never run.
+  await page.goto(`${BASE}/#/library`)
+  await page.evaluate(() => { window.__pwned = []; addEventListener('message', (e) => { if (e.data?.pwned) window.__pwned.push(e.data.pwned) }) })
+  const epubChooser = page.waitForEvent('filechooser')
+  await page.getByRole('button', { name: /Store files/ }).click()
+  await (await epubChooser).setFiles(epub)
+  await page.getByRole('tab', { name: /Books/ }).click()
+  const epubCard = page.locator('.card', { hasText: 'Test Epub' })
+  check(await epubCard.locator('img').waitFor({ timeout: 8000 }).then(() => true, () => false), 'EPUB cover shows as its poster')
+  await epubCard.click()
+  const pageNo = page.locator('.reader-page')
+  await pageNo.filter({ hasText: /^Page 1 of [2-9]/ }).waitFor({ timeout: 10000 })
+  check(true, `EPUB opens paged (${await pageNo.innerText()})`)
+  await page.keyboard.press('ArrowRight')
+  check(await pageNo.filter({ hasText: /^Page 2 of/ }).waitFor({ timeout: 3000 }).then(() => true, () => false), 'arrow key turns the EPUB page')
+  const frame = page.frameLocator('.epub-frame')
+  await frame.locator('body').click({ position: { x: 20, y: 300 } })
+  check(await pageNo.filter({ hasText: /^Page 1 of/ }).waitFor({ timeout: 3000 }).then(() => true, () => false), 'tapping the left side turns back')
+  await frame.locator('#evil').click()
+  await page.waitForTimeout(500)
+  const sandbox = await page.locator('.epub-frame').getAttribute('sandbox')
+  const inFrame = await page.frames().find((f) => f !== page.mainFrame()).evaluate(() => ({
+    scripts: document.querySelectorAll('script').length,
+    handlers: [...document.querySelectorAll('*')].some((e) => [...e.attributes].some((a) => a.name.startsWith('on'))),
+    frames: document.querySelectorAll('iframe,object,embed').length,
+    storage: (() => { try { return typeof localStorage.length } catch { return 'blocked' } })(),
+  }))
+  const pwned = await page.evaluate(() => [window.__pwned, localStorage.getItem('pwned')])
+  const frameUrl = page.frames().find((f) => f !== page.mainFrame()).url()
+  check(frameUrl === 'about:srcdoc', `EPUB markup cannot navigate the frame away (frame at ${frameUrl})`)
+  await frame.locator('#frag').click()
+  await page.locator('.reader-title .t2', { hasText: 'Chapter Two' }).waitFor({ timeout: 5000 }).catch(() => {})
+  await page.waitForTimeout(2000)
+  const fragFrames = page.frames().filter((f) => f !== page.mainFrame())
+  const refresh = await Promise.all(fragFrames.map((f) => f.evaluate(() => document.querySelectorAll('meta[http-equiv="refresh" i]').length).catch(() => -1)))
+  check(fragFrames.length > 0 && fragFrames.every((f) => f.url() === 'about:srcdoc') && refresh.every((n) => n === 0),
+    `a link fragment cannot break out of the pager (frames at ${fragFrames.map((f) => f.url()).join(', ')}, refresh tags ${refresh.join(', ')})`)
+  await page.locator('.reader-title').click()
+  await page.keyboard.press('Home')
+  await page.locator('.reader-title .t2', { hasText: 'Chapter One' }).waitFor({ timeout: 5000 })
+  await frame.locator('#evil').waitFor({ timeout: 5000 })
+  await page.waitForTimeout(500)
+  check(sandbox === 'allow-scripts' && inFrame.storage === 'blocked', `EPUB frame is sandboxed without same-origin (${sandbox}, storage ${inFrame.storage})`)
+  check(pwned[0].length === 0 && pwned[1] === null && inFrame.scripts === 1 && !inFrame.handlers && !inFrame.frames,
+    `scripts in an EPUB never run (ran: ${pwned[0].join(', ') || 'none'}; ${inFrame.scripts} script, handlers ${inFrame.handlers}, frames ${inFrame.frames})`)
+  for (let i = 0; i < 30; i++) {
+    const [p, n] = (await pageNo.innerText()).match(/\d+/g).map(Number)
+    if (p === n) break
+    await page.keyboard.press('ArrowRight')
+    await pageNo.filter({ hasText: new RegExp(`^Page ${p + 1} of`) }).waitFor({ timeout: 3000 }).catch(() => {})
+  }
+  for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight')
+  await page.waitForTimeout(1500)
+  const landed = await page.locator('.reader-title .t2').innerText()
+  check(landed === 'Chapter Two', `quick turns past a chapter's end land in the next chapter (${landed})`)
+  await page.getByRole('button', { name: 'Contents' }).click()
+  await page.locator('.epub-toc').getByText('Chapter Two').click()
+  await page.locator('.reader-title .t2', { hasText: 'Chapter Two' }).waitFor({ timeout: 5000 })
+  await page.keyboard.press('ArrowRight')
+  await pageNo.filter({ hasText: /^Page 2 of/ }).waitFor({ timeout: 3000 })
+  check(true, 'contents jump to a chapter')
+  const before2 = await pageNo.innerText()
+  await page.getByRole('button', { name: 'Larger text' }).click()
+  await page.getByRole('button', { name: 'Larger text' }).click()
+  check(await page.waitForFunction((b) => { const t = document.querySelector('.reader-page')?.textContent; return t && t !== b }, before2, { timeout: 5000 }).then(() => true, () => false), 'larger text repaginates the chapter')
+  await page.emulateMedia({ colorScheme: 'light' })
+  await page.getByRole('button', { name: 'Night', exact: true }).click()
+  const chrome = await page.evaluate(() => {
+    const lum = (c) => { const [r, g, b] = c.match(/\d+/g).map(Number); return (r * 299 + g * 587 + b * 114) / 1000 }
+    const r = document.querySelector('.reader'), t = document.querySelector('.reader-title .t1')
+    return { bg: lum(getComputedStyle(r).backgroundColor), fg: lum(getComputedStyle(t).color) }
+  })
+  check(chrome.bg < 40 && chrome.fg > 180, `Night darkens the reader toolbar in light mode (bg ${Math.round(chrome.bg)}, text ${Math.round(chrome.fg)})`)
+  await page.screenshot({ path: 'test-media/shots/epub.png' })
+  const epubUrl = page.url()
+  const fresh2 = await page.context().newPage()
+  fresh2.on('pageerror', (e) => errors.push(e.message))
+  await fresh2.goto(epubUrl)
+  check(await fresh2.locator('.reader-title .t2', { hasText: 'Chapter Two' }).waitFor({ timeout: 10000 }).then(() => true, () => false), 'EPUB reopens in the chapter it was left in')
+  await fresh2.close()
+  await page.goto(`${BASE}/#/`)
+  check(await page.locator('.card', { hasText: 'Test Epub' }).first().waitFor({ timeout: 5000 }).then(() => true, () => false), 'EPUB shows in Continue')
+
   // A Flick server: connect through the form, see its items, play the video, read the book.
   await page.goto(`${BASE}/#/servers`)
   const flickForm = page.locator('form', { hasText: 'Flick server (NAS)' })
@@ -221,7 +366,7 @@ try {
   check(await flickForm.getByText('access code is wrong').waitFor({ timeout: 5000 }).then(() => true, () => false), 'Flick server form says when the code is wrong')
   await flickForm.getByLabel('Access code').fill(FLICK_CODE)
   await flickForm.getByRole('button', { name: 'Connect' }).click()
-  check(await page.getByText('Smoke NAS: 2 items in your library.').waitFor({ timeout: 8000 }).then(() => true, () => false), 'Flick server connects through the Servers form')
+  check(await page.getByText('Smoke NAS: 5 items in your library.').waitFor({ timeout: 8000 }).then(() => true, () => false), 'Flick server connects through the Servers form')
   await page.goto(`${BASE}/#/library`)
   await page.getByRole('tab', { name: /Movies/ }).click()
   await page.getByText('Server Movie').first().waitFor({ timeout: 5000 })
@@ -235,6 +380,18 @@ try {
   await page.getByRole('tab', { name: /Books/ }).click()
   await page.getByText('Server Book').first().click()
   check(await page.locator('.reader-stage canvas').waitFor({ timeout: 15000 }).then(() => true, () => false), 'book from a Flick server opens in the reader')
+  await page.goto(`${BASE}/#/library`)
+  await page.getByText('Server Epub').first().click()
+  await page.getByRole('button', { name: 'Contents' }).click()
+  check(await page.locator('.epub-toc').getByText('Second Part').waitFor({ timeout: 10000 }).then(() => true, () => false), 'EPUB from a Flick server opens with its NCX contents')
+  await page.goto(`${BASE}/#/library`)
+  await page.getByRole('tab', { name: /Audiobooks/ }).click()
+  await page.getByText('Part Book').first().click()
+  check(await page.getByRole('button', { name: 'Chapters (2)' }).waitFor({ timeout: 8000 }).then(() => true, () => false), 'a folder of MP3 parts on a Flick server is one audiobook, a chapter per file')
+  await page.goto(`${BASE}/#/library`)
+  await page.getByRole('tab', { name: /Audiobooks/ }).click()
+  await page.getByText('Server Audiobook').first().click()
+  check(await page.getByRole('button', { name: 'Chapters (3)' }).waitFor({ timeout: 8000 }).then(() => true, () => false), 'an M4B on a Flick server shows its chapters')
 
   // The same server again, from a setup link after removing it.
   await page.goto(`${BASE}/#/servers`)
@@ -244,7 +401,7 @@ try {
   await page.goto(`${BASE}/#/setup?c=${flickSetup}`)
   await page.getByRole('button', { name: 'Connect all' }).click()
   await page.getByText('Done').waitFor()
-  check(await page.locator('.list-row', { hasText: `Flick server at ${FLICK_URL}` }).getByText('2 items').isVisible(), 'setup link with a Flick server connects it')
+  check(await page.locator('.list-row', { hasText: `Flick server at ${FLICK_URL}` }).getByText('5 items').isVisible(), 'setup link with a Flick server connects it')
 
   // Plugin sandbox: the real host page, framed the way the runtime frames it (sandbox="allow-scripts"),
   // loads plugin code over a MessagePort and cannot reach Flick's storage, page or remote modules.
@@ -278,6 +435,32 @@ try {
   const reached = Object.entries(probe.v?.manifest?.probe ?? {}).filter(([, v]) => v !== 'blocked').map(([k]) => k)
   check(probe.ok && Object.keys(probe.v.manifest.probe).length === 6 && reached.length === 0, `a plugin cannot reach Flick's storage, page or remote modules${reached.length ? `: reached ${reached.join(', ')}` : ''}`)
 
+  // In the apps a plugin's only network is ctx.fetch: its own fetch to a CORS-open local server is
+  // refused by the app host page. The website page, as the control, reaches the same server.
+  const ownFetch = (host) => page.evaluate(async ([host, target]) => {
+    const code = `
+      let r = 'blocked'
+      try { await fetch(${JSON.stringify(target)}); r = 'reached' } catch {}
+      export default { api: 1, id: 'org.smoke.net', name: 'Net', version: '1', net: r, catalogs: [], catalog() {}, meta() {}, streams() {} }`
+    const f = document.createElement('iframe')
+    f.setAttribute('sandbox', 'allow-scripts')
+    f.hidden = true
+    f.src = host
+    await new Promise((r) => { f.onload = r; document.body.appendChild(f) })
+    const ch = new MessageChannel()
+    f.contentWindow.postMessage({ flick: 'port' }, '*', [ch.port2])
+    const reply = await new Promise((resolve) => {
+      ch.port1.onmessage = (e) => { if (e.data.re === 1) resolve(e.data) }
+      ch.port1.postMessage({ id: 1, m: 'load', a: [code, 'desktop', {}] })
+      setTimeout(() => resolve({ ok: false }), 10000)
+    })
+    f.remove()
+    return reply.ok ? reply.v.manifest.net : 'no answer'
+  }, [host, `${FLICK_URL}/api/library`])
+  const webNet = await ownFetch('/plugin-host.html')
+  const appNet = await ownFetch('/plugin-host-app.html')
+  check(webNet === 'reached' && appNet === 'blocked', `in the apps a plugin's own fetch is refused (app page ${appNet}, website page ${webNet})`)
+
   // A source plugin from a URL: review first, then its page, a title page, a stream that plays.
   await page.goto(`${BASE}/#/settings`)
   const addForm = page.locator('form', { has: page.getByLabel('Plugin address') })
@@ -286,6 +469,7 @@ try {
   const sheet = page.getByRole('dialog')
   await sheet.waitFor({ timeout: 15000 })
   check(await sheet.getByText('Not from Flick').isVisible() && await sheet.getByText('127.0.0.1').first().isVisible(), 'review sheet shows the hosts and "Not from Flick"')
+  check(await sheet.locator('.web-hosts').isVisible(), 'on the website the review sheet says the host list is not enforced')
   const count = () => page.evaluate(() => new Promise((res) => { const r = indexedDB.open('flick'); r.onsuccess = () => { const q = r.result.transaction('plugins').objectStore('plugins').count(); q.onsuccess = () => res(q.result) } }))
   check(await count() === 0, 'nothing installs before the tap')
   await sheet.getByRole('button', { name: 'Install' }).click()
@@ -357,6 +541,13 @@ try {
   await page.waitForTimeout(400)
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)
   check(!overflow, 'no sideways scroll at 390px')
+  const firstRow = await page.evaluate(() => {
+    const cards = [...document.querySelectorAll('.vgrid .card')].map((c) => c.getBoundingClientRect().top)
+    return cards.filter((t) => Math.abs(t - cards[0]) < 2).length
+  })
+  check(firstRow >= 2, `phone library shows ${firstRow} cards a row`)
+  const chipsWrap = await page.evaluate(() => { const c = [...document.querySelectorAll('.toolbar .chip')].map((e) => e.getBoundingClientRect().top); return new Set(c.map(Math.round)).size })
+  check(chipsWrap === 1, `filter chips stay on one scrolling line (${chipsWrap} lines)`)
   await page.screenshot({ path: 'test-media/shots/phone-library.png' })
   await page.goto(stremioPage)
   await page.locator('.row-section .card:not(.skeleton)').first().waitFor({ timeout: 20000 })

@@ -5,7 +5,7 @@ import { settings, setSettings, reloadItems, type Settings } from './store'
 import { getServers, saveServer, syncServer, plexManual, flickConnect, type Server } from './servers'
 import { isDesktop } from './platform'
 import { addFolderPath } from './actions'
-import { installed, prepare, install, setPluginSettings, absolute, type Candidate } from './plugins/registry'
+import { installed, install, setPluginSettings, portable, type Candidate } from './plugins/registry'
 import { STREMIO_ID, STREMIO_URL } from './plugins/migrate'
 
 export const SETUP_BASE = 'https://flick-player.pages.dev/#/setup?c='
@@ -148,12 +148,14 @@ async function toServer(s: SetupServer): Promise<Server> {
   return { id: `jf-${info.Id}`, type: 'jellyfin', name: s.name ?? info.ServerName ?? 'Jellyfin', url: s.url, token: s.token, userId: s.userId }
 }
 
-/** Apply a validated setup. Each item succeeds or fails on its own. Plugins read for the review are reused. */
+/** Apply a validated setup. Each item succeeds or fails on its own. A plugin installs only as the review showed it. */
 export async function applySetup(p: Setup, reviewed: Record<string, Candidate> = {}): Promise<SetupResult[]> {
   const out: SetupResult[] = []
   for (const u of p.plugins ?? []) {
+    const c = reviewed[u]
+    if (!c) { out.push({ label: `Plugin at ${u}`, ok: false, detail: 'It could not be read for the review, so it was not installed.' }); continue }
     try {
-      const rec = await install(reviewed[u] ?? (await prepare({ url: u })))
+      const rec = await install(c)
       out.push({ label: `Plugin: ${rec.manifest.name} ${rec.manifest.version}`, ok: true })
     } catch (e) {
       out.push({ label: `Plugin at ${u}`, ok: false, detail: (e as Error).message })
@@ -163,7 +165,9 @@ export async function applySetup(p: Setup, reviewed: Record<string, Candidate> =
   if (p.stremioAddons?.length) {
     const label = `Stremio plugin with ${p.stremioAddons.length} addon${p.stremioAddons.length > 1 ? 's' : ''}`
     try {
-      const rec = installed.value.find((x) => x.id === STREMIO_ID) ?? (await install(reviewed[STREMIO_URL] ?? (await prepare({ url: STREMIO_URL }))))
+      const have0 = installed.value.find((x) => x.id === STREMIO_ID)
+      if (!have0 && !reviewed[STREMIO_URL]) throw new Error('The Stremio plugin could not be read for the review, so it was not installed.')
+      const rec = have0 ?? (await install(reviewed[STREMIO_URL]))
       const have = Array.isArray(rec.settings.addons) ? (rec.settings.addons as string[]) : []
       await setPluginSettings(rec.id, { addons: [...new Set([...have, ...p.stremioAddons])] })
       out.push({ label, ok: true })
@@ -208,7 +212,7 @@ export async function currentSetup(): Promise<Setup> {
   const servers = (await getServers()).filter((s): s is Server & { type: SetupServer['type'] } => s.type !== 'kodi').slice(0, MAX_SERVERS).map(({ type, name, url, token, userId }) => (userId ? { type, name, url, token, userId } : { type, name, url, token }))
   const out: Setup = { v: 1, settings: { ...settings.value } }
   if (urls.length) out.stremioAddons = urls
-  const plugins = installed.value.filter((x) => x.url).map((x) => absolute(x.url!)).slice(0, MAX_PLUGINS)
+  const plugins = installed.value.flatMap((x) => (x.url ? [portable(x.url)] : [])).filter((u): u is string => !!u).slice(0, MAX_PLUGINS)
   if (plugins.length) out.plugins = plugins
   if (servers.length) out.servers = servers
   return out

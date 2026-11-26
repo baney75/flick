@@ -8,6 +8,7 @@ import { PairPage } from './views/Sync'
 import { startSyncBinding } from './lib/sync/bind'
 import { Setup } from './views/Setup'
 import { Reader } from './views/Reader'
+import { Listen } from './views/Listen'
 import { Player } from './components/Player'
 import { Icon } from './components/icons'
 import { Logo } from './components/Logo'
@@ -51,6 +52,7 @@ function View() {
   if (parts[0] === 'p' && parts[1] && parts[3]) return <PluginTitle key={r} p={decodeURIComponent(parts[1])} type={parts[2]} id={decodeURIComponent(parts[3])} videoId={qs.get('v') ?? undefined} />
   if (parts[0] === 'p' && parts[1]) return <PluginPage key={parts[1]} id={decodeURIComponent(parts[1])} />
   if (parts[0] === 'sources') return <SourcesPage />
+  if (parts[0] === 'listen' && parts[1]) return <Listen key={parts[1]} id={decodeURIComponent(parts[1])} />
   if (parts[0] === 'show' && parts[1]) return <ShowPage name={decodeURIComponent(parts[1])} />
   if (parts[0] === 'servers') return <Servers />
   if (parts[0] === 'settings') return <Settings />

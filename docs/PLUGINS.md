@@ -26,7 +26,9 @@ as a single JavaScript file with no build step.
   `{ "api": 1, "plugins": [{ "url", "name", "kind": "source" | "theme", "description" }] }`.
 - The list of installed plugins and their non-secret settings sync between paired devices, along with
   on or off and the chosen theme. Plugins installed from a file stay on that device. Fields
-  marked `secret` (passwords, tokens) never leave the device.
+  marked `secret` (passwords, tokens) never leave the device. Another device installs a synced
+  plugin only when its code is what was reviewed, or asks for no host or tool beyond it; otherwise
+  it says so and waits for the user to add it there and review it.
 - Flick never installs a source on the user's behalf. One exception: on upgrade, a user who already
   used the built-in Stremio section (signed in, added addons, watched something from it, or synced
   addons from another device) gets the Stremio plugin installed on first launch, with the sign-in key
@@ -126,8 +128,10 @@ values go only to that one `action()` call and are not saved; keep what you need
     (any public host; for plugins that reach addresses the user types, like Stremio addons). `*`
     never reaches this computer or the local network (`localhost`, `127.0.0.1`, `192.168.x.x`,
     `.local`, or a public name that resolves to one); list those by name, like `127.0.0.1`.
-  - The plugin's own global `fetch` still works in the sandbox on every platform, with the normal
-    CORS rules.
+  - In the desktop and mobile apps, `ctx.fetch` is the only network a plugin has: its sandbox page
+    allows no `fetch`, WebSocket, remote image or media of its own, so `hosts` is what it can reach.
+  - On the website, the sandbox's own `fetch` works with the browser's CORS and private network
+    rules, and `hosts` is not enforced there. The review sheet says so on the website.
 - `ctx.store.get(key)` / `ctx.store.set(key, value)`: this plugin's own saved data (JSON, 1 MB total).
 - `ctx.settings`: current setting values.
 - `ctx.platform`: `'web' | 'desktop' | 'mobile'`.
