@@ -8,7 +8,8 @@ import { ShowCard } from '../views/Home'
 import { go, play, playItem, itemRequest, progress } from '../lib/store'
 import { formatBytes, formatTime } from '../lib/parse'
 import { titlePath, progressKey } from '../lib/plugins/use'
-import { ranked, srcKey, srcName, badgeOf, latestProgress, pickedFor, remember, type Src, type Title } from '../lib/titles'
+import { rankedRows, srcKey, srcName, badgeOf, latestProgress, pickedFor, remember, type Src, type Title } from '../lib/titles'
+import { rankBy } from '../lib/picking'
 import type { Item } from '../lib/library'
 
 /** Plays or opens one source of a title. */
@@ -89,17 +90,19 @@ export function SourceSheet() {
     return () => { removeEventListener('keydown', k, true); removeEventListener('hashchange', away) }
   }, [t])
   if (!t) return null
-  const rows = ranked(t.srcs, pickedFor(t.key))
+  const rows = rankedRows(t.srcs, pickedFor(t.key), rankBy())
   const pick = (s: Src) => { remember(t.key, srcKey(s)); choosing.value = null; openSrc(s) }
   return (
     <div class="sheet-back" role="dialog" aria-modal="true" aria-label={`Play ${t.name} from`} onClick={() => { choosing.value = null }}>
       <div class="sheet panel source-sheet" onClick={(e) => e.stopPropagation()}>
         <h3>{t.name}{t.year ? ` (${t.year})` : ''}</h3>
         <p class="small dim">Choose where to play it from.</p>
-        {rows.map((s, i) => (
-          <button class="list-row source-row" ref={i === 0 ? firstRow : undefined} onClick={() => pick(s)}>
+        {rows.map(({ s, r }, i) => (
+          // A row the ranker filtered is listed greyed with its reason and never auto-picked (rule 4);
+          // a tap still tries it, as the plugin page does.
+          <button class={`list-row source-row${r.blocked ? ' blocked' : ''}`} ref={i === 0 ? firstRow : undefined} onClick={() => pick(s)}>
             <Icon name={s.t === 'plugin' ? 'plug' : s.t === 'item' && s.dl ? 'download' : 'play'} size={16} />
-            <div class="grow"><div>{srcName(s)}</div><div class="small dim">{detail(s)}</div></div>
+            <div class="grow"><div>{srcName(s)}</div><div class="small dim">{r.blocked ?? detail(s)}</div></div>
           </button>
         ))}
         <div class="row end"><button class="btn ghost" onClick={() => { choosing.value = null }}>Cancel</button></div>

@@ -212,12 +212,13 @@ ${o.color !== 'day' ? `body *{color:inherit!important;background-color:transpare
 }
 
 /** Runs inside the sandboxed chapter: lays out pages, turns them, and reports where the reader is. */
-function pager(start: number | 'end' | string, gen: number) {
+export function pager(start: number | 'end' | string, gen: number) {
   const se = document.scrollingElement as HTMLElement
   const say = (m: object) => parent.postMessage({ ...m, g: gen }, '*')
   let page = 0
   let pages = 1
-  const count = () => { pages = Math.max(1, Math.round(se.scrollWidth / innerWidth)) }
+  // A frame can load before it has a width; counting then would divide by zero, so it counts one page.
+  const count = () => { pages = innerWidth > 0 ? Math.max(1, Math.round(se.scrollWidth / innerWidth)) : 1 }
   const show = () => { se.scrollLeft = page * innerWidth; say({ t: 'pos', page, pages }) }
   const go = (d: number) => {
     count()
@@ -225,14 +226,25 @@ function pager(start: number | 'end' | string, gen: number) {
     page += d
     show()
   }
-  addEventListener('load', () => requestAnimationFrame(() => {
+  let placed = false
+  // The first placement waits for a real width (load, or the first resize after it).
+  const place = () => {
     count()
+    if (!(innerWidth > 0)) return
+    placed = true
     const el = typeof start === 'string' && start !== 'end' ? document.getElementById(start) : null
     page = start === 'end' ? pages - 1 : el ? Math.floor((el.getBoundingClientRect().left + se.scrollLeft) / innerWidth) : typeof start === 'number' ? Math.round(start * pages) : 0
     page = Math.min(Math.max(0, page), pages - 1)
     show()
-  }))
-  addEventListener('resize', () => { const f = page / pages; count(); page = Math.min(pages - 1, Math.round(f * pages)); show() })
+  }
+  addEventListener('load', () => requestAnimationFrame(place))
+  addEventListener('resize', () => {
+    if (!placed) return place()
+    const f = page / pages
+    count()
+    page = Math.min(pages - 1, Math.round(f * pages))
+    show()
+  })
   addEventListener('message', (e) => { if (e.source === parent && e.data?.t === 'turn') go(e.data.d) })
   addEventListener('keydown', (e) => {
     say({ t: 'key', key: e.key, shift: e.shiftKey })

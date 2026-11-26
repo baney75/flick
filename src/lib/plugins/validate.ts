@@ -4,6 +4,11 @@
 export const API = 1
 export const TYPES = ['movie', 'series', 'video', 'channel', 'audio', 'audiobook', 'book'] as const
 export const TOOLS = ['ytdlp'] as const
+/** `source` plugins add titles and streams; `service` plugins (debrid) turn a torrent into an https link. */
+export const KINDS = ['source', 'service'] as const
+export const PROVIDES = ['debrid'] as const
+/** Most infoHashes Flick sends one cached() call. */
+export const HASHES_PER_CALL = 100
 export const PLATFORMS = ['web', 'desktop', 'mobile'] as const
 export const CALL_TIMEOUT_MS = 20_000
 export const STORE_LIMIT = 1024 * 1024
@@ -16,6 +21,7 @@ export interface ActionDef { id: string; label: string; fields: Field[] }
 export interface CatalogDef { id: string; name: string; type: MetaType; search?: boolean }
 export interface PluginManifest {
   api: 1
+  kind: (typeof KINDS)[number]
   id: string
   name: string
   version: string
@@ -28,6 +34,11 @@ export interface PluginManifest {
   settings: Field[]
   actions: ActionDef[]
   catalogs: CatalogDef[]
+  /** A service plugin: what it provides, and the hosts its download links come from (all also in `hosts`). */
+  provides: string[]
+  debridHosts: string[]
+  /** A service whose downloads come over https from its own servers, so no peer sees the user: it may play with no VPN. */
+  vpnOptional: boolean
   /** Optional functions the plugin has. */
   has: { library: boolean; action: boolean; progress: boolean; subtitles: boolean; userCatalogs: boolean }
 }
@@ -50,6 +61,8 @@ export interface Sub { url: string; lang: string; label?: string }
 export interface Stream { url: string; title?: string; quality?: string; kind?: 'video' | 'audio' | 'book'; subs?: Sub[]; needsDesktop?: boolean; external?: boolean; group?: string }
 export interface CatalogResult { items: Meta[]; more: boolean }
 export interface ActionResult { ok: boolean; message?: string }
+export type AccountResult = { ok: true; name: string; plan?: string; expires?: string } | { ok: false; message: string }
+export type ResolveResult = { url: string } | { wait: { pct?: number; message: string } } | { error: string }
 
 export interface ThemeColors { bg: string; surface: string; fg: string; dim: string; line: string; accent: string }
 export interface ThemeManifest { flick: 'theme'; api: 1; id: string; name: string; version: string; author: string; light: ThemeColors; dark: ThemeColors; radius?: number; font?: string }
@@ -62,6 +75,7 @@ const MAX_LIST = 500
 const MAX_ITEMS = 200
 const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x)
 const ID_RE = /^[a-z0-9]+(\.[a-z0-9-]+)+$/
+export const HASH_RE = /^[0-9a-f]{40}$/
 const COLOR_RE = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i
 
 function str(x: unknown, what: string, required: true, max?: number): string
@@ -95,6 +109,12 @@ export function validHost(h: string): boolean {
   return /^(\[[0-9a-f:]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*)$/.test(name)
 }
 
+/** Whether a host name is on a list of named hosts: `x` is that host, `*.x` its subdomains. `*` matches nothing here. */
+export function hostMatches(host: string, patterns: string[]): boolean {
+  const h = host.toLowerCase().replace(/\.$/, '')
+  return patterns.some((p) => (p.startsWith('*.') ? h.endsWith(p.slice(1)) : p !== '*' && h === p))
+}
+
 function field(x: unknown, where: string): Field {
   if (!isObj(x)) return fail(`Each ${where} field must be an object.`)
   const key = str(x.key, `A ${where} field key`, true, 64)
@@ -120,11 +140,30 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
   for (const h of hosts) if (!validHost(h)) fail(`"${h}" is not a host name. Use names like "example.com" or "*.example.com".`)
   const tools = list(x.tools, 'tools', 10).map((t) => str(t, 'A tool', true))
   for (const t of tools) if (!(TOOLS as readonly string[]).includes(t)) fail(`Flick has no desktop tool called "${t}".`)
-  const platforms = (x.platforms === undefined ? [...PLATFORMS] : list(x.platforms, 'platforms')) as string[]
+  const kind = x.kind ?? 'source'
+  if (!(KINDS as readonly unknown[]).includes(kind)) fail(`Flick has no plugin kind called "${String(kind)}".`)
+  // A service holds the user's key; only the desktop app holds it to its hosts and to https.
+  const platforms = (x.platforms === undefined ? (kind === 'service' ? ['desktop'] : [...PLATFORMS]) : list(x.platforms, 'platforms')) as string[]
   for (const p of platforms) if (!(PLATFORMS as readonly string[]).includes(p)) fail(`Unknown platform "${p}".`)
-  for (const f of ['catalog', 'meta', 'streams']) if (!fns.includes(f)) fail(`The plugin needs a ${f}() function.`)
-  const catalogs = validateCatalogDefs(x.catalogs)
-  if (!catalogs.length) fail('The plugin needs at least one catalog.')
+  if (kind === 'service' && platforms.join() !== 'desktop') fail('A service plugin works only in the desktop app: platforms: ["desktop"].')
+  let catalogs: CatalogDef[] = [], provides: string[] = [], debridHosts: string[] = []
+  if (x.vpnOptional !== undefined && typeof x.vpnOptional !== 'boolean') fail('vpnOptional must be true or false.')
+  if (x.vpnOptional !== undefined && kind !== 'service') fail('Only a service plugin can set vpnOptional.')
+  if (kind === 'service') {
+    provides = list(x.provides, 'provides', 10).map((p) => str(p, 'A provides entry', true, 40))
+    if (!provides.length) fail('A service plugin must say what it provides, like provides: ["debrid"].')
+    for (const p of provides) if (!(PROVIDES as readonly string[]).includes(p)) fail(`Flick has no service called "${p}".`)
+    for (const f of ['account', 'cached', 'resolve']) if (!fns.includes(f)) fail(`The plugin needs a ${f}() function.`)
+    if (!hosts.length) fail('A service plugin must list the hosts it reaches.')
+    if (hosts.some((h) => h === '*')) fail('A service plugin must name its hosts; "*" is not allowed.')
+    if (tools.length) fail('A service plugin cannot use desktop tools.')
+    debridHosts = list(x.debridHosts, 'debridHosts', 50).map((h) => str(h, 'A debridHosts entry', true, 253).toLowerCase())
+    for (const h of debridHosts) if (!hosts.includes(h)) fail(`debridHosts entry "${h}" must also be in hosts.`)
+  } else {
+    for (const f of ['catalog', 'meta', 'streams']) if (!fns.includes(f)) fail(`The plugin needs a ${f}() function.`)
+    catalogs = validateCatalogDefs(x.catalogs)
+    if (!catalogs.length) fail('The plugin needs at least one catalog.')
+  }
   const settings = list(x.settings, 'settings', 50).map((f) => field(f, 'setting'))
   const actions = list(x.actions, 'actions', 20).map((a): ActionDef => {
     if (!isObj(a)) return fail('Each action must be an object.')
@@ -133,6 +172,7 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
   if (actions.length && !fns.includes('action')) fail('The plugin lists actions but has no action() function.')
   const m: PluginManifest = {
     api: 1,
+    kind: kind as PluginManifest['kind'],
     id,
     name: str(x.name, 'name', true, 100),
     version: str(x.version, 'version', true, 50),
@@ -144,6 +184,9 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
     settings,
     actions,
     catalogs,
+    provides,
+    debridHosts: [...new Set(debridHosts)],
+    vpnOptional: x.vpnOptional === true,
     has: { library: fns.includes('library'), action: fns.includes('action'), progress: fns.includes('progress'), subtitles: fns.includes('subtitles'), userCatalogs: fns.includes('userCatalogs') },
   }
   const icon = imgUrl(x.icon)
@@ -163,11 +206,17 @@ export function validateCatalogDefs(x: unknown): CatalogDef[] {
   })
 }
 
-/** Permissions the new manifest asks for that the installed one did not have. Empty means a quiet update. */
-export function addedPermissions(old: Pick<PluginManifest, 'hosts' | 'tools'>, next: Pick<PluginManifest, 'hosts' | 'tools'>): string[] {
+type Perms = Pick<PluginManifest, 'hosts' | 'tools'> & { debridHosts?: string[]; vpnOptional?: boolean }
+/**
+ * Permissions the new manifest asks for that the installed one did not have. Empty means a quiet update.
+ * A service dropping a debrid host, or newly saying it plays with no VPN, counts too.
+ */
+export function addedPermissions(old: Perms, next: Perms): string[] {
   return [
     ...next.hosts.filter((h) => !old.hosts.includes(h)).map((h) => `reach ${h}`),
     ...next.tools.filter((t) => !old.tools.includes(t)).map((t) => `use ${t}`),
+    ...(old.debridHosts ?? []).filter((h) => !(next.debridHosts ?? []).includes(h)).map((h) => `stop treating ${h} as a debrid host`),
+    ...(next.vpnOptional && !old.vpnOptional ? ['play with no VPN'] : []),
   ]
 }
 
@@ -268,6 +317,45 @@ export function validateAction(x: unknown): ActionResult {
   const m = str(x.message, 'message', false, 500)
   if (m) r.message = m
   return r
+}
+
+// ---------- service results ----------
+
+export function validateAccount(x: unknown): AccountResult {
+  if (!isObj(x) || (x.ok !== true && x.ok !== false)) return fail('account() must return { ok: true, name } or { ok: false, message }.')
+  if (x.ok === false) return { ok: false, message: str(x.message, 'message', false, 500) ?? 'The service did not accept this key.' }
+  const r: AccountResult = { ok: true, name: str(x.name, 'The account name', true, 100) }
+  const plan = str(x.plan, 'plan', false, 100), expires = str(x.expires, 'expires', false, 40)
+  if (plan) r.plan = plan
+  if (expires) r.expires = expires
+  return r
+}
+
+/** The asked-for infoHashes the service says it has, lowercase. Anything it was not asked about is dropped. */
+export function validateCached(x: unknown, asked: string[]): string[] {
+  if (!Array.isArray(x)) return fail('cached() must return a list of infoHashes.')
+  const want = new Set(asked.map((h) => h.toLowerCase()))
+  const out = x.filter((h): h is string => typeof h === 'string').map((h) => h.trim().toLowerCase()).filter((h) => HASH_RE.test(h) && want.has(h))
+  return [...new Set(out)].slice(0, HASHES_PER_CALL)
+}
+
+/** A resolve() result. A link must be https and on the plugin's own hosts. */
+export function validateResolve(x: unknown, hosts: string[]): ResolveResult {
+  if (!isObj(x)) return fail('resolve() must return { url }, { wait } or { error }.')
+  if (x.url !== undefined) {
+    let u: URL | null = null
+    try { u = typeof x.url === 'string' && x.url.length <= 8000 ? new URL(x.url.trim()) : null } catch { u = null }
+    if (!u || u.protocol !== 'https:' || !hostMatches(u.hostname, hosts)) return fail('resolve() returned a link that is not https on the plugin\'s hosts.')
+    return { url: u.href }
+  }
+  if (isObj(x.wait)) {
+    const wait: { pct?: number; message: string } = { message: str(x.wait.message, 'message', false, 200) ?? 'Fetching' }
+    const pct = num(x.wait.pct)
+    if (pct !== undefined) wait.pct = Math.round(Math.min(100, Math.max(0, pct)))
+    return { wait }
+  }
+  if (x.error !== undefined) return { error: str(x.error, 'error', false, 500) ?? 'The service could not play this torrent.' }
+  return fail('resolve() must return { url }, { wait } or { error }.')
 }
 
 // ---------- themes ----------

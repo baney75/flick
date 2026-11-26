@@ -85,6 +85,14 @@ export default {
   async library() { return [{ id: 'lib-sm', type: 'movie', name: 'Server Movie', year: '2024' }, { id: 'lib-only', type: 'movie', name: 'Plugin Only Film', year: '2023' }] },
   async streams(ctx, { id }) {
     await ctx.store.set('last', id)
+    // Play picks the best: by language, then quality for the screen; a CAM copy never.
+    if (id === 'pick') return [
+      { url: '$BASE/media/a1?t=${FLICK_CODE}&s=fr', title: 'Smoke stream 1080p 🇫🇷', quality: '1080p' },
+      { url: '$BASE/media/a1?t=${FLICK_CODE}&s=en', title: 'Smoke stream 720p 🇬🇧', quality: '720p' },
+      { url: '$BASE/media/a1?t=${FLICK_CODE}&s=cam', title: 'Smoke stream 4K CAM 🇬🇧', quality: '4K' },
+    ]
+    // Japanese audio with English subtitles: the subtitles come on for an English speaker.
+    if (id === 'subs') return [{ url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream 720p 🇯🇵', subs: [{ url: '$BASE/subs/en.vtt', lang: 'eng' }] }]
     return [
       { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream SD 480p', quality: '480p' },
       { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream 1080p HDR 1.2 GB', quality: '1080p' },
@@ -108,6 +116,7 @@ const flick = createServer((req, res) => {
   const u = new URL(req.url, 'http://x')
   const json = (code, o) => res.writeHead(code, { 'content-type': 'application/json' }).end(JSON.stringify(o))
   if (u.pathname === '/api/info') return json(200, { app: 'flick-server', v: 1, name: 'Smoke NAS', version: '0.0.0' })
+  if (u.pathname === '/subs/en.vtt') return res.writeHead(200, { 'content-type': 'text/vtt' }).end('WEBVTT\n\n00:00:00.000 --> 00:00:30.000\nEnglish line\n')
   // A test source plugin and theme, installed through Settings > Plugins.
   if (u.pathname === '/plugin.js') {
     let code = SMOKE_PLUGIN.replaceAll('$BASE', `http://127.0.0.1:${flick.address().port}`)
@@ -198,6 +207,14 @@ try {
   await page.getByText('Drop anything here to play it.').waitFor()
   check(Date.now() - t0 < 3000, `first screen in ${Date.now() - t0} ms`)
   await page.screenshot({ path: 'test-media/shots/home-empty.png' })
+  await page.goto(`${BASE}/#/library`)
+  const addBtn = page.locator('.empty .btn.primary', { hasText: 'Add a folder' })
+  await addBtn.waitFor()
+  const iconLook = await addBtn.evaluate((b) => { const i = b.querySelector('svg'); return { same: getComputedStyle(i).color === getComputedStyle(b).color, mid: Math.abs((i.getBoundingClientRect().top + i.getBoundingClientRect().bottom) / 2 - (b.getBoundingClientRect().top + b.getBoundingClientRect().bottom) / 2) } })
+  check(iconLook.same && iconLook.mid < 1.5, `the Add a folder icon matches its label and sits centered (${JSON.stringify(iconLook)})`)
+  await page.goto(`${BASE}/#/continue`)
+  check(await page.getByText('Nothing to pick back up').isVisible(), 'an empty Continue tab says how it fills')
+  await page.goto(`${BASE}/`)
 
   // Open a file through the button, as a user would.
   const chooser = page.waitForEvent('filechooser')
@@ -250,6 +267,19 @@ try {
   await page.getByRole('button', { name: 'Connect all' }).click()
   await page.getByText('Done').waitFor()
   check(await page.evaluate(() => JSON.parse(localStorage.getItem('flick.settings')).skipSeconds === 30), 'Connect all applies the setup')
+
+  // Settings > Playback: languages Play picks by, in order, and what this device shows.
+  await page.goto(`${BASE}/#/settings`)
+  const audioList = page.getByRole('group', { name: 'Audio language' })
+  await audioList.getByText('1. English').waitFor()
+  const devRow = await page.locator('[data-device]').textContent()
+  check(devRow.startsWith('This device: 720p, SDR'), `device row reads the 1280 px screen (${devRow})`)
+  await page.getByLabel('Add to Audio language').selectOption('fr')
+  await audioList.getByRole('button', { name: 'Move French up' }).click()
+  await audioList.getByText('1. French').waitFor()
+  check(await page.evaluate(() => JSON.parse(localStorage.getItem('flick.settings')).audio.join() === 'fr,en'), 'audio languages save in order')
+  await audioList.getByRole('button', { name: 'Remove French' }).click()
+  check(await page.evaluate(() => JSON.parse(localStorage.getItem('flick.settings')).audio.join() === 'en'), 'a language comes off the list')
   await page.screenshot({ path: 'test-media/shots/setup.png' })
 
   // An older setup link with Stremio addons offers the Stremio plugin in the review, and installs nothing before the tap.
@@ -558,7 +588,9 @@ try {
   check((await page.locator('.stream').first().innerText()).includes('Smoke stream'), 'plugin title page lists a stream')
   const qs = await page.locator('.stream-q').allInnerTexts()
   check(qs.length === 3 && /1080p/.test(qs[0]) && /SD/.test(qs[2]), `streams are grouped by quality, best first (${qs.join(' / ') || 'no groups'})`)
-  check(/Play 1080p/.test(await page.locator('.play-best').innerText().catch(() => '')), 'title page offers one Play for the best stream')
+  // The smoke screen is 1280 px wide, a 720p device, so Play takes the 720p stream over 1080p HDR.
+  const playLine = await page.locator('.pick-line').innerText().catch(() => '')
+  check(/Play/.test(await page.locator('.play-best').innerText().catch(() => '')) && playLine === '720p', `title page offers one Play for the best stream for this screen (${playLine})`)
   check(/HDR/.test(await page.locator('.stream').first().innerText()) && /1\.2 GB/.test(await page.locator('.stream').first().innerText()), 'a stream shows its HDR and size as tags')
   await page.screenshot({ path: 'test-media/shots/plugin-title.png' })
   await page.locator('.stream').first().click()
@@ -571,6 +603,13 @@ try {
   await page.locator('.play-best', { hasText: 'Resume' }).waitFor({ timeout: 5000 }).catch(() => {})
   const resumeLabel = await page.locator('.play-best').innerText().catch(() => '')
   check(/^Resume 0:1\d$/.test(resumeLabel.trim()) && await page.getByRole('button', { name: 'Start over' }).isVisible(), `the title page offers Resume where it was left, and Start over (${resumeLabel.trim()})`)
+  const titleName = (await page.locator('h1').first().innerText()).trim()
+  await page.locator('.nav-item', { hasText: 'Continue' }).click()
+  const contCard = page.locator('.continue-grid .card', { hasText: titleName })
+  check(await contCard.waitFor({ timeout: 5000 }).then(() => true, () => false) && await page.locator('.nav-item.on').innerText() === 'Continue', `Continue lists the plugin title left partway (${titleName})`)
+  await page.screenshot({ path: 'test-media/shots/continue.png' })
+  await contCard.click()
+  check(await page.locator('.play-best', { hasText: 'Resume' }).waitFor({ timeout: 5000 }).then(() => true, () => false), 'a Continue card opens the title ready to Resume')
   await page.getByRole('button', { name: 'Start over' }).click()
   await page.locator('.player').waitFor()
   await page.waitForFunction(() => document.querySelector('.player video')?.currentTime > 0.3, null, { timeout: 8000 }).catch(() => {})
@@ -594,7 +633,26 @@ try {
   await page.locator('.player').waitFor({ state: 'detached' })
   await page.context().setOffline(false)
   await page.getByRole('button', { name: 'Remove download' }).click()
-  check(await page.locator('.play-best', { hasText: /Play 1080p|Resume \d/ }).waitFor({ timeout: 5000 }).then(() => true, () => false) && await dlOn('Smoke stream 720p').count() === 1, 'removing the download brings back streaming and Download')
+  check(await page.locator('.play-best', { hasText: /Play$|Resume \d/ }).waitFor({ timeout: 5000 }).then(() => true, () => false) && await dlOn('Smoke stream 720p').count() === 1, 'removing the download brings back streaming and Download')
+
+  // On a 1080p screen Play picks English 720p over French 1080p and an English 4K CAM, and says why.
+  await page.setViewportSize({ width: 1920, height: 1080 })
+  await page.goto(`${BASE}/#/p/org.smoke.films/movie/pick`)
+  await page.reload()
+  const pickLine = await page.locator('.pick-line').innerText({ timeout: 15000 }).catch(() => '')
+  check(pickLine === '720p · English', `Play picks English 720p on a 1080p screen, and the line reads "720p · English" (${pickLine})`)
+  await page.setViewportSize({ width: 1280, height: 800 })
+
+  // Subtitles follow language: English listed for subtitles, Japanese audio, so English subtitles come on.
+  await page.evaluate(() => { const s = JSON.parse(localStorage.getItem('flick.settings') || '{}'); localStorage.setItem('flick.settings', JSON.stringify({ ...s, subs: ['en'] })) })
+  await page.goto(`${BASE}/#/p/org.smoke.films/movie/subs`)
+  await page.reload()
+  await page.locator('.play-best').click({ timeout: 15000 })
+  await page.locator('.player').waitFor()
+  check(await page.waitForFunction(() => [...document.querySelector('.player video').textTracks].some((t) => t.language === 'eng' && t.mode !== 'disabled'), null, { timeout: 8000 }).then(() => true, () => false), 'English subtitles come on for Japanese audio')
+  await page.keyboard.press('Escape')
+  await page.locator('.player').waitFor({ state: 'detached' })
+  await page.evaluate(() => { const s = JSON.parse(localStorage.getItem('flick.settings')); localStorage.setItem('flick.settings', JSON.stringify({ ...s, subs: [] })) })
 
   await page.goto(`${BASE}/#/`)
   await page.getByLabel('Search your plugins').fill('smoke')
@@ -679,7 +737,7 @@ try {
   check(await page.getByText(/Interstellar/).first().waitFor({ timeout: 20000 }).then(() => true, () => false), 'Stremio plugin search finds Interstellar')
   check(await page.locator('.result-grid .card').count() > 2, `plugin search shows results as a poster grid (${await page.locator('.result-grid .card').count()} in grids)`)
   const side = await page.locator('.sidebar .nav-item:visible').allInnerTexts()
-  check(side.join(',') === 'Home,Library,Settings', `desktop sidebar is Home, Library, Settings (${side.join(', ')})`)
+  check(side.join(',') === 'Home,Continue,Library,Settings', `desktop sidebar is Home, Continue, Library, Settings (${side.join(', ')})`)
   check(await page.locator('.nav-item.on').innerText() === 'Home', 'a plugin page sits under Home in the bar')
   const stremioPage = page.url()
 
@@ -701,7 +759,7 @@ try {
   await page.locator('.row-section .card:not(.skeleton)').first().waitFor({ timeout: 20000 })
   await page.screenshot({ path: 'test-media/shots/phone-stremio.png' })
   const bar = await page.locator('.sidebar .nav-item:visible').allInnerTexts()
-  check(bar.join(',') === 'Home,Library,Settings', `phone bar is Home, Library, Settings (${bar.join(', ')})`)
+  check(bar.join(',') === 'Home,Continue,Library,Settings', `phone bar is Home, Continue, Library, Settings (${bar.join(', ')})`)
   const tall = await page.locator('.sidebar .nav-item:visible').evaluateAll((l) => l.every((e) => e.getBoundingClientRect().height >= 44))
   check(tall, 'phone bar items are at least 44px tall')
   await page.locator('.nav-item', { hasText: 'Home' }).click()
@@ -751,6 +809,13 @@ try {
   check(full === 1600 && /2 of 5/.test(await pp.locator('.photo-viewer-bar').innerText()), `ArrowRight shows the next photo at full size (${full} px)`)
   await pp.mouse.move(900, 400); await pp.mouse.down(); await pp.mouse.move(600, 400, { steps: 5 }); await pp.mouse.up()
   check(/3 of 5/.test(await pp.locator('.photo-viewer-bar').innerText()), 'a swipe moves to the next photo')
+  check(await pp.evaluate(() => !!document.activeElement?.closest('.photo-viewer')), 'focus is inside the open viewer')
+  await pp.keyboard.press(' ')
+  await pp.waitForTimeout(200)
+  check(/3 of 5/.test(await pp.locator('.photo-viewer-bar').innerText()) && await pp.locator('.photo-viewer').count() === 1, 'Space in the viewer never acts on the grid behind it')
+  await pp.keyboard.press('Tab'); await pp.keyboard.press('Tab'); await pp.keyboard.press('Tab')
+  await pp.keyboard.press('Shift+Tab'); await pp.keyboard.press('Shift+Tab')
+  check(await pp.evaluate(() => !!document.activeElement?.closest('.photo-viewer')), 'Tab and Shift+Tab stay inside the viewer')
   await pp.screenshot({ path: 'test-media/shots/photo-viewer.png' })
   await pp.keyboard.press('Escape')
   check(await pp.locator('.photo-viewer').count() === 0 && pp.url().endsWith('#/library'), 'Escape closes the viewer and stays in the Library')
@@ -769,7 +834,7 @@ try {
   await np.getByRole('button', { name: 'Connect all' }).click()
   await np.getByText('Done').waitFor()
   await np.goto(`${BASE}/#/library`)
-  await np.getByRole('tab', { name: /Photos/ }).click()
+  check(await np.waitForFunction(() => document.querySelector('[role=tab][aria-selected=true]')?.textContent?.startsWith('Photos'), null, { timeout: 5000 }).then(() => true, () => false), 'a library of only photos opens on the Photos tab')
   await np.locator('.photo-tile img').first().waitFor({ timeout: 10000 })
   check(/2001/.test(await np.getByRole('tab', { name: /Photos/ }).innerText()), 'a flick-server share lists its photos')
   await np.waitForTimeout(500)

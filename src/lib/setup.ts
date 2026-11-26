@@ -212,7 +212,8 @@ export async function currentSetup(): Promise<Setup> {
   const servers = (await getServers()).filter((s): s is Server & { type: SetupServer['type'] } => s.type !== 'kodi').slice(0, MAX_SERVERS).map(({ type, name, url, token, userId }) => (userId ? { type, name, url, token, userId } : { type, name, url, token }))
   const out: Setup = { v: 1, settings: { ...settings.value } }
   if (urls.length) out.stremioAddons = urls
-  const plugins = installed.value.flatMap((x) => (x.url ? [portable(x.url)] : [])).filter((u): u is string => !!u).slice(0, MAX_PLUGINS)
+  // A service plugin stays with its key on this device.
+  const plugins = installed.value.flatMap((x) => (x.url && x.kind !== 'service' ? [portable(x.url)] : [])).filter((u): u is string => !!u).slice(0, MAX_PLUGINS)
   if (plugins.length) out.plugins = plugins
   if (servers.length) out.servers = servers
   return out

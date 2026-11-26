@@ -3,6 +3,8 @@
 
 import type { Item } from './library'
 import type { Meta } from './plugins/validate'
+import { rank, type Device, type PickCtx, type Prefs, type Ranked } from './pick'
+import { srcCandidates } from './candidates'
 
 /** One place a title can be played or opened from. */
 export type Src =
@@ -40,13 +42,23 @@ export function srcKey(s: Src): string {
   return `pl:${s.p}:${s.m.id}`
 }
 
-// Downloaded first, then this device, then servers, then plugins.
-const order = (s: Src) => s.t === 'plugin' ? 3 : s.t === 'show' ? (s.eps.some((e) => e.origin === 'local' || e.origin === 'stored') ? 1 : 2)
-  : s.dl ? 0 : s.it.origin === 'local' || s.it.origin === 'stored' ? 1 : 2
+/** What the ranker knows besides the sources; with none, no language or quality preference and no limits. */
+export interface RankBy { prefs: Prefs; dev: Device; ctx: Omit<PickCtx, 'picked'>; progressAt?: (s: Src) => number | undefined }
+const NEUTRAL: RankBy = {
+  prefs: { audio: [], subs: [], maxQuality: '4K' },
+  dev: { maxQuality: '4K', hdr: false, codecs: {}, desktop: true, phone: false },
+  ctx: { gate: true, vpnForDebrid: false, online: true },
+}
+
+/** Each source with its ranked row, best first: the hand pick, a download, then by the ranker (pick.ts). */
+export function rankedRows(srcs: Src[], picked?: string, by: RankBy = NEUTRAL): { s: Src; r: Ranked }[] {
+  const byId = new Map(srcs.map((s) => [srcKey(s), s]))
+  return rank(srcCandidates(srcs, by.progressAt), by.prefs, by.dev, { ...by.ctx, picked }).map((r) => ({ s: byId.get(r.c.id)!, r }))
+}
 
 /** Sources in the order the chooser lists them, with the one picked last time first. */
-export function ranked(srcs: Src[], picked?: string): Src[] {
-  return [...srcs].sort((a, b) => Number(srcKey(b) === picked) - Number(srcKey(a) === picked) || order(a) - order(b))
+export function ranked(srcs: Src[], picked?: string, by?: RankBy): Src[] {
+  return rankedRows(srcs, picked, by).map((x) => x.s)
 }
 
 interface Entry { type: Title['type']; name: string; year?: number; srcs: Src[]; addedAt: number }

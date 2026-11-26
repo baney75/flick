@@ -6,6 +6,7 @@
 import { effect } from '@preact/signals'
 import * as db from '../db'
 import { items, progress, settings, setSettings, notify, reloadItems, type Progress, type Settings } from '../store'
+import { validPref } from '../prefs'
 import { getServers, saveServer, removeServer, syncServer, type Server } from '../servers'
 import type { Item } from '../library'
 import { contentIndex, localProgressKeys, progressDocKey, pluginSnapshot, mayInstallSynced, type SyncedPlugin } from './keys'
@@ -15,7 +16,7 @@ import { startSync, publish, docValue, docKeys } from './engine'
 import { bus } from './bus'
 
 // Settings that follow the person; volume stays per device.
-const SHARED: (keyof Settings)[] = ['autoplayNext', 'skipSeconds', 'theme', 'speed', 'look']
+const SHARED: (keyof Settings)[] = ['autoplayNext', 'skipSeconds', 'theme', 'speed', 'look', 'audio', 'subs', 'maxQuality']
 
 let applying = false
 let prevProgress: Record<string, Progress> = {}
@@ -134,7 +135,7 @@ async function applyRemote(keys: string[]) {
       }
     } else if (k.startsWith('s:')) {
       const f = k.slice(2) as keyof Settings
-      if (SHARED.includes(f) && v != null) (settingsPatch as Record<string, unknown>)[f] = v
+      if (SHARED.includes(f) && v != null && validPref(f, v)) (settingsPatch as Record<string, unknown>)[f] = v
     } else if (k.startsWith('v:')) servers = true
     else if (k.startsWith('x:')) plugins = true
   }

@@ -10,7 +10,7 @@ import { sources, searchAll, openPluginRef, libraries, loadLibrary, continueOf, 
 import { MetaCard, PluginIcon, CatalogRow, useCatalogs } from './Plugin'
 import { HOME_ROWS_PER_SOURCE } from '../lib/nav'
 
-function ResumeCard({ k, p }: { k: string; p: Progress }) {
+export function ResumeCard({ k, p }: { k: string; p: Progress }) {
   const ref = p.ref
   const it = ref.t === 'item' ? items.value.find((i) => i.id === ref.id) : undefined
   const thumb = useThumb(it)

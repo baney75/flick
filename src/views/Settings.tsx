@@ -11,6 +11,8 @@ import { currentSetup, encodeSetup, validateSetup, SETUP_BASE } from '../lib/set
 import { PluginsPanel, ThemePicker } from './Plugins'
 import { UpdatesPanel } from './Updates'
 import { ServersPanel } from './Servers'
+import { VpnPanel } from './Vpn'
+import { StreamPrefs } from './StreamPrefs'
 
 async function shareSetup() {
   const link = SETUP_BASE + encodeSetup(await currentSetup())
@@ -74,6 +76,7 @@ export function Settings() {
             {[0.75, 1, 1.25, 1.5, 2].map((n) => <option value={n}>{n}×</option>)}
           </select>
         </label>
+        <StreamPrefs />
       </section>
 
       <SyncPanel />
@@ -127,6 +130,7 @@ export function Settings() {
       <section class="panel">
         <h3>Privacy</h3>
         <p class="dim small">Your library, history and sign-in keys stay on this device. Flick has no account, no analytics and no ads. It only talks to the services you connect: the plugins you install and your own servers. Each plugin runs in a sandbox, away from your library and keys. Sync goes through a relay that forwards sealed messages it cannot read and stores nothing.</p>
+        <VpnPanel />
       </section>
     </div>
   )

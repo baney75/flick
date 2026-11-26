@@ -211,6 +211,11 @@ fn agent(public_only: bool, lookup: Lookup) -> ureq::Agent {
     )
 }
 
+/// A redirect from https to anything else would send the plugin's headers (a service's key) in the clear.
+fn downgrades(from: &Url, to: &Url) -> bool {
+    from.scheme() == "https" && to.scheme() != "https"
+}
+
 pub fn fetch(
     allowed: &[String],
     url: &str,
@@ -273,7 +278,11 @@ fn fetch_with(
         let status = resp.status().as_u16();
         if (300..400).contains(&status) {
             if let Some(loc) = resp.headers().get("location").and_then(|v| v.to_str().ok()) {
-                target = target.join(loc).map_err(|e| e.to_string())?;
+                let next = target.join(loc).map_err(|e| e.to_string())?;
+                if downgrades(&target, &next) {
+                    return Err("A plugin request may not move from https to http.".into());
+                }
+                target = next;
                 if status == 303 || ((status == 301 || status == 302) && method == "POST") {
                     method = "GET".into();
                     body = None;
@@ -405,6 +414,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!((r.status, r.body.as_str()), (200, "ok"));
+    }
+
+    #[test]
+    fn a_redirect_never_leaves_https() {
+        let u = |s: &str| Url::parse(s).unwrap();
+        assert!(downgrades(&u("https://api.torbox.app/a"), &u("http://api.torbox.app/b")));
+        assert!(!downgrades(&u("https://api.torbox.app/a"), &u("https://x.tb-cdn.st/b")));
+        assert!(!downgrades(&u("http://192.168.1.2/a"), &u("http://192.168.1.2/b")));
     }
 
     #[test]

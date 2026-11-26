@@ -14,6 +14,12 @@ use tauri::{Emitter, Manager};
 
 mod plugins;
 mod share;
+// The torrent engine (next in this series) is its first caller.
+#[cfg(desktop)]
+#[cfg_attr(not(test), allow(dead_code))]
+mod torrent_http;
+#[cfg(desktop)]
+mod vpn;
 mod ytdlp;
 
 const VIDEO: &[&str] = &[
@@ -1375,7 +1381,13 @@ pub fn run() {
             ytdlp::plugin_tool,
             ytdlp::tool_open,
             ytdlp::tool_download,
-            ytdlp::tool_download_clean
+            ytdlp::tool_download_clean,
+            #[cfg(desktop)]
+            vpn::watch::vpn_gate,
+            #[cfg(desktop)]
+            vpn::watch::vpn_gate_hold,
+            #[cfg(desktop)]
+            vpn::watch::vpn_gate_release
         ])
         .setup(|app| {
             // Files passed on the command line: `Flick movie.mkv`.
@@ -1389,6 +1401,8 @@ pub fn run() {
             if let Ok(cache) = app.path().app_cache_dir() {
                 std::thread::spawn(move || ytdlp::clean_cache(&cache));
             }
+            #[cfg(desktop)]
+            vpn::watch::install(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())

@@ -16,7 +16,7 @@ export const HOST_PAGE = isDesktop ? '/plugin-host-app.html' : '/plugin-host.htm
 export type SourceManifest = V.PluginManifest
 export interface Installed {
   id: string
-  kind: 'source' | 'theme'
+  kind: 'source' | 'service' | 'theme'
   /** Where it came from; updates are checked here. Null for a file or pasted text. */
   url: string | null
   code: string
@@ -40,8 +40,19 @@ export async function sha256(text: string): Promise<string> {
 
 // ---------- log ----------
 export const logs = signal<Record<string, string[]>>({})
+/** Secret setting values (API keys, tokens) per plugin, blanked out of every log line. */
+const secretValues = new Map<string, string[]>()
+export function setSecrets(id: string, rec: Pick<Installed, 'kind' | 'manifest' | 'settings'>) {
+  const fields = rec.kind === 'theme' ? [] : (rec.manifest as V.PluginManifest).settings.filter((f) => f.secret)
+  secretValues.set(id, fields.map((f) => rec.settings[f.key]).filter((v): v is string => typeof v === 'string' && v.length >= 4))
+}
+export function redact(id: string, text: string): string {
+  let out = text
+  for (const v of secretValues.get(id) ?? []) out = out.split(v).join('[key]')
+  return out
+}
 export function logLine(id: string, text: string) {
-  const line = `${new Date().toLocaleTimeString()} ${text.slice(0, 2000)}`
+  const line = `${new Date().toLocaleTimeString()} ${redact(id, text).slice(0, 2000)}`
   logs.value = { ...logs.value, [id]: [...(logs.value[id] ?? []), line].slice(-200) }
 }
 
@@ -57,7 +68,7 @@ type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>
  * The handler for one plugin's ctx requests. `id` comes from the installed record, never from the
  * message, so a plugin can only reach its own store and its own host allowlist.
  */
-export function ctxHandler(id: string, desktop = isDesktop, call: Invoke = invoke): Handler {
+export function ctxHandler(id: string, desktop = isDesktop, call: Invoke = invoke, httpsOnly = false): Handler {
   return async (m, a) => {
     switch (m) {
       case 'store.get':
@@ -76,6 +87,8 @@ export function ctxHandler(id: string, desktop = isDesktop, call: Invoke = invok
         return null
       case 'fetch': {
         if (!desktop) throw new Error('On the web, ctx.fetch runs inside the sandbox.')
+        // A service plugin carries the user's key, so it reaches its hosts over https only.
+        if (httpsOnly && !/^https:\/\//i.test(String(a[0]))) throw new Error('A service plugin may fetch only https addresses.')
         const init = (a[1] && typeof a[1] === 'object' ? a[1] : {}) as { method?: unknown; headers?: unknown; body?: unknown }
         const headers: Record<string, string> = {}
         if (init.headers && typeof init.headers === 'object') for (const [k, v] of Object.entries(init.headers)) headers[String(k)] = String(v)
@@ -128,7 +141,7 @@ function close(f: Promise<Frame>) {
 
 /** Tell the desktop app which hosts and tools this plugin may use. The lists come from the installed record. */
 export async function registerHosts(rec: Installed) {
-  if (!isDesktop || rec.kind !== 'source') return
+  if (!isDesktop || rec.kind === 'theme') return
   const m = rec.manifest as V.PluginManifest
   await invoke('plugin_hosts', { id: rec.id, hosts: rec.enabled ? m.hosts : [] })
   await invoke('plugin_tools', { id: rec.id, tools: rec.enabled ? m.tools : [] })
@@ -140,14 +153,25 @@ export async function openToolStream(url: string): Promise<string> {
   return fileUrl(await invoke<string>('tool_open', { url }))
 }
 
+/** Why a plugin may not start on this platform, or null. A service runs on the desktop only,
+ *  whatever platforms an older stored manifest lists: elsewhere ctx.fetch skips the host and https checks. */
+export function startRefusal(rec: Installed, platform: V.Platform): string | null {
+  if (rec.kind === 'service' && platform !== 'desktop') return `${rec.manifest.name} works only in the Flick desktop app.`
+  return null
+}
+
 function frameFor(rec: Installed): Promise<Frame> {
   let f = frames.get(rec.id)
   if (!f) {
     f = (async () => {
-      if (rec.kind !== 'source' || !rec.enabled) throw new Error(`${rec.manifest.name} is turned off.`)
+      if (rec.kind === 'theme' || !rec.enabled) throw new Error(`${rec.manifest.name} is turned off.`)
+      const service = rec.kind === 'service'
+      const refused = startRefusal(rec, platformName())
+      if (refused) throw new Error(refused)
       if ((await sha256(rec.code)) !== rec.sha256) throw new Error(`${rec.manifest.name} changed on this device since it was installed. Remove it and install it again.`)
+      setSecrets(rec.id, rec)
       await registerHosts(rec)
-      const fr = await openFrame(ctxHandler(rec.id))
+      const fr = await openFrame(ctxHandler(rec.id, isDesktop, invoke, service))
       await fr.rpc.call('load', [rec.code, platformName(), rec.settings])
       return fr
     })()
@@ -157,7 +181,7 @@ function frameFor(rec: Installed): Promise<Frame> {
   return f
 }
 
-const CHECKS: Record<string, (x: unknown) => unknown> = {
+const CHECKS: Record<string, (x: unknown, m: V.PluginManifest, args: unknown[]) => unknown> = {
   catalog: V.validateCatalog,
   userCatalogs: V.validateCatalogDefs,
   meta: V.validateMeta,
@@ -166,16 +190,22 @@ const CHECKS: Record<string, (x: unknown) => unknown> = {
   library: V.validateLibrary,
   action: V.validateAction,
   progress: () => null,
+  account: V.validateAccount,
+  cached: (x, _m, args) => V.validateCached(x, Array.isArray(args[0]) ? (args[0] as string[]) : []),
+  resolve: (x, m) => V.validateResolve(x, m.hosts),
 }
 
-export interface Results { userCatalogs: V.CatalogDef[]; catalog: V.CatalogResult; meta: V.Meta; streams: V.Stream[]; subtitles: V.Sub[]; library: V.Meta[]; action: V.ActionResult; progress: null }
+export interface Results {
+  userCatalogs: V.CatalogDef[]; catalog: V.CatalogResult; meta: V.Meta; streams: V.Stream[]; subtitles: V.Sub[]; library: V.Meta[]; action: V.ActionResult; progress: null
+  account: V.AccountResult; cached: string[]; resolve: V.ResolveResult
+}
 
 /** Call one plugin function and check what it returns. A bad result is dropped with a log line. */
 export async function callPlugin<K extends keyof Results>(rec: Installed, fn: K, args: unknown[]): Promise<Results[K]> {
   const fr = await frameFor(rec)
   const raw = await fr.rpc.call('call', [fn, args]).catch((e: Error) => { logLine(rec.id, `${fn}() failed: ${e.message}`); throw e })
   try {
-    return CHECKS[fn](raw) as Results[K]
+    return CHECKS[fn](raw, rec.manifest as V.PluginManifest, args) as Results[K]
   } catch (e) {
     logLine(rec.id, `Dropped a bad ${fn}() result: ${(e as Error).message}`)
     throw e
@@ -190,6 +220,7 @@ export function stopPlugin(id: string) {
 
 /** Push new setting values to a running plugin. */
 export function pushSettings(rec: Installed) {
+  setSecrets(rec.id, rec)
   frames.get(rec.id)?.then((f) => f.rpc.call('settings', [rec.settings])).catch(() => {})
 }
 
