@@ -330,9 +330,10 @@ fn run_tool(
             let _ = managed(&env.dir, &env.fetch, Duration::ZERO);
             Ok(json!(format!("flick-tool:ytdlp/{token}")))
         }
-        "download" => {
-            Err("Saving videos for offline with yt-dlp comes in a later version of Flick.".into())
-        }
+        "download" => Err(
+            "A plugin cannot start a download. The viewer saves a stream with its Download button."
+                .into(),
+        ),
         _ => Err(format!("The {tool} tool has no \"{op}\" call.")),
     }
 }
@@ -642,6 +643,236 @@ pub fn clean_cache(cache: &Path) {
     }
 }
 
+// ---------- saving a flick-tool: stream for offline ----------
+// yt-dlp writes its parts to cache/ytdlp/dl-<id> and moves the merged file to downloads/<id>.mp4,
+// where the server downloads live. Progress goes out as `download-progress`, the same event.
+
+/// The page a download may save: a token resolve() registered, from a plugin that lists the tool,
+/// on that plugin's hosts as they are now (a plugin turned off has none).
+fn download_page(
+    state: &PluginTools,
+    tools: &[String],
+    hosts: &[String],
+    id: &str,
+    url: &str,
+) -> Result<String, String> {
+    if !super::valid_id(id) {
+        return Err("Bad download name".into());
+    }
+    if !tools.iter().any(|t| t == "ytdlp") {
+        return Err("This plugin did not list the ytdlp tool when it was installed.".into());
+    }
+    let token = url
+        .strip_prefix("flick-tool:ytdlp/")
+        .ok_or_else(|| format!("Flick cannot save {url}."))?;
+    let page = state
+        .tokens
+        .lock()
+        .unwrap()
+        .get(token)
+        .cloned()
+        .ok_or("This stream has expired. Open the title again.")?;
+    match Url::parse(&page) {
+        Ok(u) if u.scheme() == "https" && super::plugins::host_allowed(hosts, &u) => Ok(page),
+        _ => Err("This plugin may not save that page. Its hosts list does not include it.".into()),
+    }
+}
+
+/// yt-dlp's arguments: the play format, merged into one `<id>.mp4` in `home`. The page comes last, after `--`.
+fn download_args(
+    ffmpeg: &Path,
+    home: &Path,
+    temp: &Path,
+    id: &str,
+    page: &str,
+) -> Vec<std::ffi::OsString> {
+    let mut a: Vec<std::ffi::OsString> = [
+        "--no-warnings", "--no-playlist", "--newline", "--progress-template",
+        "download:FLICK %(progress.downloaded_bytes)s %(progress.total_bytes,progress.total_bytes_estimate)s",
+        "-f", PLAY_FORMAT, "--merge-output-format", "mp4", "--ffmpeg-location",
+    ]
+    .map(Into::into)
+    .into();
+    a.push(ffmpeg.into());
+    for (k, p) in [("home:", home), ("temp:", temp)] {
+        a.push("-P".into());
+        let mut v = std::ffi::OsString::from(k);
+        v.push(p);
+        a.push(v);
+    }
+    a.extend(["-o".into(), format!("{id}.mp4"), "--".into(), page.into()].map(Into::into));
+    a
+}
+
+/// One progress line, "FLICK <done> <total>", as bytes. yt-dlp prints NA for what it does not know.
+fn progress_line(line: &str) -> Option<(u64, u64)> {
+    let mut w = line.strip_prefix("FLICK ")?.split_whitespace();
+    let done = w.next()?.parse().ok()?;
+    Some((done, w.next().and_then(|t| t.parse().ok()).unwrap_or(0)))
+}
+
+/// Adds up the video part and then the audio part, so done only grows across the two.
+#[derive(Default)]
+struct Tally {
+    base: u64,
+    done: u64,
+    total: u64,
+}
+
+impl Tally {
+    fn add(&mut self, done: u64, total: u64) -> (u64, u64) {
+        if done < self.done {
+            self.base += self.total.max(self.done);
+        }
+        (self.done, self.total) = (done, total);
+        (self.base + done, self.base + total.max(done))
+    }
+}
+
+/// Runs yt-dlp until it finishes, fails, or `stop` is set (then it is killed). Returns the saved file.
+fn save(
+    bin: &Path,
+    args: &[std::ffi::OsString],
+    home: &Path,
+    temp: &Path,
+    id: &str,
+    stop: &std::sync::atomic::AtomicBool,
+    mut on_progress: impl FnMut(u64, u64),
+) -> Result<PathBuf, String> {
+    use std::io::BufRead;
+    use std::sync::atomic::Ordering;
+    std::fs::create_dir_all(home).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(temp).map_err(|e| e.to_string())?;
+    let log = temp.join("yt-dlp.log");
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(std::fs::File::create(&log).map_err(|e| e.to_string())?)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let out = child.stdout.take().ok_or("yt-dlp gave no output")?;
+    let child = Mutex::new(child);
+    let status = std::thread::scope(|s| {
+        // yt-dlp can sit quiet for a long time, so a watcher kills it on cancel rather than the reader.
+        let watch = s.spawn(|| loop {
+            let mut c = child.lock().unwrap();
+            if !matches!(c.try_wait(), Ok(None)) {
+                return;
+            }
+            if stop.load(Ordering::Relaxed) {
+                let _ = c.kill();
+                return;
+            }
+            drop(c);
+            std::thread::sleep(Duration::from_millis(100));
+        });
+        let (mut tally, mut last) = (Tally::default(), Instant::now() - Duration::from_secs(1));
+        let (mut now, mut sent) = ((0, 0), (0, 0));
+        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            if let Some((d, t)) = progress_line(&line) {
+                now = tally.add(d, t);
+                if last.elapsed() >= Duration::from_millis(250) {
+                    (sent, last) = (now, Instant::now());
+                    on_progress(now.0, now.1);
+                }
+            }
+        }
+        if now != sent {
+            on_progress(now.0, now.1);
+        }
+        let _ = watch.join();
+        child.lock().unwrap().wait()
+    })
+    .map_err(|e| e.to_string())?;
+    if stop.load(Ordering::Relaxed) {
+        return Err("Canceled".into());
+    }
+    let file = home.join(format!("{id}.mp4"));
+    if !status.success() || !file.is_file() {
+        let why = last_line(&log);
+        return Err(format!(
+            "yt-dlp: {}",
+            if why.is_empty() { "failed" } else { &why }
+        ));
+    }
+    let _ = std::fs::remove_dir_all(temp);
+    Ok(file)
+}
+
+fn download_temp(app: &tauri::AppHandle, id: &str) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("ytdlp")
+        .join(format!("dl-{id}")))
+}
+
+/// Saves the page behind a `flick-tool:ytdlp/` stream of plugin `plugin` as downloads/<id>.mp4.
+#[tauri::command]
+pub async fn tool_download(
+    app: tauri::AppHandle,
+    id: String,
+    plugin: String,
+    url: String,
+) -> Result<String, String> {
+    use tauri::Emitter;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<PluginTools>();
+        let tools = state
+            .tools
+            .lock()
+            .unwrap()
+            .get(&plugin)
+            .cloned()
+            .unwrap_or_default();
+        let hosts = app.state::<super::plugins::PluginHosts>().hosts_of(&plugin);
+        let page = download_page(&state, &tools, &hosts, &id, &url)?;
+        let ffmpeg = super::find_tool("ffmpeg")
+            .ok_or("Saving this needs ffmpeg. Install it with: brew install ffmpeg")?;
+        let bin = match managed(
+            &env(&app, &state)?.dir,
+            &state.fetch,
+            Duration::from_secs(300),
+        ) {
+            Ok(b) => b,
+            Err(e) => super::find_tool("yt-dlp").ok_or(e)?,
+        };
+        let (home, temp) = (super::downloads_dir(&app)?, download_temp(&app, &id)?);
+        let downloads = app.state::<super::Downloads>();
+        let stop = downloads.begin(&id)?;
+        let args = download_args(&ffmpeg, &home, &temp, &id, &page);
+        let res = save(&bin, &args, &home, &temp, &id, &stop, |done, total| {
+            let _ = app.emit(
+                "download-progress",
+                super::DownloadProgress {
+                    id: id.clone(),
+                    done,
+                    total,
+                    part: String::new(),
+                },
+            );
+        });
+        downloads.end(&id, &stop);
+        res.map(|p| p.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Deletes what an unfinished yt-dlp download left in the cache.
+#[tauri::command]
+pub fn tool_download_clean(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    if !super::valid_id(&id) {
+        return Err("Bad download name".into());
+    }
+    match std::fs::remove_dir_all(download_temp(&app, &id)?) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -751,6 +982,132 @@ mod tests {
     }
 
     #[test]
+    fn a_download_saves_only_a_resolved_token_on_the_plugins_hosts() {
+        let (st, e) = (PluginTools::default(), env_in(Path::new("/nonexistent")));
+        let (t, hosts) = (s(&["ytdlp"]), s(&["www.youtube.com"]));
+        let page = "https://www.youtube.com/watch?v=aqz-KE-bpKQ";
+        let url = run_tool(&e, &st, &t, &hosts, "ytdlp", "resolve", &[json!(page)]).unwrap();
+        let url = url.as_str().unwrap();
+        assert_eq!(download_page(&st, &t, &hosts, "pl-1", url).unwrap(), page);
+        let refused = |tools: &[String], hosts: &[String], id: &str, url: &str| {
+            download_page(&st, tools, hosts, id, url).unwrap_err()
+        };
+        assert!(refused(&t, &hosts, "pl-1", "flick-tool:ytdlp/0123").contains("expired"));
+        assert!(refused(&t, &hosts, "pl-1", page).contains("cannot save"));
+        assert!(refused(&[], &hosts, "pl-1", url).contains("did not list"));
+        // A plugin turned off (no hosts) or another plugin's hosts cannot save the page.
+        assert!(refused(&t, &[], "pl-1", url).contains("hosts list"));
+        assert!(refused(&t, &s(&["archive.org"]), "pl-1", url).contains("hosts list"));
+        for bad in ["", "../etc", "a/b", &"x".repeat(65)] {
+            assert!(
+                refused(&t, &hosts, bad, url).contains("Bad download name"),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn download_args_use_the_play_format_merged_to_one_mp4() {
+        let a = download_args(
+            Path::new("/bin/ffmpeg"),
+            Path::new("/d"),
+            Path::new("/c/dl-x"),
+            "pl-x",
+            "https://www.youtube.com/watch?v=a",
+        );
+        let a: Vec<String> = a.iter().map(|x| x.to_string_lossy().into_owned()).collect();
+        let after = |k: &str| a[a.iter().position(|x| x == k).unwrap() + 1].clone();
+        assert_eq!(after("-f"), PLAY_FORMAT);
+        assert_eq!(after("--merge-output-format"), "mp4");
+        assert_eq!(after("--ffmpeg-location"), "/bin/ffmpeg");
+        assert!(
+            a.windows(2).any(|w| w == ["-P", "home:/d"])
+                && a.windows(2).any(|w| w == ["-P", "temp:/c/dl-x"])
+        );
+        // The page is the last argument, after `--`, so it can never be read as an option.
+        assert_eq!(
+            a[a.len() - 4..],
+            ["-o", "pl-x.mp4", "--", "https://www.youtube.com/watch?v=a"]
+        );
+        assert!(!a
+            .iter()
+            .any(|x| x.starts_with("--exec") || x == "-a" || x == "--batch-file"));
+    }
+
+    #[test]
+    fn progress_adds_the_video_and_audio_parts() {
+        assert_eq!(progress_line("FLICK 10 100"), Some((10, 100)));
+        assert_eq!(progress_line("FLICK 10 NA"), Some((10, 0)));
+        assert_eq!(progress_line("[download] 10%"), None);
+        let mut t = Tally::default();
+        assert_eq!(t.add(50, 100), (50, 100));
+        assert_eq!(t.add(100, 100), (100, 100));
+        assert_eq!(t.add(5, 20), (105, 120));
+        assert_eq!(t.add(20, 20), (120, 120));
+    }
+
+    /// A stand-in yt-dlp: prints progress, writes `<home>/<id>.mp4`, or sleeps when told to.
+    #[cfg(unix)]
+    fn fake_ytdlp(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = dir.join("fake-yt-dlp");
+        std::fs::write(&bin, format!("#!/bin/sh\nfor a; do case \"$a\" in home:*) H=\"${{a#home:}}\";; esac; done\n{body}\n")).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        bin
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_reports_progress_returns_the_file_and_stops_on_cancel() {
+        use std::sync::atomic::AtomicBool;
+        let dir = std::env::temp_dir().join(format!("flick-ytdlp-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (home, temp) = (dir.join("downloads"), dir.join("dl-x"));
+        let args = download_args(
+            Path::new("ffmpeg"),
+            &home,
+            &temp,
+            "pl-x",
+            "https://www.youtube.com/watch?v=a",
+        );
+        let ok = fake_ytdlp(
+            &dir,
+            "echo 'FLICK 4 8'; sleep 0.3; echo 'FLICK 6 8'; echo 'FLICK 8 8'; printf mp4 > \"$H/pl-x.mp4\"",
+        );
+        let mut seen = vec![];
+        let stop = AtomicBool::new(false);
+        let file = save(&ok, &args, &home, &temp, "pl-x", &stop, |d, t| {
+            seen.push((d, t))
+        })
+        .unwrap();
+        assert_eq!(file, home.join("pl-x.mp4"));
+        assert_eq!(
+            seen,
+            [(4, 8), (6, 8), (8, 8)],
+            "the last tick always goes out"
+        );
+        assert!(!temp.exists(), "a finished download leaves no parts behind");
+        // yt-dlp fails: its last line is the error.
+        let bad = fake_ytdlp(&dir, "echo 'ERROR: Video unavailable' >&2; exit 1");
+        let err = save(&bad, &args, &home, &temp, "pl-y", &stop, |_, _| {}).unwrap_err();
+        assert_eq!(err, "yt-dlp: ERROR: Video unavailable");
+        // Cancel kills a yt-dlp that prints nothing.
+        let slow = fake_ytdlp(&dir, "exec sleep 30");
+        let stop = Arc::new(AtomicBool::new(false));
+        let s2 = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            s2.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let clock = Instant::now();
+        let err = save(&slow, &args, &home, &temp, "pl-z", &stop, |_, _| {}).unwrap_err();
+        assert_eq!(err, "Canceled");
+        assert!(clock.elapsed() < Duration::from_secs(5));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn reads_the_release_checksum_for_this_asset() {
         let sums = "e866  short\n57654854886d0398a798895aadf5173e2749fbb5e249b9f3728022ab376e11fb  yt-dlp_macos\n43fc87fc581f64b48c366ce20b9cacb9c2949cc1ac4b9eca56fe25ac52dbb63b  yt-dlp_macos.zip\n";
         assert_eq!(
@@ -803,6 +1160,46 @@ mod tests {
             println!("{}", serde_json::to_string_pretty(&metas(&j)).unwrap());
         }
         assert_eq!(Value::Array(metas(&j)), want);
+    }
+
+    /// Real network run: Flick's own yt-dlp saves a short video as one mp4 through the same path.
+    /// `FLICK_YTDLP_DIR=<dir> cargo test ytdlp_save_live -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn ytdlp_save_live() {
+        let dir = std::env::var("FLICK_YTDLP_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir().join("flick-ytdlp-live"));
+        let (st, e) = (PluginTools::default(), env_in(&dir));
+        let (t, hosts) = (s(&["ytdlp"]), s(&["www.youtube.com"]));
+        let page = "https://www.youtube.com/watch?v=jNQXAC9IVRw";
+        let url = run_tool(&e, &st, &t, &hosts, "ytdlp", "resolve", &[json!(page)]).unwrap();
+        let page = download_page(&st, &t, &hosts, "pl-live", url.as_str().unwrap()).unwrap();
+        let bin = managed(&e.dir, &e.fetch, Duration::from_secs(300)).unwrap();
+        let ffmpeg = super::super::find_tool("ffmpeg").expect("ffmpeg");
+        let out = std::env::temp_dir().join("flick-ytdlp-save-live");
+        let (home, temp) = (out.join("downloads"), out.join("dl-pl-live"));
+        let _ = std::fs::remove_dir_all(&out);
+        let args = download_args(&ffmpeg, &home, &temp, "pl-live", &page);
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        let mut last = (0, 0);
+        let file = save(&bin, &args, &home, &temp, "pl-live", &stop, |d, t| {
+            last = (d, t)
+        })
+        .unwrap();
+        let bytes = std::fs::read(&file).unwrap();
+        println!(
+            "saved {} ({} bytes), last progress {last:?}",
+            file.display(),
+            bytes.len()
+        );
+        assert_eq!(&bytes[4..8], b"ftyp", "an mp4 starts with an ftyp box");
+        assert!(last.0 > 0 && last.0 <= last.1);
+        assert_eq!(
+            std::fs::read_dir(&home).unwrap().count(),
+            1,
+            "one file, no parts"
+        );
     }
 
     /// Real network run on this computer: Flick's own yt-dlp searches, resolves and streams.
