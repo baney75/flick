@@ -1,6 +1,6 @@
 ---
 name: flick-plugin
-description: Use when someone asks you to write, fix or publish a Flick source plugin, the single plugin.js file that adds catalogs, search, title pages and streams from a website or API to the Flick media player.
+description: Use when someone asks you to write, fix or publish a Flick source plugin (the single plugin.js file that adds catalogs, search, title pages and streams from a website or API to the Flick media player) or a Flick service plugin for a debrid service such as TorBox or Real-Debrid.
 ---
 
 # Write a Flick source plugin
@@ -27,6 +27,20 @@ in a sandboxed iframe and talks to it through `ctx`. The full contract is `docs/
 6. Settings and sign-in: declare `settings` and `actions` fields. Mark tokens and passwords
    `secret: true` (or `type: 'password'`). Save a sign-in token with `ctx.store.set`, never in a setting.
 7. Never add sources the user did not choose: no hidden addon lists, no scraping of pirated content.
+
+## A service plugin (debrid)
+
+A debrid service is `kind: 'service'` with `provides: ['debrid']` and no catalogs. Read "A service
+plugin" in `docs/PLUGINS.md`, then:
+
+1. Put the service's API doc URL in a comment at the top of the file.
+2. `hosts` names the API host and the download hosts, never `*`. `debridHosts` lists the download
+   hosts again.
+3. One `password` setting holds the API key; its `help` names the exact page where the user finds it.
+4. Write `account`, `cached` and `resolve`. If the API cannot do one of them (no cache check), say so
+   in a comment and return the documented fallback (`[]`), never a guess.
+5. Check with `npm run plugin:check -- plugin.js --set apiKey=<key> --hash <infoHash>`. Tests use
+   recorded responses, never a real key.
 
 ## Check
 

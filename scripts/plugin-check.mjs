@@ -2,7 +2,8 @@
 //   npm run plugin:check -- plugins/template/plugin.js
 //   npm run plugin:check -- https://gist.githubusercontent.com/.../plugin.js --search dune
 //   npm run plugin:check -- theme.json
-// Flags: --search <term> (default "the"), --set key=value (a setting, repeatable).
+// Flags: --search <term> (default "the"), --set key=value (a setting, repeatable),
+// --hash <infoHash> (a service plugin: also call cached() and one resolve()).
 // Prints PASS or FAIL per step and exits non-zero on any FAIL.
 // Note: here the plugin runs in Node, not in the browser sandbox, so check only code you trust to run.
 import { readFileSync } from 'node:fs'
@@ -10,7 +11,7 @@ import * as V from '../src/lib/plugins/validate.ts'
 
 const argv = process.argv.slice(2)
 const flag = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined }
-const target = argv.find((a, i) => !a.startsWith('--') && !['--search', '--set'].includes(argv[i - 1]))
+const target = argv.find((a, i) => !a.startsWith('--') && !['--search', '--set', '--hash'].includes(argv[i - 1]))
 if (!target) {
   console.error('Usage: npm run plugin:check -- <plugin.js | theme.json | https URL> [--search term] [--set key=value]')
   process.exit(2)
@@ -61,7 +62,7 @@ for (const [k, v] of Object.entries(plugin ?? {})) (typeof v === 'function' ? fn
 let m
 try {
   m = V.validateManifest(plain(data), fns)
-  check(true, `manifest: ${m.name} ${m.version} (${m.id}), ${m.catalogs.length} catalogs, hosts ${m.hosts.join(', ') || 'none'}`)
+  check(true, `manifest: ${m.name} ${m.version} (${m.id}), ${m.kind === 'service' ? `service (${m.provides.join(', ')})` : `${m.catalogs.length} catalogs`}, hosts ${m.hosts.join(', ') || 'none'}`)
 } catch (e) {
   check(false, `manifest: ${e.message}`)
   done()
@@ -137,6 +138,19 @@ async function call(fn, args, validate, what) {
     check(false, `${what}: ${e.message}`)
     return null
   }
+}
+
+if (m.kind === 'service') {
+  const acct = await call('account', [], V.validateAccount, 'account()')
+  if (acct) check(true, `account(): ${acct.ok ? `${acct.name}${acct.plan ? ` ${acct.plan}` : ''}${acct.expires ? ` until ${acct.expires}` : ''}` : `refused, "${acct.message}"`}`)
+  const hash = flag('--hash')?.toLowerCase()
+  if (hash) {
+    const c = await call('cached', [[hash]], (x) => V.validateCached(x, [hash]), 'cached()')
+    if (c) check(true, `cached(): ${c.length ? 'on the service' : 'not on the service'}`)
+    const r = await call('resolve', [{ infoHash: hash }], (x) => V.validateResolve(x, m.hosts), 'resolve()')
+    if (r) check(true, `resolve(): ${'url' in r ? r.url.slice(0, 80) : 'wait' in r ? `wait ${r.wait.pct ?? '?'}%, ${r.wait.message}` : `error, ${r.error}`}`)
+  }
+  done()
 }
 
 let rows = m.catalogs.filter((c) => !c.search)
