@@ -43,18 +43,30 @@ function kindOf(f) {
  * the part of the file it was made from; a book is one part. Exported for tests.
  */
 export function parts(id, files) {
+  const byName = new Map((files ?? []).map((f) => [f.name, f]))
+  // A derivative can be made from another derivative: follow the chain to the file it all came from.
+  const root = (f) => {
+    let n = f
+    for (let i = 0; i < 8 && n.source === 'derivative' && n.original; i++) {
+      const o = byName.get(n.original)
+      if (!o) return n.original
+      n = o
+    }
+    return n.name
+  }
   const groups = new Map()
   for (const f of files ?? []) {
     const k = kindOf(f)
     if (!k || f.private === 'true') continue
-    const key = k.kind === 'book' ? id : f.source === 'derivative' && f.original ? f.original : f.name
+    const key = k.kind === 'book' ? id : root(f)
     const g = groups.get(key) ?? { key, files: [] }
     g.files.push({ ...f, ...k })
     groups.set(key, g)
   }
-  // Every part is the item's main kind: a film's MP3 derivative or an audiobook's PDF is not a part.
-  const all = [...groups.values()].flatMap((g) => g.files)
-  const main = ['video', 'audio', 'book'].find((k) => all.some((f) => f.kind === k))
+  // Every part is the item's main kind: the kind most parts have, so a film's MP3 derivative, an
+  // audiobook's PDF or one stray video among radio episodes is not a part. A tie goes to video.
+  const count = (k) => [...groups.values()].filter((g) => g.files.some((f) => f.kind === k)).length
+  const main = ['video', 'audio', 'book'].reduce((a, b) => (count(b) > count(a) ? b : a))
   const out = [...groups.values()].filter((g) => (g.files = g.files.filter((f) => f.kind === main)).length).map((g) => {
     g.files.sort((a, b) => a.rank - b.rank || Number(b.height ?? 0) - Number(a.height ?? 0))
     const named = g.files.find((f) => f.title)
@@ -67,11 +79,15 @@ export function parts(id, files) {
   return out.sort((a, b) => (tracked ? a.track - b.track : 0) || a.key.localeCompare(b.key, 'en', { numeric: true }))
 }
 
+async function json(r) {
+  if (!r.ok) throw new Error(`archive.org answered ${r.status}. Try again in a moment.`)
+  return r.json()
+}
+
 const cache = new Map()
 async function item(ctx, id) {
   if (!cache.has(id)) {
-    const r = await ctx.fetch(`${API}/metadata/${encodeURIComponent(id)}`)
-    const j = await r.json()
+    const j = await json(await ctx.fetch(`${API}/metadata/${encodeURIComponent(id)}`))
     if (!j.metadata) throw new Error(`archive.org has no item ${id}.`)
     if (cache.size > 20) cache.delete(cache.keys().next().value)
     cache.set(id, j)
@@ -108,7 +124,7 @@ export default {
     const page = Math.floor(skip / ROWS) + 1
     const sort = row ? '&sort%5B%5D=downloads%20desc' : ''
     const fl = ['identifier', 'title', 'year', 'mediatype', 'collection'].map((f) => `&fl%5B%5D=${f}`).join('')
-    const j = await (await ctx.fetch(`${API}/advancedsearch.php?q=${encodeURIComponent(q)}${fl}${sort}&rows=${ROWS}&page=${page}&output=json`)).json()
+    const j = await json(await ctx.fetch(`${API}/advancedsearch.php?q=${encodeURIComponent(q)}${fl}${sort}&rows=${ROWS}&page=${page}&output=json`))
     return {
       items: (j.response?.docs ?? []).map((d) => {
         const type = row?.type ?? typeOf(d.mediatype, d.collection)
@@ -134,7 +150,8 @@ export default {
       poster: `${API}/services/img/${id}`,
       posterShape: shape[t],
       background: `${API}/services/img/${id}`,
-      videos: list.length > 1 ? list.map((g, i) => {
+      // A series lists its episodes even when it has one, so its title page always has something to play.
+      videos: list.length > 1 || (t === 'series' && list.length) ? list.map((g, i) => {
         const se = /S(\d{1,2})E(\d{1,3})/i.exec(g.key)
         return { id: g.key, title: g.title, season: se ? Number(se[1]) : undefined, episode: se ? Number(se[2]) : i + 1 }
       }) : undefined,

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error a plain JS plugin with no types of its own
-import { parts } from '../plugins/archive/plugin.js'
+import archive, { parts } from '../plugins/archive/plugin.js'
 
 const f = (name: string, format: string, more: Record<string, string> = {}) => ({ name, format, source: 'original', ...more })
 const keys = (list: { key: string }[]) => list.map((g) => g.key)
@@ -29,5 +29,25 @@ describe('Internet Archive plugin parts', () => {
     const p = parts('bk', [f('bk.epub', 'EPUB', { source: 'derivative', original: 'bk_abbyy.gz' }), f('bk.pdf', 'Text PDF', { source: 'derivative', original: 'bk.json' })])
     expect(keys(p)).toEqual(['bk'])
     expect(p[0].files.map((x: { format: string }) => x.format)).toEqual(['Text PDF', 'EPUB'])
+  })
+  it('follows a derivative chain to the file it came from', () => {
+    const p = parts('film', [f('film.avi', 'AVI'), f('film_512kb.mp4', '512Kb MPEG4', { source: 'derivative', original: 'film.avi' }), f('film.ogv', 'Ogg Video', { source: 'derivative', original: 'film_512kb.mp4' })])
+    expect(keys(p)).toEqual(['film.avi'])
+    expect(p[0].files).toHaveLength(3)
+  })
+  it('takes the kind most parts have: radio episodes with one stray video stay audio', () => {
+    const eps = Array.from({ length: 5 }, (_, i) => f(`ep${i + 1}.mp3`, 'VBR MP3'))
+    expect(keys(parts('otr', [...eps, f('promo.mp4', 'h.264')]))).toEqual(eps.map((e) => e.name))
+  })
+})
+
+describe('Internet Archive plugin meta', () => {
+  const ctx = (res: { ok: boolean; status?: number; body?: unknown }) => ({ fetch: async () => ({ ok: res.ok, status: res.status ?? 200, json: async () => res.body }) })
+  it('lists a one-episode series as one episode, so it can play', async () => {
+    const m = await archive.meta(ctx({ ok: true, body: { metadata: { title: 'Show', mediatype: 'movies' }, files: [f('pilot.mp4', 'h.264')] } }), { id: 'show1', type: 'series' })
+    expect(m.videos).toHaveLength(1)
+  })
+  it('says archive.org is busy instead of parsing an error page', async () => {
+    await expect(archive.meta(ctx({ ok: false, status: 503 }), { id: 'busy', type: 'movie' })).rejects.toThrow('archive.org answered 503')
   })
 })
