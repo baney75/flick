@@ -225,9 +225,12 @@ try {
   check(popFits, 'sleep menu opens fully inside the window')
   await page.screenshot({ path: 'test-media/shots/audiobook.png' })
   await page.locator('.listen-pop button', { hasText: 'End of chapter' }).click()
+  // Play fast so timeupdates land past the chapter's end, the way a slow phone does.
+  await page.evaluate(() => { document.querySelector('.listen audio').playbackRate = 4 })
   const stopped = await page.waitForFunction(() => { const a = document.querySelector('.listen audio'); return a && a.paused && a.currentTime > 8 }, null, { timeout: 9000 }).then(() => true, () => false)
+  await page.waitForTimeout(300)
   const stopAt = await page.evaluate(() => document.querySelector('.listen audio')?.currentTime)
-  check(stopped && stopAt < 9.5, `sleep timer stops at the end of the chapter (${stopAt?.toFixed(1)}s, chapter ends at 8.5s)`)
+  check(stopped && stopAt > 8 && stopAt < 8.5, `sleep timer stops inside the chapter it ends (${stopAt?.toFixed(2)}s, chapter ends at 8.5s)`)
   await page.getByRole('button', { name: 'Speed' }).click()
   await page.locator('.listen-pop button', { hasText: /^1\.5×$/ }).click()
   await page.goto(`${BASE}/#/library`)
