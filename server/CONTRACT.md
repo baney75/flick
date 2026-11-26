@@ -61,9 +61,11 @@ Access-Control-Allow-Methods: GET, HEAD, OPTIONS
 - JPEG, longest edge 320 px, turned upright from the EXIF orientation. `Cache-Control: private, max-age=31536000,
   immutable`; clients add `&v=<mtime>` so a changed photo gets a new URL.
 - Kept in `<config dir>/thumbs/<id>-<size>-<mtime>.jpg` and served from there next time. At most two render at once.
-- `404` for an id that is not a photo. `415` with JSON `{"error":"..."}` when the server cannot decode it (HEIC, AVIF,
-  a damaged file), remembered as `<id>-<size>-<mtime>.none`; the client
-  shows a file tile instead. `404` also when the file is gone since the last scan.
+- `404` for an id that is not a photo, or a file gone since the last scan. `415` with JSON `{"error":"..."}` when this
+  build cannot decode it (HEIC, AVIF, a damaged file), remembered as `<id>-<size>-<mtime>.none<N>`, where N counts the
+  decoders a build has, so a build that learns a format tries again. The client shows a file tile instead.
+- `503` with `Retry-After: 1` when reading the file failed or more thumbnails are waiting than the server takes (two
+  render, four wait); nothing is remembered, so a retry can succeed.
 
 Any other `/api/*` or `/thumb/*` path: `401` without the code, `404` with it.
 

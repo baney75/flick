@@ -209,7 +209,7 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
     let state = Arc::new(State {
         web,
         thumbs: cfg.config_dir.join("thumbs"),
-        renders: thumb::Gate::new(thumb::RENDERS),
+        renders: thumb::Gate::new(thumb::RENDERS, thumb::WAITING),
         name: cfg.name,
         token: token.clone(),
         real_roots: cfg
@@ -460,13 +460,20 @@ impl<R: Read> Read for Stoppable<'_, R> {
 
 fn thumbnail(req: Request, item: &index::Item, st: &State) {
     let cached = thumb::cache_path(&st.thumbs, &item.id, item.size, item.mtime);
-    let failed = cached.with_extension("none");
+    let failed = thumb::failed_path(&st.thumbs, &item.id, item.size, item.mtime);
     let no_thumb = |req| {
         json(
             req,
             415,
             serde_json::json!({"error":"no thumbnail for this file"}),
         )
+    };
+    let busy = |req: Request| {
+        let res = Response::from_string(r#"{"error":"busy, try again"}"#)
+            .with_status_code(503)
+            .with_header(header("Content-Type", "application/json"))
+            .with_header(header("Retry-After", "1"));
+        respond(req, res)
     };
     if failed.exists() {
         return no_thumb(req);
@@ -477,17 +484,23 @@ fn thumbnail(req: Request, item: &index::Item, st: &State) {
             let Some(file) = open_inside(&item.abs, &st.real_roots) else {
                 return json(req, 404, serde_json::json!({"error":"not found"}));
             };
-            let made = {
-                let _turn = st.renders.enter();
-                thumb::render(file)
+            let Some(turn) = st.renders.enter() else {
+                return busy(req);
             };
+            let made = thumb::render(file);
+            drop(turn);
             // A read-only config dir only costs the cache; the answer is the same.
-            let Some(jpeg) = made else {
-                let _ = thumb::store(&failed, b"");
-                return no_thumb(req);
-            };
-            let _ = thumb::store(&cached, &jpeg);
-            jpeg
+            match made {
+                Ok(jpeg) => {
+                    let _ = thumb::store(&cached, &jpeg);
+                    jpeg
+                }
+                Err(thumb::Failure::Undecodable) => {
+                    let _ = thumb::store(&failed, b"");
+                    return no_thumb(req);
+                }
+                Err(thumb::Failure::Io) => return busy(req),
+            }
         }
     };
     let res = Response::from_data(jpeg)

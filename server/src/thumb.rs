@@ -1,6 +1,6 @@
 //! Small JPEG previews of photos, so a photo grid never downloads full-size pictures.
-use image::{codecs::jpeg::JpegEncoder, DynamicImage, ImageDecoder, ImageReader};
-use std::io::BufReader;
+use image::{codecs::jpeg::JpegEncoder, DynamicImage, ImageDecoder, ImageError, ImageReader};
+use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 
@@ -9,59 +9,91 @@ pub const EDGE: u32 = 320;
 /// Thumbnails decoded at once. A phone photo takes about 150 MB while it decodes, so a small NAS
 /// would run out of memory with every worker on one, and video streams would wait.
 pub const RENDERS: usize = 2;
+/// Thumbnail requests that may wait for a render. The rest are told to retry, so most workers
+/// stay free for /media and /api.
+pub const WAITING: usize = 4;
+/// Bumped when this build learns new formats, so photos it could not decode before get another try.
+pub const DECODERS: u32 = 1;
 
-/// Lets at most `n` renders run at a time.
+/// Lets at most `n` renders run at a time, with at most `queue` more waiting.
 pub struct Gate {
-    busy: Mutex<usize>,
+    state: Mutex<(usize, usize)>,
     free: Condvar,
     n: usize,
+    queue: usize,
 }
 
 pub struct Turn<'a>(&'a Gate);
 
 impl Gate {
-    pub fn new(n: usize) -> Self {
+    pub fn new(n: usize, queue: usize) -> Self {
         Gate {
-            busy: Mutex::new(0),
+            state: Mutex::new((0, 0)),
             free: Condvar::new(),
             n,
+            queue,
         }
     }
-    pub fn enter(&self) -> Turn<'_> {
-        let mut busy = self.busy.lock().unwrap();
-        while *busy >= self.n {
-            busy = self.free.wait(busy).unwrap();
+    /// A turn to render, after waiting if the slots are busy. `None` when the queue is full too.
+    pub fn enter(&self) -> Option<Turn<'_>> {
+        let mut st = self.state.lock().unwrap();
+        if st.0 >= self.n {
+            if st.1 >= self.queue {
+                return None;
+            }
+            st.1 += 1;
+            while st.0 >= self.n {
+                st = self.free.wait(st).unwrap();
+            }
+            st.1 -= 1;
         }
-        *busy += 1;
-        Turn(self)
+        st.0 += 1;
+        Some(Turn(self))
     }
 }
 
 impl Drop for Turn<'_> {
     fn drop(&mut self) {
-        *self.0.busy.lock().unwrap() -= 1;
+        self.0.state.lock().unwrap().0 -= 1;
         self.0.free.notify_one();
     }
 }
 
+/// Why a photo has no thumbnail.
+#[derive(Debug, PartialEq)]
+pub enum Failure {
+    /// The format is one this build cannot decode (HEIC, AVIF), or the file is damaged.
+    Undecodable,
+    /// Reading the file failed; it may work next time.
+    Io,
+}
+
+fn why(e: ImageError) -> Failure {
+    match e {
+        ImageError::IoError(_) => Failure::Io,
+        _ => Failure::Undecodable,
+    }
+}
+
 /// A JPEG preview of the picture in `file`, turned upright from its EXIF orientation.
-/// `None` for formats this build cannot decode (HEIC, AVIF) or a damaged file.
-pub fn render(file: std::fs::File) -> Option<Vec<u8>> {
+pub fn render<R: Read + Seek>(file: R) -> Result<Vec<u8>, Failure> {
     let mut dec = ImageReader::new(BufReader::new(file))
         .with_guessed_format()
-        .ok()?
+        .map_err(|_| Failure::Io)?
         .into_decoder()
-        .ok()?;
-    let orientation = dec.orientation().ok()?;
+        .map_err(why)?;
+    let orientation = dec.orientation().map_err(why)?;
     // Shrink first: the box is square, so turning the small picture gives the same result.
-    let mut small = DynamicImage::from_decoder(dec).ok()?.thumbnail(EDGE, EDGE);
+    let mut small = DynamicImage::from_decoder(dec)
+        .map_err(why)?
+        .thumbnail(EDGE, EDGE);
     small.apply_orientation(orientation);
     let small = on_white(small);
     let mut out = Vec::new();
     JpegEncoder::new_with_quality(&mut out, 78)
         .encode_image(&small)
-        .ok()?;
-    Some(out)
+        .map_err(why)?;
+    Ok(out)
 }
 
 /// JPEG has no transparency: see-through parts of a PNG, WebP or GIF go on white, not black.
@@ -78,9 +110,13 @@ fn on_white(img: DynamicImage) -> image::RgbImage {
 }
 
 /// Where the thumbnail for this version of a photo is kept. A changed file gets a new name.
-/// The same name ending in `.none` records a photo that could not be decoded.
 pub fn cache_path(dir: &Path, id: &str, size: u64, mtime: u64) -> PathBuf {
     dir.join(format!("{id}-{size}-{mtime}.jpg"))
+}
+
+/// Records that this version of a photo could not be decoded by a build with these decoders.
+pub fn failed_path(dir: &Path, id: &str, size: u64, mtime: u64) -> PathBuf {
+    dir.join(format!("{id}-{size}-{mtime}.none{DECODERS}"))
 }
 
 /// Writes through a temp file and a rename, so a reader never sees half a thumbnail.

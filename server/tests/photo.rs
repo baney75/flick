@@ -202,13 +202,13 @@ fn transparent_pixels_turn_white() {
 fn gate_holds_renders_to_its_limit() {
     use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
     use std::sync::Arc;
-    let gate = Arc::new(flick_server::thumb::Gate::new(2));
+    let gate = Arc::new(flick_server::thumb::Gate::new(2, 8));
     let (now, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
     let threads: Vec<_> = (0..8)
         .map(|_| {
             let (gate, now, most) = (gate.clone(), now.clone(), most.clone());
             std::thread::spawn(move || {
-                let _turn = gate.enter();
+                let _turn = gate.enter().unwrap();
                 let n = now.fetch_add(1, SeqCst) + 1;
                 most.fetch_max(n, SeqCst);
                 std::thread::sleep(Duration::from_millis(20));
@@ -220,6 +220,50 @@ fn gate_holds_renders_to_its_limit() {
         t.join().unwrap();
     }
     assert_eq!(most.load(SeqCst), 2);
+}
+
+#[test]
+fn gate_turns_away_past_its_queue() {
+    use std::sync::Arc;
+    let gate = Arc::new(flick_server::thumb::Gate::new(1, 1));
+    let held = gate.enter().unwrap();
+    let g = gate.clone();
+    let waiter = std::thread::spawn(move || g.enter().is_some());
+    // Let the second request start waiting, then a third finds the queue full.
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(gate.enter().is_none());
+    drop(held);
+    assert!(waiter.join().unwrap());
+    assert!(gate.enter().is_some());
+}
+
+/// A file whose reads fail partway, like a network mount dropping.
+struct Flaky(std::io::Cursor<Vec<u8>>);
+impl Read for Flaky {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.0.position() > 600 {
+            return Err(std::io::Error::other("connection reset"));
+        }
+        let n = buf.len().min(100);
+        self.0.read(&mut buf[..n])
+    }
+}
+impl std::io::Seek for Flaky {
+    fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.0.seek(to)
+    }
+}
+
+#[test]
+fn a_read_error_is_not_a_bad_photo() {
+    use flick_server::thumb::{render, Failure};
+    let good = jpeg(400, 300, None);
+    assert!(render(std::io::Cursor::new(good.clone())).is_ok());
+    assert_eq!(render(Flaky(std::io::Cursor::new(good))), Err(Failure::Io));
+    assert_eq!(
+        render(std::io::Cursor::new(b"\0\0\0\x18ftypheic".to_vec())),
+        Err(Failure::Undecodable)
+    );
 }
 
 fn get(port: u16, path: &str) -> (u16, String, Vec<u8>) {
@@ -296,7 +340,7 @@ fn serves_small_upright_thumbnails() {
     assert_eq!(
         fs::read_dir(&dir)
             .unwrap()
-            .filter(|e| e.as_ref().unwrap().path().extension().unwrap() == "none")
+            .filter(|e| e.as_ref().unwrap().path().extension().unwrap() == "none1")
             .count(),
         1
     );
