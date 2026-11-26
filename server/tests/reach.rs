@@ -111,3 +111,14 @@ fn long_output_does_not_stall_and_timeout_keeps_output() {
     assert_eq!(slow.ok, None);
     assert!(slow.out.contains("login.tailscale.com"));
 }
+
+#[test]
+fn a_funnel_on_the_port_is_never_ours() {
+    let funnel = r#"{"TCP":{"8740":{"HTTPS":true}},"Web":{
+        "nas.tail1234.ts.net:8740":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8740"}}}},
+        "AllowFunnel":{"nas.tail1234.ts.net:8740":true}}"#;
+    match parse_serve_status(funnel, HOST, 8740).unwrap() {
+        Slot::Taken(w) => assert!(w.contains("Funnel"), "{w}"),
+        s => panic!("{s:?}"),
+    }
+}

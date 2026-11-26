@@ -70,7 +70,14 @@ pub fn parse_serve_status(json: &str, host: &str, port: u16) -> Result<Slot, Str
     let v: Value =
         serde_json::from_str(json).map_err(|e| format!("tailscale serve status: {e}"))?;
     let target = local_target(port);
-    let web = &v["Web"][format!("{host}:{port}")]["Handlers"];
+    let hp = format!("{host}:{port}");
+    if v["AllowFunnel"][&hp].as_bool() == Some(true) {
+        // Funnel makes the port public on the internet; Flick only claims tailnet-only mappings.
+        return Ok(Slot::Taken(
+            "Tailscale Funnel, public on the internet".into(),
+        ));
+    }
+    let web = &v["Web"][&hp]["Handlers"];
     if let Some(h) = web.as_object() {
         let proxy = h.get("/").and_then(|x| x["Proxy"].as_str());
         if h.len() == 1 && proxy.map(|p| p.trim_end_matches('/')) == Some(target.as_str()) {
