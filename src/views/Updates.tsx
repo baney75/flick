@@ -2,6 +2,7 @@ import { useState } from 'preact/hooks'
 import { installed, acceptUpdate } from '../lib/plugins/registry'
 import { updates, version, appUpdates, playing, runCheck, restartToUpdate } from '../lib/updater'
 import { isMobileApp } from '../lib/platform'
+import { notify } from '../lib/store'
 import { showBanner, bannerText } from '../lib/updates'
 
 /** Settings > Updates: the app and plugin updates in one place. */
@@ -28,7 +29,7 @@ export function UpdatesPanel() {
       {waiting.map((p) => (
         <div class="list-row update-plugin">
           <span>{p.manifest.name} {p.pending!.manifest.version} asks to {p.pending!.added.join(', ')}.</span>
-          <button class="btn sm" onClick={() => acceptUpdate(p.id)}>Allow</button>
+          <button class="btn sm" onClick={() => acceptUpdate(p.id).catch((e) => notify(`${p.manifest.name} did not update: ${(e as Error).message ?? e}`))}>Allow</button>
         </div>
       ))}
     </section>

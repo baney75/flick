@@ -158,10 +158,10 @@ export function App() {
         })}
       </nav>
       <main class="main" id="main">
+        <UpdateBanner />
         <View />
       </main>
       <Player />
-      <UpdateBanner />
       {drag && <div class="dropzone"><div><Icon name="play" size={40} /><p>Drop to play</p></div></div>}
       {toast.value && <div class="toast" role="status" key={toast.value.id}>{toast.value.text}</div>}
     </div>

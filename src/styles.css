@@ -246,7 +246,9 @@ label.toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
 .ctx button:hover { background: var(--surface-2); }
 .ctx .danger { color: var(--danger); }
 .toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 100; background: var(--text); color: var(--bg); padding: 11px 18px; border-radius: 12px; font-weight: 600; box-shadow: var(--shadow); max-width: min(560px, calc(100vw - 32px)); animation: rise .2s ease; }
-.update-banner { position: fixed; right: 20px; top: 20px; z-index: 100; display: flex; align-items: center; gap: 12px; background: var(--surface); color: var(--text); padding: 10px 12px 10px 16px; border-radius: 12px; box-shadow: var(--shadow); max-width: calc(100vw - 32px); font-weight: 600; }
+.update-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 16px 36px 0; padding: 10px 12px 10px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); font-weight: 600; }
+.desktop .update-banner { margin-top: 34px; }
+.update-banner + .page { padding-top: 16px; }
 .update-plugin { justify-content: space-between; }
 @keyframes rise { from { opacity: 0; transform: translate(-50%, 8px); } }
 .dropzone { position: fixed; inset: 0; z-index: 90; background: color-mix(in srgb, var(--bg) 70%, transparent); backdrop-filter: blur(8px); display: grid; place-items: center; pointer-events: none; }
@@ -356,6 +358,7 @@ label.toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
   .result-grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 12px; }
   .backdrop::after { background: linear-gradient(to bottom, color-mix(in srgb, var(--bg) 35%, transparent), var(--bg) 92%); }
   .page { padding: 20px 16px 40px; }
+  .update-banner { margin-left: 16px; margin-right: 16px; }
   .page-head { gap: 10px; }
   .search { flex: 1 1 100%; order: 3; }
   .toolbar .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-inline: -16px; padding-inline: 16px; scroll-padding-inline: 16px; }

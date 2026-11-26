@@ -39,7 +39,7 @@ export const playing = computed(() => !!nowPlaying.value || route.value.startsWi
 
 const isOnline = () => typeof navigator === 'undefined' || navigator.onLine !== false
 
-interface Downloaded { version: string; install(): Promise<void> }
+interface Downloaded { version: string; install(): Promise<void>; close(): Promise<void> }
 let downloaded: Downloaded | null = null
 
 async function checkApp(): Promise<U.CheckResult> {
@@ -50,7 +50,8 @@ async function checkApp(): Promise<U.CheckResult> {
     const u = await check({ timeout: 30_000 })
     if (!u) return { kind: 'current' }
     // download() checks the signature against the public key in tauri.conf.json and throws on a mismatch.
-    if (downloaded?.version !== u.version) { await u.download(); downloaded = u }
+    if (downloaded?.version === u.version) await u.close().catch(() => {})
+    else { await u.download(); downloaded = u }
     return { kind: 'ready', version: u.version }
   } catch (error) {
     return { kind: 'failed', error, online: isOnline() }
@@ -73,7 +74,7 @@ let queued: Promise<void> | null = null
  * skip their 24 hours, and pressed during a launch check it runs again right after.
  */
 export function runCheck(manual = false): Promise<void> {
-  if (running) return manual ? (queued ??= running.then(() => { queued = null; return runCheck(true) })) : running
+  if (running) return manual ? (queued ??= running.catch(() => {}).then(() => { queued = null; return runCheck(true) })) : running
   running = check(manual).finally(() => { running = null })
   return running
 }

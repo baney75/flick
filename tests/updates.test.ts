@@ -82,7 +82,7 @@ async function fresh() {
   const reg = await import('../src/lib/plugins/registry')
   return { up, store: store as unknown as { nowPlaying: { value: unknown } }, reg: reg as unknown as { installed: { value: unknown[] } } }
 }
-const release = (version: string, over: Record<string, unknown> = {}) => ({ version, download: vi.fn(async () => {}), install: vi.fn(async () => {}), ...over })
+const release = (version: string, over: Record<string, unknown> = {}) => ({ version, download: vi.fn(async () => {}), install: vi.fn(async () => {}), close: vi.fn(async () => {}), ...over })
 
 describe('the one update check', () => {
   beforeEach(() => {
@@ -100,8 +100,11 @@ describe('the one update check', () => {
     expect(r.install).not.toHaveBeenCalled()
     expect(up.updates.value.ready).toBe('0.2.0')
     expect(U.showBanner(up.updates.value.ready, up.playing.value)).toBe(true)
+    const again = release('0.2.0')
+    fake.check.mockResolvedValue(again)
     await up.runCheck()
-    expect(r.download).toHaveBeenCalledTimes(1)
+    expect(again.download).not.toHaveBeenCalled()
+    expect(again.close).toHaveBeenCalledTimes(1)
   })
 
   it('the same check runs the plugin update check', async () => {
