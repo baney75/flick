@@ -258,6 +258,19 @@ try {
   await page.getByRole('button', { name: 'Connect all' }).click()
   await page.getByText('Done').waitFor()
   check(await page.evaluate(() => JSON.parse(localStorage.getItem('flick.settings')).skipSeconds === 30), 'Connect all applies the setup')
+
+  // Settings > Playback: languages Play picks by, in order, and what this device shows.
+  await page.goto(`${BASE}/#/settings`)
+  const audioList = page.getByRole('group', { name: 'Audio language' })
+  await audioList.getByText('1. English').waitFor()
+  const devRow = await page.locator('[data-device]').textContent()
+  check(devRow.startsWith('This device: 720p, SDR'), `device row reads the 1280 px screen (${devRow})`)
+  await page.getByLabel('Add to Audio language').selectOption('fr')
+  await audioList.getByRole('button', { name: 'Move French up' }).click()
+  await audioList.getByText('1. French').waitFor()
+  check(await page.evaluate(() => JSON.parse(localStorage.getItem('flick.settings')).audio.join() === 'fr,en'), 'audio languages save in order')
+  await audioList.getByRole('button', { name: 'Remove French' }).click()
+  check(await page.evaluate(() => JSON.parse(localStorage.getItem('flick.settings')).audio.join() === 'en'), 'a language comes off the list')
   await page.screenshot({ path: 'test-media/shots/setup.png' })
 
   // An older setup link with Stremio addons offers the Stremio plugin in the review, and installs nothing before the tap.

@@ -5,6 +5,7 @@ import * as db from './db'
 import type { Item, Source } from './library'
 import { inProgress } from './continue'
 import { allItems, makeThumb, hasThumb, saveItems, localEpub, KODI_IMG } from './library'
+import { defaultPrefs, type StreamPrefs } from './prefs'
 
 // ---------- routing ----------
 export const route = signal(location.hash.slice(1) || '/')
@@ -24,10 +25,16 @@ export function notify(text: string, ms = 3200) {
 
 // ---------- settings ----------
 /** theme is light or dark mode; look is an installed theme's id, or '' for Flick's own colors. */
-export interface Settings { autoplayNext: boolean; speed: number; volume: number; skipSeconds: number; theme: 'system' | 'dark' | 'light'; look: string; removeWatched: boolean }
-const defaults: Settings = { autoplayNext: true, speed: 1, volume: 1, skipSeconds: 10, theme: 'system', look: '', removeWatched: false }
+export interface Settings extends StreamPrefs { autoplayNext: boolean; speed: number; volume: number; skipSeconds: number; theme: 'system' | 'dark' | 'light'; look: string; removeWatched: boolean }
+/** Settings saved before a key existed load that key's default. */
+export function settingsFrom(raw: string | null, langs: readonly string[]): Settings {
+  const defaults: Settings = { autoplayNext: true, speed: 1, volume: 1, skipSeconds: 10, theme: 'system', look: '', removeWatched: false, ...defaultPrefs(langs) }
+  try { return { ...defaults, ...JSON.parse(raw || '{}') } } catch { return defaults }
+}
 function loadSettings(): Settings {
-  try { return { ...defaults, ...JSON.parse(localStorage.getItem('flick.settings') || '{}') } } catch { return defaults }
+  let raw: string | null = null
+  try { raw = localStorage.getItem('flick.settings') } catch { /* storage blocked: defaults */ }
+  return settingsFrom(raw, typeof navigator === 'undefined' ? [] : navigator.languages ?? [])
 }
 export const settings = signal<Settings>(loadSettings())
 export function setSettings(patch: Partial<Settings>) {

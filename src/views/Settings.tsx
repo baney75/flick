@@ -12,6 +12,7 @@ import { PluginsPanel, ThemePicker } from './Plugins'
 import { UpdatesPanel } from './Updates'
 import { ServersPanel } from './Servers'
 import { VpnPanel } from './Vpn'
+import { StreamPrefs } from './StreamPrefs'
 
 async function shareSetup() {
   const link = SETUP_BASE + encodeSetup(await currentSetup())
@@ -75,6 +76,7 @@ export function Settings() {
             {[0.75, 1, 1.25, 1.5, 2].map((n) => <option value={n}>{n}×</option>)}
           </select>
         </label>
+        <StreamPrefs />
       </section>
 
       <SyncPanel />
