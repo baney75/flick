@@ -3,6 +3,7 @@
 import { signal, computed } from '@preact/signals'
 import * as db from './db'
 import type { Item, Source } from './library'
+import { inProgress } from './continue'
 import { allItems, makeThumb, hasThumb, saveItems, localEpub, KODI_IMG } from './library'
 
 // ---------- routing ----------
@@ -135,7 +136,7 @@ export async function clearProgress(key: string) {
 
 export const continueList = computed(() =>
   Object.entries(progress.value)
-    .filter(([, p]) => p.book ? p.pos > 1 && p.pos < p.dur : p.pos > 15 && (!p.dur || p.pos < p.dur * 0.93))
+    .filter(([, p]) => inProgress(p))
     .sort((a, b) => b[1].at - a[1].at)
     .slice(0, 24),
 )
