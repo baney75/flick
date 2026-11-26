@@ -14,6 +14,10 @@ use tauri::{Emitter, Manager};
 
 mod plugins;
 mod share;
+// The torrent engine (next in this series) is its first caller.
+#[cfg(desktop)]
+#[cfg_attr(not(test), allow(dead_code))]
+mod torrent_http;
 #[cfg(desktop)]
 mod vpn;
 mod ytdlp;
