@@ -9,6 +9,7 @@ import { downloads, removeDownload } from '../lib/downloads'
 import { playSaved, badgeFor } from '../lib/offline'
 import { currentSetup, encodeSetup, validateSetup, SETUP_BASE } from '../lib/setup'
 import { PluginsPanel, ThemePicker } from './Plugins'
+import { UpdatesPanel } from './Updates'
 import { ServersPanel } from './Servers'
 
 async function shareSetup() {
@@ -92,6 +93,8 @@ export function Settings() {
       </section>
 
       <PluginsPanel />
+
+      <UpdatesPanel />
 
       {isDesktop && (
         <section class="panel">

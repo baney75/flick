@@ -1,8 +1,8 @@
 // What the views need from plugins: the enabled sources, themes, routes and search across sources.
 
 import { computed, signal } from '@preact/signals'
-import { go, notify } from '../store'
-import { installed, loadPlugins, checkUpdates } from './registry'
+import { go } from '../store'
+import { installed, loadPlugins } from './registry'
 import { callPlugin, platformName, type Installed } from './runtime'
 import type { CatalogDef, Meta, PluginManifest, ThemeManifest } from './validate'
 
@@ -25,12 +25,9 @@ export function openPluginRef(r: { p: string; type: string; id: string; videoId:
   go(titlePath(r.p, r.type, r.id, r.videoId))
 }
 
+/** Plugin updates run with the app's in src/lib/updater.ts, so both update from one check. */
 export async function startPlugins() {
   await loadPlugins()
-  // The daily update check waits until Flick is up, so it never slows the first screen.
-  setTimeout(() => {
-    checkUpdates().then((notes) => notes.forEach((n) => notify(n, 8000))).catch(() => {})
-  }, 8000)
 }
 
 // library() results, kept a few minutes so Home and the plugin page share one call.
