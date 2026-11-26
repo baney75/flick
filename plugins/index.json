@@ -3,6 +3,10 @@
   "plugins": [
     { "url": "/plugins/stremio.js", "name": "Stremio", "kind": "source", "description": "Your Stremio addons, library and Continue Watching, or Cinemeta and OpenSubtitles without an account." },
     { "url": "/plugins/archive.js", "name": "Internet Archive", "kind": "source", "description": "Public domain films, classic TV, audiobooks, old-time radio and books from archive.org." },
-    { "url": "/plugins/youtube.js", "name": "YouTube", "kind": "source", "description": "Search and watch YouTube in the desktop app, through yt-dlp." }
+    { "url": "/plugins/youtube.js", "name": "YouTube", "kind": "source", "description": "Search and watch YouTube in the desktop app, through yt-dlp." },
+    { "url": "/plugins/torbox.js", "name": "TorBox", "kind": "service", "description": "Plays torrents from TorBox's servers, so nothing is shared from this computer." },
+    { "url": "/plugins/realdebrid.js", "name": "Real-Debrid", "kind": "service", "description": "Plays torrents from Real-Debrid's servers, so nothing is shared from this computer." },
+    { "url": "/plugins/alldebrid.js", "name": "AllDebrid", "kind": "service", "description": "Plays torrents from AllDebrid's servers, so nothing is shared from this computer." },
+    { "url": "/plugins/premiumize.js", "name": "Premiumize", "kind": "service", "description": "Plays torrents from Premiumize's servers, so nothing is shared from this computer." }
   ]
 }

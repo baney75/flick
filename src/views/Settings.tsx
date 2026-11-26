@@ -13,6 +13,7 @@ import { UpdatesPanel } from './Updates'
 import { ServersPanel } from './Servers'
 import { VpnPanel } from './Vpn'
 import { StreamPrefs } from './StreamPrefs'
+import { ServicesPanel } from './Services'
 
 async function shareSetup() {
   const link = SETUP_BASE + encodeSetup(await currentSetup())
@@ -94,6 +95,8 @@ export function Settings() {
         </label>
         <ThemePicker />
       </section>
+
+      <ServicesPanel />
 
       <PluginsPanel />
 

@@ -23,7 +23,7 @@ const hostWords = (h: string) => (h === '*' ? 'any public website' : h)
 export function ReviewSheet({ c, extra, onDone }: { c: Candidate; extra?: string; onDone: (installed: boolean) => void }) {
   const [busy, setBusy] = useState(false)
   const m = c.manifest
-  const src = c.kind === 'source' ? (m as PluginManifest) : null
+  const src = c.kind !== 'theme' ? (m as PluginManifest) : null
   const go = async () => {
     setBusy(true)
     try {
@@ -41,7 +41,7 @@ export function ReviewSheet({ c, extra, onDone }: { c: Candidate; extra?: string
         <h3>{c.replaces ? `Update ${m.name}?` : `Install ${m.name}?`}</h3>
         {!c.official && <p class="warn-box"><Icon name="external" size={16} /> Not from Flick. Install it only if you trust {m.author}.</p>}
         <div class="facts-list">
-          <div><span class="dim">Kind</span> {c.kind === 'theme' ? 'Theme (colors only, runs no code)' : 'Source plugin'}</div>
+          <div><span class="dim">Kind</span> {c.kind === 'theme' ? 'Theme (colors only, runs no code)' : c.kind === 'service' ? 'Debrid service (set it up under Streaming services)' : 'Source plugin'}</div>
           <div><span class="dim">Version</span> {m.version}{c.replaces ? ` (you have ${c.replaces.manifest.version})` : ''}</div>
           <div><span class="dim">Author</span> {m.author}</div>
           {c.url && <div><span class="dim">From</span> <span class="small">{absolute(c.url)}</span></div>}
@@ -100,12 +100,12 @@ export function PluginsPanel() {
   }
 
   const have = new Set(installed.value.map((p) => p.url && absolute(p.url)))
-  const offer = official.filter((o) => !have.has(absolute(o.url)))
+  const offer = official.filter((o) => o.kind !== 'service' && !have.has(absolute(o.url)))
   return (
     <section class="panel">
       <h3>Plugins</h3>
-      <p class="dim small">Plugins add sources (catalogs, search, streams) and themes. Each source runs in its own sandbox. Flick never installs one without your tap.</p>
-      {installed.value.map((p) => <PluginRow p={p} open={open === p.id} onToggle={() => setOpen(open === p.id ? null : p.id)} />)}
+      <p class="dim small">Plugins add sources (catalogs, search, streams) and themes; debrid services are under Streaming services. Each source runs in its own sandbox. Flick never installs one without your tap.</p>
+      {installed.value.filter((p) => p.kind !== 'service').map((p) => <PluginRow p={p} open={open === p.id} onToggle={() => setOpen(open === p.id ? null : p.id)} />)}
       <form class="url-form" onSubmit={(e) => { e.preventDefault(); if (url.trim()) review({ url: url.trim() }) }}>
         <Icon name="link" size={16} />
         <input value={url} onInput={(e) => setUrl((e.target as HTMLInputElement).value)} placeholder="https://…/plugin.js or theme.json" aria-label="Plugin address" />
