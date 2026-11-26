@@ -1,0 +1,54 @@
+{
+ "_type": "playlist",
+ "id": "me at the zoo",
+ "title": "me at the zoo",
+ "extractor": "youtube:search",
+ "entries": [
+  {
+   "_type": "url",
+   "ie_key": "Youtube",
+   "id": "jNQXAC9IVRw",
+   "url": "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+   "title": "Me at the zoo",
+   "channel": "jawed",
+   "uploader": "jawed",
+   "duration": 19,
+   "thumbnails": [
+    { "url": "https://i.ytimg.com/vi/jNQXAC9IVRw/hqdefault.jpg?sqp=-oaymwE2COADEI4CSFXyq4qpAygIARUAAIhCGAFwAcABBvABAfgBvgKAAvABigIMCAAQARhVIFkoZTAP&rs=AOn4CLDkGJrAGBspJ5G6u9b7tutsHbloEg", "height": 270, "width": 480 }
+   ]
+  },
+  {
+   "_type": "url",
+   "ie_key": "Youtube",
+   "id": "zEVYvCKQ1gM",
+   "url": "https://www.youtube.com/watch?v=zEVYvCKQ1gM",
+   "title": "Me at the Zoo... in Australia! Alina Celeste Tour Video for Kids",
+   "channel": "Alina Celeste",
+   "uploader": "Alina Celeste",
+   "duration": 185,
+   "thumbnails": [
+    { "url": "https://i.ytimg.com/vi/zEVYvCKQ1gM/hq720.jpg?sqp=-oaymwEcCOgCEMoBSFXyq4qpAw4IARUAAIhCGAFwAcABBg==&rs=AOn4CLBNTuK-_7Og9UTsjiLGpVkN8U7I7Q", "height": 202, "width": 360 },
+    { "url": "https://i.ytimg.com/vi/zEVYvCKQ1gM/hq720.jpg?sqp=-oaymwEcCNAFEJQDSFXyq4qpAw4IARUAAIhCGAFwAcABBg==&rs=AOn4CLClxJuB9Px8injAjq9TeWxgKqfZTQ", "height": 404, "width": 720 }
+   ]
+  },
+  {
+   "_type": "url",
+   "ie_key": "YoutubeTab",
+   "id": "UC4QobU6STFB0P71PMvOGN5A",
+   "url": "https://www.youtube.com/channel/UC4QobU6STFB0P71PMvOGN5A",
+   "title": "jawed",
+   "thumbnails": []
+  },
+  {
+   "_type": "url",
+   "ie_key": "Youtube",
+   "id": "abcdefghijk",
+   "url": "https://www.youtube.com/watch?v=abcdefghijk",
+   "title": "No channel, no thumbnails",
+   "channel": null,
+   "uploader": "Someone",
+   "duration": null,
+   "thumbnails": []
+  }
+ ]
+}

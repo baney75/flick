@@ -14,6 +14,7 @@ use tauri::{Emitter, Manager};
 
 mod plugins;
 mod share;
+mod ytdlp;
 
 const VIDEO: &[&str] = &[
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "ts", "m2ts", "mts", "mpg", "mpeg",
@@ -1332,6 +1333,7 @@ pub fn run() {
         .manage(Downloads::default())
         .manage(plugins::PluginHosts::default())
         .manage(share::Share::default())
+        .manage(ytdlp::PluginTools::default())
         .register_asynchronous_uri_scheme_protocol("kodi", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
             tauri::async_runtime::spawn_blocking(move || responder.respond(kodi_proxy(&app, &req)));
@@ -1360,7 +1362,9 @@ pub fn run() {
             share::share_start,
             share::share_stop,
             share::share_status,
-            share::share_new_code
+            share::share_new_code,
+            ytdlp::plugin_tools,
+            ytdlp::plugin_tool
         ])
         .setup(|app| {
             // Files passed on the command line: `Flick movie.mkv`.

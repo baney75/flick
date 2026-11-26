@@ -89,7 +89,9 @@ export function ctxHandler(id: string, desktop = isDesktop, call: Invoke = invok
         })
       }
       case 'tool':
-        throw new Error(`This version of Flick has no desktop tool "${String(a[0])}" yet.`)
+        if (!desktop) throw new Error(`The ${String(a[0])} tool needs the Flick desktop app.`)
+        // The Rust side checks the tool against the tools Flick registered for this id at install.
+        return call('plugin_tool', { id, tool: String(a[0]), op: String(a[1]), args: Array.isArray(a[2]) ? a[2] : [] })
       default:
         throw new Error(`Flick does not know the request "${m}".`)
     }
@@ -124,10 +126,12 @@ function close(f: Promise<Frame>) {
   f.then((x) => { x.rpc.close(); x.iframe.remove() }).catch(() => {})
 }
 
-/** Tell the desktop app which hosts this plugin may fetch. The list comes from the installed record. */
+/** Tell the desktop app which hosts and tools this plugin may use. The lists come from the installed record. */
 export async function registerHosts(rec: Installed) {
   if (!isDesktop || rec.kind !== 'source') return
-  await invoke('plugin_hosts', { id: rec.id, hosts: rec.enabled ? (rec.manifest as V.PluginManifest).hosts : [] })
+  const m = rec.manifest as V.PluginManifest
+  await invoke('plugin_hosts', { id: rec.id, hosts: rec.enabled ? m.hosts : [] })
+  await invoke('plugin_tools', { id: rec.id, tools: rec.enabled ? m.tools : [] })
 }
 
 function frameFor(rec: Installed): Promise<Frame> {
