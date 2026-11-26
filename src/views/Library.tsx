@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
-import { items, playItem, shows, go, notify, reloadItems, progress, episodeLabel, clearProgress } from '../lib/store'
+import { items, loaded, playItem, shows, go, notify, reloadItems, progress, episodeLabel, clearProgress } from '../lib/store'
 import { ItemCard, VirtualGrid, useThumb } from '../components/Card'
 import { TitleCard } from '../components/Titles'
 import { buildTitles, type Title } from '../lib/titles'
@@ -96,6 +96,17 @@ export function Library() {
     downloads: all.filter((i) => isSaved(dl.get(i.id))).length,
   }
 
+  // A library of only photos opens on Photos, and a Photos tab with none left goes back to All.
+  useEffect(() => {
+    if (!loaded.value) return
+    if (tab === 'photos' && !photos.length) setTab('all')
+    else if (tab === 'all' && counts.all === 0 && photos.length) setTab('photos')
+  }, [loaded.value, tab, photos.length, counts.all])
+  const shownPhotos = useMemo(() => {
+    const needle = norm(q.trim())
+    return needle ? photos.filter((i) => norm(`${i.title} ${i.folder ?? ''}`).includes(needle)) : photos
+  }, [photos, q])
+
   // Books are tall like posters even without a cover, so they share the poster grid.
   const posterMode = list.length > 0 && (list.every((i) => !isTitle(i) && i.kind === 'book') || list.filter(posterOf).length > list.length / 2)
 
@@ -174,7 +185,7 @@ export function Library() {
           </div>
         </div>
       ) : tab === 'photos' ? (
-        <Photos list={photos} />
+        shownPhotos.length ? <Photos list={shownPhotos} /> : <p class="dim center">Nothing matches “{q}”.</p>
       ) : list.length === 0 ? (
         <p class="dim center">Nothing matches “{q}”.</p>
       ) : (

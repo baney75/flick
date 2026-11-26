@@ -29,7 +29,8 @@ export function Photos({ list }: { list: Item[] }) {
   const box = useRef<HTMLDivElement>(null)
   const [w, setW] = useState(0)
   const [range, setRange] = useState<[number, number]>([0, 0])
-  const [open, setOpen] = useState<number | null>(null)
+  // The open item is kept by id: dates read later re-sort the list, and the viewer must stay on its photo.
+  const [openId, setOpenId] = useState<string | null>(null)
 
   useLayoutEffect(() => {
     const el = box.current!
@@ -44,6 +45,7 @@ export function Photos({ list }: { list: Item[] }) {
   const cols = Math.max(3, Math.floor((w + GAP) / (150 + GAP)))
   const tile = w ? (w - GAP * (cols - 1)) / cols : 150
   const rows = useMemo(() => photoRows(ordered, cols), [ordered, cols])
+  const at = openId === null ? -1 : ordered.findIndex((i) => i.id === openId)
   const tops = useMemo(() => {
     const t: number[] = []
     let y = 0
@@ -76,10 +78,10 @@ export function Photos({ list }: { list: Item[] }) {
         return r.t === 'head'
           ? <h2 class="photos-month" key={r.key} style={{ top: `${top}px` }}>{monthLabel(r.key)} <span>{r.n}</span></h2>
           : <div class="photos-row" key={r.first} style={{ top: `${top}px`, gridTemplateColumns: `repeat(${cols}, ${tile}px)`, gap: `${GAP}px` }}>
-              {r.items.map((it, k) => <PhotoTile key={it.id} it={it} onOpen={() => setOpen(r.first + k)} />)}
+              {r.items.map((it) => <PhotoTile key={it.id} it={it} onOpen={() => setOpenId(it.id)} />)}
             </div>
       })}
-      {open !== null && ordered[open] && <PhotoViewer list={ordered} at={open} onMove={setOpen} onClose={() => setOpen(null)} />}
+      {at >= 0 && <PhotoViewer list={ordered} at={at} onMove={(n) => setOpenId(ordered[n].id)} onClose={() => setOpenId(null)} />}
     </div>
   )
 }
@@ -106,7 +108,8 @@ function PhotoTile({ it, onOpen }: { it: Item; onOpen: () => void }) {
     else setBad(true)
   }
   // A local photo has a date once its thumbnail was tried; with no thumbnail then, the web view cannot read it.
-  const settled = it.kind === 'photo' && (!!it.poster || it.taken !== undefined)
+  // A video shows its name and date until a frame is grabbed, and keeps them if none can be (HEVC in Chrome).
+  const settled = it.kind === 'video' || (it.kind === 'photo' && (!!it.poster || it.taken !== undefined))
   return (
     <button class="photo-tile" onClick={onOpen} aria-label={`${it.kind === 'video' ? 'Video' : 'Photo'} ${it.title}, ${dateOf(it)}`}>
       {url && !bad ? <img src={url} alt="" loading="lazy" decoding="async" onError={fail} />
@@ -124,6 +127,7 @@ export function PhotoViewer({ list, at, onMove, onClose }: { list: Item[]; at: n
   const src = got?.id === it.id ? got.url : null
   const bad = badId === it.id
   const down = useRef<number | null>(null)
+  const dialog = useRef<HTMLDivElement>(null)
   const move = (d: number) => { const n = at + d; if (n >= 0 && n < list.length) onMove(n) }
 
   useEffect(() => {
@@ -136,21 +140,35 @@ export function PhotoViewer({ list, at, onMove, onClose }: { list: Item[]; at: n
     return () => { live = false; revoke?.() }
   }, [it.id])
 
+  // Focus moves into the viewer, so Space and Enter act on it and never on the grid behind; it goes
+  // back to the tile that opened it on close.
+  useLayoutEffect(() => {
+    const from = document.activeElement as HTMLElement | null
+    dialog.current?.focus()
+    return () => from?.focus({ preventScroll: true })
+  }, [])
+
   // Taken before the app's own keys, so Escape closes the viewer instead of leaving the page.
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
       const d = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0
-      if (!d && e.key !== 'Escape') return
+      const el = dialog.current
+      if (e.key === 'Tab' && el) {
+        // Tab walks the viewer's own controls only.
+        const f = [...el.querySelectorAll<HTMLElement>('button, video')]
+        const i = f.indexOf(document.activeElement as HTMLElement)
+        f[(i + (e.shiftKey ? -1 : 1) + f.length) % f.length]?.focus()
+      } else if (!d && e.key !== 'Escape' && e.key !== '/') return
       e.preventDefault(); e.stopImmediatePropagation()
       if (d) move(d)
-      else onClose()
+      else if (e.key === 'Escape') onClose()
     }
     addEventListener('keydown', k, true)
     return () => removeEventListener('keydown', k, true)
   })
 
   return (
-    <div class="photo-viewer" role="dialog" aria-modal="true" aria-label={it.title}
+    <div class="photo-viewer" role="dialog" aria-modal="true" aria-label={it.title} ref={dialog} tabIndex={-1}
       onPointerDown={(e) => { down.current = (e.target as HTMLElement).tagName === 'VIDEO' ? null : e.clientX }}
       onPointerUp={(e) => { const dx = down.current === null ? 0 : e.clientX - down.current; down.current = null; if (Math.abs(dx) > 50) move(dx < 0 ? 1 : -1) }}>
       <div class="photo-viewer-bar">
@@ -160,7 +178,7 @@ export function PhotoViewer({ list, at, onMove, onClose }: { list: Item[]; at: n
       <div class="photo-viewer-stage">
         {bad ? <FileTile it={it} />
           : !src ? null
-          : it.kind === 'video' ? <video key={it.id} src={src} controls autoplay playsInline />
+          : it.kind === 'video' ? <video key={it.id} src={src} controls autoplay playsInline onError={() => setBadId(it.id)} />
           : <img key={it.id} src={src} alt={it.title} draggable={false} onError={() => setBadId(it.id)} />}
       </div>
       {at > 0 && <button class="photo-nav prev" onClick={() => move(-1)} aria-label="Previous"><Icon name="left" size={26} /></button>}

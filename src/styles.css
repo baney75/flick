@@ -500,6 +500,7 @@ html.tv .hrow { grid-auto-columns: 300px; padding: 10px 6px 14px; }
 .photo-viewer { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: #000; color: #fff; touch-action: pan-y; user-select: none; }
 .photo-viewer-bar { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; font-size: 14px; color: #ccc; }
 .photo-viewer-bar .btn { color: #fff; }
+.photo-viewer:focus { outline: none; }
 .photo-viewer-stage { flex: 1; min-height: 0; display: grid; place-items: center; padding: 0 16px 16px; }
 .photo-viewer-stage img, .photo-viewer-stage video { max-width: 100%; max-height: 100%; object-fit: contain; }
 .photo-viewer-stage .photo-file { width: 220px; height: 220px; background: #18181d; border-radius: 12px; }
