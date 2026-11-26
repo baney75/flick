@@ -114,6 +114,10 @@ values go only to that one `action()` call and are not saved; keep what you need
   marks MKV, AVI and similar that the desktop app converts. `external: true` opens an `https:` link
   in the browser instead of the player (a trailer on YouTube, a site that needs its own app).
   `group` names the source a stream came from; the title page shows one filter chip per group.
+  A stream the viewer can save for offline gets a Download button: one `http:` or `https:` file (not
+  an `.m3u8` or `.mpd` playlist, a book or an external link), or a `flick-tool:ytdlp/` stream in the
+  desktop app. On the website it shows only where the browser may fetch the file (CORS). A saved
+  title plays from the file with no network and keeps its progress.
 - `Sub`: `{ url, lang, label? }`, `url` is `http:` or `https:` (SRT or VTT).
 - Strings are trimmed to 2,000 characters, lists to 500 items, `items` to 200 per call.
 
@@ -141,7 +145,8 @@ values go only to that one `action()` call and are not saved; keep what you need
     URL; each also carries `channel` and `duration` (seconds).
   - `resolve(url)`: returns a `flick-tool:` stream URL for an `https:` page on the plugin's `hosts`.
     Flick picks the format (H.264 and AAC, up to 1080p) and plays it while yt-dlp streams it.
-  - `download(url)`: not in this version; it fails with a plain message.
+  - `download(url)`: a plugin cannot start a download; it fails with a plain message. The viewer saves
+    a `resolve()`d stream with its Download button, and yt-dlp writes one mp4 in the same format.
   Flick downloads the official yt-dlp release on first use, checks it against the release's
   SHA2-256SUMS, and updates it once a day. While that first download runs, calls fail with how far
   it got. A yt-dlp on PATH is used only when Flick's own fails. Playing needs ffmpeg.
