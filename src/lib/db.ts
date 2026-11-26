@@ -2,8 +2,8 @@
 
 const DB_NAME = 'flick'
 // Bump on every new store: onupgradeneeded adds only the stores an existing database lacks.
-const DB_VERSION = 2
-export const STORES = ['items', 'progress', 'kv', 'thumbs', 'downloads'] as const
+const DB_VERSION = 3
+export const STORES = ['items', 'progress', 'kv', 'thumbs', 'downloads', 'plugins', 'pluginData'] as const
 export type StoreName = (typeof STORES)[number]
 
 let dbPromise: Promise<IDBDatabase> | null = null

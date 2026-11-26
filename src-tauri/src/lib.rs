@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
+mod plugins;
+
 const VIDEO: &[&str] = &[
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "ts", "m2ts", "mts", "mpg", "mpeg",
     "ogv", "3gp",
@@ -1286,6 +1288,7 @@ pub fn run() {
         .manage(Opened::default())
         .manage(KodiProxy::default())
         .manage(Downloads::default())
+        .manage(plugins::PluginHosts::default())
         .register_asynchronous_uri_scheme_protocol("kodi", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
             tauri::async_runtime::spawn_blocking(move || responder.respond(kodi_proxy(&app, &req)));
@@ -1307,7 +1310,9 @@ pub fn run() {
             download_remove,
             download_exists,
             downloads_space,
-            make_default_player
+            make_default_player,
+            plugins::plugin_hosts,
+            plugins::plugin_fetch
         ])
         .setup(|app| {
             // Files passed on the command line: `Flick movie.mkv`.
