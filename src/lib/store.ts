@@ -4,7 +4,7 @@ import { signal, computed } from '@preact/signals'
 import * as db from './db'
 import { announce } from './sync/bus'
 import type { Item, Source } from './library'
-import { allItems, makeThumb, hasThumb, saveItems, KODI_IMG } from './library'
+import { allItems, makeThumb, hasThumb, saveItems, localEpub, KODI_IMG } from './library'
 import type { Addon, LibraryItem } from './stremio'
 import { CINEMETA, OPENSUBS, accountAddons, accountLibrary, fetchManifest } from './stremio'
 
@@ -64,7 +64,7 @@ let thumbRunning = 0
 const queued = new Set<string>()
 export function queueThumbs(list: Item[]) {
   for (const i of list) {
-    if (i.kind === 'video' && !i.poster && !queued.has(i.id)) {
+    if ((i.kind === 'video' || localEpub(i)) && !i.poster && !queued.has(i.id)) {
       queued.add(i.id)
       thumbQueue.push(i)
     }
@@ -77,7 +77,7 @@ function pump() {
     thumbRunning++
     ;(async () => {
       try {
-        if (!(await hasThumb(it.id)) || !it.duration) {
+        if (!(await hasThumb(it.id)) || (it.kind === 'video' && !it.duration)) {
           const dur = await makeThumb(it)
           if (dur && !it.duration) {
             it.duration = dur

@@ -4,6 +4,7 @@ import { chromium } from 'playwright'
 import { spawn, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
+import { makeEpub, EVIL } from './epub-fixture.mjs'
 
 const PORT = 4178
 // SMOKE_BASE=https://flick-player.pages.dev checks a deployed site instead of a local build.
@@ -39,12 +40,18 @@ function writePdf(path, pages = 3) {
 }
 const book = 'test-media/Jane Doe - Test Book (2020).pdf'
 writePdf(book)
+// EPUBs: one with a cover, nav contents and every trick a hostile book might try; one EPUB 2 with NCX contents.
+execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x8a2be2:s=120x180', '-frames:v', '1', 'test-media/cover.png'])
+const epub = 'test-media/Jane Doe - Test Epub (2020).epub'
+writeFileSync(epub, makeEpub({ title: 'Test Epub', author: 'Jane Doe', cover: readFileSync('test-media/cover.png'), chapters: [['Chapter One', EVIL], ['Chapter Two'], ['Chapter Three']] }))
+const serverEpub = makeEpub({ title: 'Server Epub', author: 'John Roe', ncx: true, chapters: [['First Part'], ['Second Part']] })
 
 // A mock flick-server (see the flick-server API): info, library, media with Range, CORS and an access code.
 const FLICK_CODE = 'smoke_code_0123456789abcdefghijklmnopqrstuvwx'
 const flickFiles = {
   a1: { folder: 'Movies', name: 'Server.Movie.2024.webm', kind: 'video', ext: 'webm', type: 'video/webm', body: readFileSync(media) },
   b2: { folder: 'Books', name: 'John Roe - Server Book (2021).pdf', kind: 'book', ext: 'pdf', type: 'application/pdf', body: readFileSync(book) },
+  c3: { folder: 'Books', name: 'John Roe - Server Epub (2022).epub', kind: 'book', ext: 'epub', type: 'application/epub+zip', body: serverEpub },
 }
 const flick = createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -188,6 +195,82 @@ try {
   await fresh.screenshot({ path: 'test-media/shots/reader.png' })
   await fresh.close()
 
+  // EPUB: store one, see its cover, page through it, use the contents, and prove the book's scripts never run.
+  await page.goto(`${BASE}/#/library`)
+  await page.evaluate(() => { window.__pwned = []; addEventListener('message', (e) => { if (e.data?.pwned) window.__pwned.push(e.data.pwned) }) })
+  const epubChooser = page.waitForEvent('filechooser')
+  await page.getByRole('button', { name: /Store files/ }).click()
+  await (await epubChooser).setFiles(epub)
+  await page.getByRole('tab', { name: /Books/ }).click()
+  const epubCard = page.locator('.card', { hasText: 'Test Epub' })
+  check(await epubCard.locator('img').waitFor({ timeout: 8000 }).then(() => true, () => false), 'EPUB cover shows as its poster')
+  await epubCard.click()
+  const pageNo = page.locator('.reader-page')
+  await pageNo.filter({ hasText: /^Page 1 of [2-9]/ }).waitFor({ timeout: 10000 })
+  check(true, `EPUB opens paged (${await pageNo.innerText()})`)
+  await page.keyboard.press('ArrowRight')
+  check(await pageNo.filter({ hasText: /^Page 2 of/ }).waitFor({ timeout: 3000 }).then(() => true, () => false), 'arrow key turns the EPUB page')
+  const frame = page.frameLocator('.epub-frame')
+  await frame.locator('body').click({ position: { x: 20, y: 300 } })
+  check(await pageNo.filter({ hasText: /^Page 1 of/ }).waitFor({ timeout: 3000 }).then(() => true, () => false), 'tapping the left side turns back')
+  await frame.locator('#evil').click()
+  await page.waitForTimeout(500)
+  const sandbox = await page.locator('.epub-frame').getAttribute('sandbox')
+  const inFrame = await page.frames().find((f) => f !== page.mainFrame()).evaluate(() => ({
+    scripts: document.querySelectorAll('script').length,
+    handlers: [...document.querySelectorAll('*')].some((e) => [...e.attributes].some((a) => a.name.startsWith('on'))),
+    frames: document.querySelectorAll('iframe,object,embed').length,
+    storage: (() => { try { return typeof localStorage.length } catch { return 'blocked' } })(),
+  }))
+  const pwned = await page.evaluate(() => [window.__pwned, localStorage.getItem('pwned')])
+  const frameUrl = page.frames().find((f) => f !== page.mainFrame()).url()
+  check(frameUrl === 'about:srcdoc', `EPUB markup cannot navigate the frame away (frame at ${frameUrl})`)
+  await frame.locator('#frag').click()
+  await page.locator('.reader-title .t2', { hasText: 'Chapter Two' }).waitFor({ timeout: 5000 }).catch(() => {})
+  await page.waitForTimeout(2000)
+  const fragFrames = page.frames().filter((f) => f !== page.mainFrame())
+  const refresh = await Promise.all(fragFrames.map((f) => f.evaluate(() => document.querySelectorAll('meta[http-equiv="refresh" i]').length).catch(() => -1)))
+  check(fragFrames.length > 0 && fragFrames.every((f) => f.url() === 'about:srcdoc') && refresh.every((n) => n === 0),
+    `a link fragment cannot break out of the pager (frames at ${fragFrames.map((f) => f.url()).join(', ')}, refresh tags ${refresh.join(', ')})`)
+  await page.locator('.reader-title').click()
+  await page.keyboard.press('Home')
+  await page.locator('.reader-title .t2', { hasText: 'Chapter One' }).waitFor({ timeout: 5000 })
+  await frame.locator('#evil').waitFor({ timeout: 5000 })
+  await page.waitForTimeout(500)
+  check(sandbox === 'allow-scripts' && inFrame.storage === 'blocked', `EPUB frame is sandboxed without same-origin (${sandbox}, storage ${inFrame.storage})`)
+  check(pwned[0].length === 0 && pwned[1] === null && inFrame.scripts === 1 && !inFrame.handlers && !inFrame.frames,
+    `scripts in an EPUB never run (ran: ${pwned[0].join(', ') || 'none'}; ${inFrame.scripts} script, handlers ${inFrame.handlers}, frames ${inFrame.frames})`)
+  for (let i = 0; i < 30; i++) {
+    const [p, n] = (await pageNo.innerText()).match(/\d+/g).map(Number)
+    if (p === n) break
+    await page.keyboard.press('ArrowRight')
+    await pageNo.filter({ hasText: new RegExp(`^Page ${p + 1} of`) }).waitFor({ timeout: 3000 }).catch(() => {})
+  }
+  for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight')
+  await page.waitForTimeout(1500)
+  const landed = await page.locator('.reader-title .t2').innerText()
+  check(landed === 'Chapter Two', `quick turns past a chapter's end land in the next chapter (${landed})`)
+  await page.getByRole('button', { name: 'Contents' }).click()
+  await page.locator('.epub-toc').getByText('Chapter Two').click()
+  await page.locator('.reader-title .t2', { hasText: 'Chapter Two' }).waitFor({ timeout: 5000 })
+  await page.keyboard.press('ArrowRight')
+  await pageNo.filter({ hasText: /^Page 2 of/ }).waitFor({ timeout: 3000 })
+  check(true, 'contents jump to a chapter')
+  const before2 = await pageNo.innerText()
+  await page.getByRole('button', { name: 'Larger text' }).click()
+  await page.getByRole('button', { name: 'Larger text' }).click()
+  check(await page.waitForFunction((b) => { const t = document.querySelector('.reader-page')?.textContent; return t && t !== b }, before2, { timeout: 5000 }).then(() => true, () => false), 'larger text repaginates the chapter')
+  await page.getByRole('button', { name: 'Night', exact: true }).click()
+  await page.screenshot({ path: 'test-media/shots/epub.png' })
+  const epubUrl = page.url()
+  const fresh2 = await page.context().newPage()
+  fresh2.on('pageerror', (e) => errors.push(e.message))
+  await fresh2.goto(epubUrl)
+  check(await fresh2.locator('.reader-title .t2', { hasText: 'Chapter Two' }).waitFor({ timeout: 10000 }).then(() => true, () => false), 'EPUB reopens in the chapter it was left in')
+  await fresh2.close()
+  await page.goto(`${BASE}/#/`)
+  check(await page.locator('.card', { hasText: 'Test Epub' }).first().waitFor({ timeout: 5000 }).then(() => true, () => false), 'EPUB shows in Continue')
+
   // A Flick server: connect through the form, see its items, play the video, read the book.
   await page.goto(`${BASE}/#/servers`)
   const flickForm = page.locator('form', { hasText: 'Flick server (NAS)' })
@@ -197,7 +280,7 @@ try {
   check(await flickForm.getByText('access code is wrong').waitFor({ timeout: 5000 }).then(() => true, () => false), 'Flick server form says when the code is wrong')
   await flickForm.getByLabel('Access code').fill(FLICK_CODE)
   await flickForm.getByRole('button', { name: 'Connect' }).click()
-  check(await page.getByText('Smoke NAS: 2 items in your library.').waitFor({ timeout: 8000 }).then(() => true, () => false), 'Flick server connects through the Servers form')
+  check(await page.getByText('Smoke NAS: 3 items in your library.').waitFor({ timeout: 8000 }).then(() => true, () => false), 'Flick server connects through the Servers form')
   await page.goto(`${BASE}/#/library`)
   await page.getByRole('tab', { name: /Movies/ }).click()
   await page.getByText('Server Movie').first().waitFor({ timeout: 5000 })
@@ -211,6 +294,10 @@ try {
   await page.getByRole('tab', { name: /Books/ }).click()
   await page.getByText('Server Book').first().click()
   check(await page.locator('.reader-stage canvas').waitFor({ timeout: 15000 }).then(() => true, () => false), 'book from a Flick server opens in the reader')
+  await page.goto(`${BASE}/#/library`)
+  await page.getByText('Server Epub').first().click()
+  await page.getByRole('button', { name: 'Contents' }).click()
+  check(await page.locator('.epub-toc').getByText('Second Part').waitFor({ timeout: 10000 }).then(() => true, () => false), 'EPUB from a Flick server opens with its NCX contents')
 
   // The same server again, from a setup link after removing it.
   await page.goto(`${BASE}/#/servers`)
@@ -220,7 +307,7 @@ try {
   await page.goto(`${BASE}/#/setup?c=${flickSetup}`)
   await page.getByRole('button', { name: 'Connect all' }).click()
   await page.getByText('Done').waitFor()
-  check(await page.locator('.list-row', { hasText: `Flick server at ${FLICK_URL}` }).getByText('2 items').isVisible(), 'setup link with a Flick server connects it')
+  check(await page.locator('.list-row', { hasText: `Flick server at ${FLICK_URL}` }).getByText('3 items').isVisible(), 'setup link with a Flick server connects it')
 
   // Phone layout.
   await page.setViewportSize({ width: 390, height: 844 })
