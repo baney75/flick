@@ -133,7 +133,7 @@ export function noEngineFor(p: { desktop: boolean; mobile: boolean; windows: boo
 }
 
 /** Settings > Streaming services' "Require a VPN for debrid services too" (SPEC-debrid rule 10), off by default. */
-const debridNeedsVpn = () => (settings.value as { debridNeedsVpn?: unknown }).debridNeedsVpn === true
+const debridNeedsVpn = () => settings.value.debridNeedsVpn === true
 
 export function ctxNow(): Omit<PickCtx, 'picked'> {
   const windows = typeof navigator !== 'undefined' && /Windows/.test(navigator.userAgent)

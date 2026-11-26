@@ -176,3 +176,20 @@ describe('installed services', () => {
     installed.value = []
   })
 })
+
+describe('the context the ranker gets', () => {
+  it('reads the "Require a VPN for debrid services too" switch, off by default', async () => {
+    const { settings } = await import('../src/lib/store')
+    const { ctxNow } = await import('../src/lib/picking')
+    expect(ctxNow().vpnForDebrid).toBe(false)
+    settings.value = { ...settings.value, debridNeedsVpn: true }
+    expect(ctxNow().vpnForDebrid).toBe(true)
+    settings.value = { ...settings.value, debridNeedsVpn: false }
+  })
+  it('fails closed before the gate answers; the desktop app has a gate to wait for', async () => {
+    const { ctxNow, gate: g } = await import('../src/lib/picking')
+    g.value = null
+    expect(ctxNow().gate).toBe(false)
+    expect(ctxNow().noGate).toBeUndefined()
+  })
+})
