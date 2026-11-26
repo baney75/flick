@@ -136,15 +136,42 @@ pub fn access_code(dir: &Path, renew: bool) -> Result<String, String> {
     getrandom::fill(&mut bytes).map_err(|e| format!("random: {e}"))?;
     let code = B64.encode(bytes);
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let _ = std::fs::remove_file(&path);
+    // Write the whole code to a private temp file first, then put it in place in one step, so a
+    // second process (the service an install just started) never sees a half written or different
+    // token: without renew the first one placed wins and everyone reads it.
+    let tag: String = bytes[..6].iter().map(|b| format!("{b:02x}")).collect();
+    let tmp = dir.join(format!("token.{}.{tag}", std::process::id()));
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
-    let mut f = opts
-        .open(&path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    std::io::Write::write_all(&mut f, code.as_bytes()).map_err(|e| e.to_string())?;
+    let written = opts
+        .open(&tmp)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, code.as_bytes()))
+        .map_err(|e| format!("{}: {e}", tmp.display()));
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    let placed = if renew {
+        std::fs::rename(&tmp, &path)
+    } else {
+        let r = std::fs::hard_link(&tmp, &path);
+        let _ = std::fs::remove_file(&tmp);
+        r
+    };
+    match placed {
+        Ok(()) => {}
+        Err(e) if !renew && e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let t =
+                std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            return Ok(t.trim().to_string());
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("{}: {e}", path.display()));
+        }
+    }
     Ok(code)
 }
 

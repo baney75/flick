@@ -229,14 +229,15 @@ fn install_service(
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
     let dir = std::fs::canonicalize(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    service::install(&exe, &dir)?
-        .iter()
-        .for_each(|l| println!("{l}"));
-    let port = saved.port.unwrap_or(DEFAULT_PORT);
+    // The token exists before the service starts, so the service reads the same one the links carry.
     let (name, token) = (
         saved.name.clone().unwrap_or_else(hostname),
         access_code(&dir, false)?,
     );
+    service::install(&exe, &dir)?
+        .iter()
+        .for_each(|l| println!("{l}"));
+    let port = saved.port.unwrap_or(DEFAULT_PORT);
     let own_web = flick_server::serves_web(saved.web.clone());
     let link = |u: &str| {
         let base = if own_web { u } else { SETUP_BASE };
