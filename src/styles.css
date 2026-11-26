@@ -386,13 +386,22 @@ html.tv .hrow { grid-auto-columns: 300px; padding: 10px 6px 14px; }
 .listen-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 24px 16px max(24px, env(safe-area-inset-bottom)); }
 .listen-cover { position: relative; width: min(300px, 70vw, 40vh); aspect-ratio: 1; object-fit: cover; border-radius: 12px; box-shadow: var(--shadow); flex: none; }
 .listen-chapter { font-weight: 700; font-size: 18px; text-align: center; }
-.listen-scrub { width: min(560px, 100%); accent-color: var(--accent); }
-.listen-times { width: min(560px, 100%); display: flex; justify-content: space-between; gap: 8px; }
-.listen-controls { display: flex; align-items: center; gap: 10px; }
-.listen .icon-btn { color: var(--text); position: relative; }
+.listen-scrub { width: min(560px, 100%); height: 22px; margin: 6px 0 0; -webkit-appearance: none; appearance: none; background: transparent; cursor: pointer; }
+.listen-scrub::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: linear-gradient(to right, var(--accent) var(--fill, 0%), var(--line) var(--fill, 0%)); }
+.listen-scrub::-moz-range-track { height: 6px; border-radius: 3px; background: linear-gradient(to right, var(--accent) var(--fill, 0%), var(--line) var(--fill, 0%)); }
+.listen-scrub::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; margin-top: -5px; border-radius: 50%; background: var(--text); border: 0; box-shadow: 0 1px 4px rgb(0 0 0 / .3); }
+.listen-scrub::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--text); border: 0; }
+.listen-times { width: min(560px, 100%); display: flex; justify-content: space-between; gap: 8px; margin-top: -8px; font-variant-numeric: tabular-nums; }
+.listen-controls { display: flex; align-items: center; gap: clamp(6px, 3vw, 22px); margin: 4px 0; }
+.listen .icon-btn { color: var(--text); position: relative; min-width: 48px; height: 48px; border-radius: 50%; }
 .listen .icon-btn:hover { background: var(--surface); }
 .listen .icon-btn:disabled { opacity: .35; cursor: default; }
-.listen .icon-btn .tiny { position: absolute; bottom: 0; font-size: 10px; font-weight: 700; }
-.listen-menus { position: relative; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
-.listen-pop { bottom: auto; top: 40px; right: 50%; transform: translateX(50%); min-width: 240px; z-index: 2; }
+.listen .icon-btn .tiny { position: absolute; bottom: 2px; font-size: 10px; font-weight: 700; }
+.listen .icon-btn.listen-play { width: 68px; height: 68px; background: var(--accent); color: var(--accent-ink); box-shadow: 0 8px 24px rgb(0 0 0 / .18); }
+.listen .icon-btn.listen-play:hover { background: var(--accent-2); }
+.listen-book { width: min(560px, 100%); display: grid; gap: 6px; justify-items: center; font-variant-numeric: tabular-nums; }
+.listen-bookbar { width: 100%; height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.listen-bookbar div { height: 100%; background: var(--dim); }
+.listen-menus { position: relative; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 4px; }
+.listen-pop { bottom: 40px; top: auto; right: 50%; transform: translateX(50%); min-width: 260px; max-height: min(52vh, 420px); z-index: 2; }
 .listen-pop button { display: flex; justify-content: space-between; gap: 16px; }
