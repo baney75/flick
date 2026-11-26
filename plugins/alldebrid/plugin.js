@@ -111,7 +111,8 @@ export default {
     }
     if (code >= 5 || !Number.isFinite(code)) { await remember(ctx, hash, null); return { error: `AllDebrid could not fetch this torrent${m?.status ? ` (${m.status})` : ''}.` } }
     const wait = { message: WAITING[code] }
-    if (Number(m.size) > 0) wait.pct = (Number(m.downloaded) / Number(m.size)) * 100
+    const pct = (Number(m.downloaded ?? 0) / Number(m.size)) * 100
+    if (Number.isFinite(pct)) wait.pct = pct
     return { wait }
   },
 }

@@ -10,5 +10,9 @@
   ] } },
   "create": { "status": 200, "body": { "status": "success", "id": "PMT1", "name": "Show.S01" } },
   "list_40": { "status": 200, "body": { "status": "success", "transfers": [ { "id": "PMT1", "name": "Show.S01", "status": "running", "progress": 0.4, "message": "Downloading", "folder_id": null, "file_id": null } ] } },
-  "list_error": { "status": 200, "body": { "status": "success", "transfers": [ { "id": "PMT1", "name": "Show.S01", "status": "error", "progress": 0, "message": "No seeds", "folder_id": null, "file_id": null } ] } }
+  "list_error": { "status": 200, "body": { "status": "success", "transfers": [ { "id": "PMT1", "name": "Show.S01", "status": "error", "progress": 0, "message": "No seeds", "folder_id": null, "file_id": null } ] } },
+  "account_lapsed": { "status": 200, "body": { "status": "success", "customer_id": "1234567", "premium_until": 1700000000, "limit_used": 0, "booster_points": 0 } },
+  "create_refused": { "status": 200, "body": { "status": "error", "message": "You already added this job." } },
+  "list_existing": { "status": 200, "body": { "status": "success", "transfers": [ { "id": "PMT0", "name": "Other", "status": "running", "progress": 0.9, "src": "magnet:?xt=urn:btih:dddddddddddddddddddddddddddddddddddddddd" }, { "id": "PMT9", "name": "Show.S01", "status": "running", "progress": 0.4, "src": "magnet:?xt=urn:btih:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC" } ] } },
+  "list_deleted": { "status": 200, "body": { "status": "success", "transfers": [ { "id": "PMT1", "name": "Show.S01", "status": "deleted", "progress": 0, "message": null } ] } }
 }

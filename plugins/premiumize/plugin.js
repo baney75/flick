@@ -1,12 +1,14 @@
 // Premiumize for Flick: plays a torrent from Premiumize's servers as an https link.
 // API docs: https://www.premiumize.me/api (read 2026-11-26).
 // The docs do not say directdl's files follow the torrent's file order, so the file is picked by name
-// first, then the largest video. Download hosts (*.energycdn.com) are not in the docs; they come from
+// first, then by fileIdx as a place in that list, then the largest video. Download hosts (*.energycdn.com) are not in the docs; they come from
 // Premiumize links seen by StremThru (github.com/MunifTanjim/stremthru).
 
 const API = 'https://www.premiumize.me/api'
 const VIDEO = /\.(mkv|mp4|m4v|mov|avi|webm|ts|m2ts|wmv|mpg|mpeg|flv)$/i
 const KEEP_IDS = 200
+// Transfer states that are still on their way; any other (error, deleted, banned, timeout) has failed.
+const LIVE = new Set(['waiting', 'queued', 'running', 'finished', 'seeding'])
 
 const auth = (ctx) => ({ Authorization: `Bearer ${ctx.settings.apiKey}` })
 const magnet = (hash) => `magnet:?xt=urn:btih:${hash}`
@@ -21,10 +23,12 @@ async function api(ctx, path, body) {
   return j
 }
 
-export function pickFile(files, name) {
-  const list = (Array.isArray(files) ? files : []).filter((f) => typeof f?.link === 'string')
+export function pickFile(files, fileIdx, name) {
+  const all = Array.isArray(files) ? files : []
+  const list = all.filter((f) => typeof f?.link === 'string')
   if (!list.length) return null
   if (name) { const f = list.find((x) => String(x.path ?? '').endsWith(name)); if (f) return f }
+  if (Number.isInteger(fileIdx) && typeof all[fileIdx]?.link === 'string') return all[fileIdx]
   const videos = list.filter((x) => VIDEO.test(String(x.path ?? '')))
   return (videos.length ? videos : list).reduce((a, b) => ((Number(b.size) || 0) > (Number(a.size) || 0) ? b : a))
 }
@@ -40,10 +44,10 @@ async function remember(ctx, hash, id) {
 }
 
 /** A link for a torrent Premiumize has, or null when it does not have it. */
-async function direct(ctx, hash, name) {
+async function direct(ctx, hash, fileIdx, name) {
   let j
   try { j = await api(ctx, '/transfer/directdl', `src=${encodeURIComponent(magnet(hash))}`) } catch (e) { if (e.refused) return null; throw e }
-  const f = pickFile(j.content, name)
+  const f = pickFile(j.content, fileIdx, name)
   return f ? f.link : null
 }
 
@@ -71,8 +75,9 @@ export default {
     let j
     try { j = await api(ctx, '/account/info') } catch (e) { if (e.refused) return { ok: false, message: e.message }; throw e }
     const until = Number(j.premium_until)
-    const out = { ok: true, name: 'Premiumize', plan: until > 0 ? 'Premium' : 'Free' }
-    if (until > 0) out.expires = new Date(until * 1000).toISOString().slice(0, 10)
+    const premium = until * 1000 > Date.now()
+    const out = { ok: true, name: 'Premiumize', plan: premium ? 'Premium' : 'Free' }
+    if (premium) out.expires = new Date(until * 1000).toISOString().slice(0, 10)
     return out
   },
 
@@ -83,20 +88,31 @@ export default {
     return hashes.filter((_, i) => yes[i] === true)
   },
 
-  async resolve(ctx, { infoHash, name }) {
+  async resolve(ctx, { infoHash, fileIdx, name }) {
     const hash = String(infoHash).toLowerCase()
-    const now = await direct(ctx, hash, name)
+    const now = await direct(ctx, hash, fileIdx, name)
     if (now) { await remember(ctx, hash, null); return { url: now } }
     let id = (await ids(ctx))[hash]
+    let list = null
     if (id == null) {
-      const t = await api(ctx, '/transfer/create', `src=${encodeURIComponent(magnet(hash))}`)
-      if (t.id == null) throw new Error('Premiumize did not add the torrent.')
-      id = t.id
+      try {
+        const t = await api(ctx, '/transfer/create', `src=${encodeURIComponent(magnet(hash))}`)
+        if (t.id == null) throw new Error('Premiumize did not add the torrent.')
+        id = t.id
+      } catch (e) {
+        // Already a transfer ("You already added this job."): find it by its magnet and keep going.
+        if (!e.refused) throw e
+        list = (await api(ctx, '/transfer/list')).transfers ?? []
+        const had = list.find((x) => String(x.src ?? '').toLowerCase().includes(hash))
+        if (!had) throw e
+        id = had.id
+      }
       await remember(ctx, hash, id)
     }
-    const t = ((await api(ctx, '/transfer/list')).transfers ?? []).find((x) => String(x.id) === String(id))
+    list ??= (await api(ctx, '/transfer/list')).transfers ?? []
+    const t = list.find((x) => String(x.id) === String(id))
     if (!t) { await remember(ctx, hash, null); return { wait: { message: 'Premiumize is adding it again' } } }
-    if (t.status === 'error') { await remember(ctx, hash, null); return { error: `Premiumize could not fetch this torrent${t.message ? `: ${t.message}` : '.'}` } }
+    if (!LIVE.has(t.status)) { await remember(ctx, hash, null); return { error: `Premiumize could not fetch this torrent${t.message ? `: ${t.message}` : '.'}` } }
     const wait = { message: t.status === 'queued' ? 'Premiumize has it in line' : t.status === 'finished' || t.status === 'seeding' ? 'Premiumize is getting the link' : 'Premiumize is downloading it' }
     if (Number.isFinite(Number(t.progress))) wait.pct = Number(t.progress) * 100
     return { wait }

@@ -5,7 +5,7 @@ import rd from '../plugins/realdebrid/plugin.js'
 // @ts-expect-error see above
 import ad, { flatten } from '../plugins/alldebrid/plugin.js'
 // @ts-expect-error see above
-import pm from '../plugins/premiumize/plugin.js'
+import pm, { pickFile as pmPick } from '../plugins/premiumize/plugin.js'
 import * as V from '../src/lib/plugins/validate'
 import rdFx from './fixtures/debrid/realdebrid.json'
 import adFx from './fixtures/debrid/alldebrid.json'
@@ -95,6 +95,10 @@ describe('AllDebrid plugin', () => {
     const ctx = fakeCtx({ apiKey: KEY }, script(adFx, [[/magnet\/upload/, ['upload']], [/magnet\/status/, ['status_failed']]]))
     expect(await ad.resolve(ctx, T)).toEqual({ error: 'AllDebrid could not fetch this torrent (File not available - no peer).' })
   })
+  it('resolve: a queued magnet with no downloaded count waits at 0%, never NaN', async () => {
+    const ctx = fakeCtx({ apiKey: KEY }, script(adFx, [[/magnet\/upload/, ['upload']], [/magnet\/status/, ['status_queued']]]))
+    expect(await ad.resolve(ctx, T)).toEqual({ wait: { pct: 0, message: 'AllDebrid has it in line' } })
+  })
   it('flattens nested folders in order', () => {
     expect(flatten([{ n: 'a', e: [{ n: 'b.mkv', s: 1, l: 'L1' }, { n: 'c', e: [{ n: 'd.mp4', s: 2, l: 'L2' }] }] }]).map((f: { path: string }) => f.path)).toEqual(['a/b.mkv', 'a/c/d.mp4'])
   })
@@ -127,5 +131,26 @@ describe('Premiumize plugin', () => {
   it('resolve: a failed transfer says why', async () => {
     const ctx = fakeCtx({ apiKey: KEY }, script(pmFx, [[/directdl/, ['directdl_miss']], [/transfer\/create/, ['create']], [/transfer\/list/, ['list_error']]]))
     expect(await pm.resolve(ctx, T)).toEqual({ error: 'Premiumize could not fetch this torrent: No seeds' })
+  })
+  it('resolve: a deleted, banned or timed out transfer is an error, not an endless wait', async () => {
+    const ctx = fakeCtx({ apiKey: KEY }, script(pmFx, [[/directdl/, ['directdl_miss']], [/transfer\/create/, ['create']], [/transfer\/list/, ['list_deleted']]]))
+    expect(await pm.resolve(ctx, T)).toEqual({ error: 'Premiumize could not fetch this torrent.' })
+    expect(await ctx.store.get('ids')).toEqual({})
+  })
+  it('resolve: a refused create finds the transfer already on Premiumize by its magnet', async () => {
+    const ctx = fakeCtx({ apiKey: KEY }, script(pmFx, [[/directdl/, ['directdl_miss']], [/transfer\/create/, ['create_refused']], [/transfer\/list/, ['list_existing']]]))
+    expect(await pm.resolve(ctx, T)).toEqual({ wait: { pct: 40, message: 'Premiumize is downloading it' } })
+    expect(await pm.resolve(ctx, T)).toEqual({ wait: { pct: 40, message: 'Premiumize is downloading it' } })
+    expect(ctx.requests.filter((r) => r.url.includes('transfer/create'))).toHaveLength(1)
+    expect(await ctx.store.get('ids')).toEqual({ [HASH]: 'PMT9' })
+  })
+  it('picks the file: the name, then fileIdx as a place in the list, then the largest video', () => {
+    const files = (pmFx.directdl_hit.body as { content: { path: string }[] }).content
+    expect(pmPick(files, 0, 'Show.S01E02.1080p.mkv').path).toMatch(/E02/)
+    expect(pmPick(files, 0).path).toMatch(/E01/)
+    expect(pmPick(files).path).toMatch(/E02/)
+  })
+  it('account: a lapsed plan shows as Free with no date', async () => {
+    expect(await pm.account(fakeCtx({ apiKey: KEY }, () => pmFx.account_lapsed as Reply))).toEqual({ ok: true, name: 'Premiumize', plan: 'Free' })
   })
 })

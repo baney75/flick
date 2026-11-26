@@ -11,5 +11,6 @@
     { "n": "Show.S01E02.1080p.mkv", "s": 2200000000, "l": "https://alldebrid.com/f/BBB" },
     { "n": "info.nfo", "s": 4000, "l": "https://alldebrid.com/f/CCC" }
   ] } ] } ] } } },
-  "unlock": { "status": 200, "body": { "status": "success", "data": { "link": "https://xk7rz2.debrid.it/dl/2kd9f/Show.S01E02.1080p.mkv", "filename": "Show.S01E02.1080p.mkv", "host": "alldebrid", "filesize": 2200000000, "id": "BBB" } } }
+  "unlock": { "status": 200, "body": { "status": "success", "data": { "link": "https://xk7rz2.debrid.it/dl/2kd9f/Show.S01E02.1080p.mkv", "filename": "Show.S01E02.1080p.mkv", "host": "alldebrid", "filesize": 2200000000, "id": "BBB" } } },
+  "status_queued": { "status": 200, "body": { "status": "success", "data": { "magnets": { "id": 9001, "filename": "Show.S01", "size": 4300000000, "status": "In Queue", "statusCode": 0 } } } }
 }
