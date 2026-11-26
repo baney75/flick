@@ -29,7 +29,8 @@ the app.
 | `public/icon-512.png` | 512 | PWA icon, rounded |
 | `public/icon-maskable-512.png` | 512 | Android PWA, full bleed |
 | `public/apple-touch-icon.png` | 180 | iPhone home screen, full bleed |
-| `src-tauri/icons/` | all | desktop and mobile apps, made with `npx tauri icon` from a 1024px render with 100px padding and a soft shadow |
+| `src-tauri/icons/*.png, .icns, .ico` | all | desktop apps: `npx tauri icon` from a 1024px render with 100px padding and a soft shadow |
+| `src-tauri/icons/ios/`, `android/` | all | phones and TVs: `npx tauri icon` from a full-bleed square render (iOS rounds it); the Android adaptive foreground is the mark alone at 70% on an Ink background (`#0E0D11`), inside the safe zone |
 
 To redraw: edit `public/icon.svg` and `Logo.tsx` together, render the PNGs with headless Chrome, then
 run `npx tauri icon <1024px png>`.
