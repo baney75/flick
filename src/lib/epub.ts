@@ -150,7 +150,13 @@ function clean(node: Node) {
 const LINKS = ['href', 'xlink:href']
 const RES = ['src', 'poster', 'data']
 
-export interface PageOpts { start: number | 'end' | string; size: number; night: boolean; gen: number }
+export type PageColor = 'day' | 'paper' | 'night'
+export interface PageOpts { start: number | 'end' | string; size: number; color: PageColor; gen: number }
+const COLORS: Record<PageColor, { bg: string; fg: string; link?: string }> = {
+  day: { bg: '#fbfaf7', fg: '#1b1b1b' },
+  paper: { bg: '#f4ecd8', fg: '#3b2f22', link: '#7a4a12' },
+  night: { bg: '#121212', fg: '#d6d6d6', link: '#8ab4f8' },
+}
 
 /** One chapter as a self-contained, script-free HTML page plus Flick's pager. */
 export async function chapterPage(b: Book, index: number, o: PageOpts): Promise<string> {
@@ -198,11 +204,11 @@ export async function chapterPage(b: Book, index: number, o: PageOpts): Promise<
 
 const GAP = 24
 function readerCss(o: PageOpts) {
-  return `html{height:100vh;overflow:hidden;font-size:${o.size}%;background:${o.night ? '#121212' : '#fbfaf7'};color:${o.night ? '#d6d6d6' : '#1b1b1b'}}
+  return `html{height:100vh;overflow:hidden;font-size:${o.size}%;background:${COLORS[o.color].bg};color:${COLORS[o.color].fg}}
 body{margin:0!important;box-sizing:border-box;height:100vh;width:100vw;max-width:none!important;padding:40px ${GAP}px!important;line-height:1.55;
 column-width:calc(100vw - ${2 * GAP}px);column-gap:${2 * GAP}px;column-fill:auto;overflow-wrap:break-word}
 img,svg,video,table{max-width:100%;max-height:calc(100vh - 80px);object-fit:contain;break-inside:avoid}
-${o.night ? 'body *{color:inherit!important;background-color:transparent!important}a{color:#8ab4f8!important}' : ''}`
+${o.color !== 'day' ? `body *{color:inherit!important;background-color:transparent!important}a{color:${COLORS[o.color].link}!important}` : ''}`
 }
 
 /** Runs inside the sandboxed chapter: lays out pages, turns them, and reports where the reader is. */
