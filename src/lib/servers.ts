@@ -2,6 +2,8 @@
 
 import type { Item, Source } from './library'
 import { hash, named, prepared, thumbUrl, KODI_IMG } from './library'
+import { groupAudiobooks } from './audiobook'
+import { ext } from './parse'
 import * as db from './db'
 import { announce } from './sync/bus'
 import { invoke, fileUrl, protocolUrl, isDesktop, isMobileApp, isApple } from './platform'
@@ -398,10 +400,14 @@ export async function flickConnect(url: string, code: string): Promise<Server> {
 
 /** Maps a flick-server library to Items, titled from file names like local files. Pure, for tests. */
 export function flickMap(s: Server, lib: FlickLibrary): Item[] {
-  return lib.items.filter((x) => x.kind === 'video' || x.kind === 'audio' || x.kind === 'book').map((x) => ({
+  const paths = new Map<string, string>()
+  const list = lib.items.filter((x) => x.kind === 'video' || x.kind === 'audio' || x.kind === 'book').map((x): Item => {
+    const kind = ext(x.name) === 'm4b' ? 'audiobook' : x.kind
+    paths.set(hash(`${s.id}:${x.id}`), `${x.folder}/${x.path}`)
+    return {
     id: hash(`${s.id}:${x.id}`),
-    kind: x.kind,
-    ...named(x.name, x.kind),
+    kind,
+    ...named(x.name, kind),
     src: { t: 'url', url: `${s.url}/media/${x.id}?t=${encodeURIComponent(s.token)}` },
     origin: 'flick',
     server: s.id,
@@ -409,7 +415,8 @@ export function flickMap(s: Server, lib: FlickLibrary): Item[] {
     size: x.size,
     mtime: x.mtime,
     addedAt: x.mtime || Date.now(),
-  }))
+  }})
+  return groupAudiobooks(list, (i) => paths.get(i.id) ?? '')
 }
 
 export async function flickItems(s: Server): Promise<Item[]> {

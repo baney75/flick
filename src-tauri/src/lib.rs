@@ -19,13 +19,13 @@ const VIDEO: &[&str] = &[
     "ogv", "3gp",
 ];
 const AUDIO: &[&str] = &[
-    "mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "alac", "aiff", "aif", "wma",
+    "mp3", "m4a", "m4b", "aac", "flac", "wav", "ogg", "opus", "alac", "aiff", "aif", "wma",
 ];
 const SUBS: &[&str] = &["srt", "vtt", "ass", "ssa"];
 const BOOKS: &[&str] = &["pdf", "epub"];
 // What WKWebView plays without help.
 const NATIVE_EXT: &[&str] = &[
-    "mp4", "m4v", "mov", "webm", "mp3", "m4a", "aac", "wav", "flac", "aiff", "aif", "3gp",
+    "mp4", "m4v", "mov", "webm", "mp3", "m4a", "m4b", "aac", "wav", "flac", "aiff", "aif", "3gp",
 ];
 
 #[derive(Default)]
@@ -226,6 +226,47 @@ fn run_probe(path: &str, auth: Option<&str>) -> Option<Probe> {
         .unwrap_or(true);
     p.playable = container_ok && !is_mkv && video_ok && audio_ok;
     Some(p)
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+struct Chapter {
+    title: String,
+    start: f64,
+}
+
+/// An audiobook's chapters as ffprobe reads them (M4B, MP3 with ID3 chapters, MKA, Ogg). Empty without ffprobe.
+fn run_chapters(path: &str) -> Vec<Chapter> {
+    let Some(ffprobe) = find_tool("ffprobe") else {
+        return vec![];
+    };
+    let Ok(out) = Command::new(ffprobe)
+        .args(["-v", "error", "-show_chapters", "-of", "json", "-i", path])
+        .output()
+    else {
+        return vec![];
+    };
+    let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    let list = j["chapters"].as_array().cloned().unwrap_or_default();
+    list.iter()
+        .enumerate()
+        .map(|(i, c)| Chapter {
+            title: c["tags"]["title"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("Chapter {}", i + 1)),
+            start: c["start_time"]
+                .as_str()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0),
+        })
+        .collect()
+}
+
+#[tauri::command]
+async fn chapters(path: String) -> Result<Vec<Chapter>, String> {
+    tauri::async_runtime::spawn_blocking(move || Ok(run_chapters(&path)))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1296,6 +1337,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan_folder,
             probe,
+            chapters,
             prepare,
             sidecar_subs,
             embedded_subs,
@@ -1353,6 +1395,42 @@ mod tests {
 
     fn media(name: &str) -> String {
         format!("{}/../test-media/{name}", env!("CARGO_MANIFEST_DIR"))
+    }
+
+    #[test]
+    fn chapters_from_an_m4b() {
+        let (Some(ffmpeg), Some(_)) = (find_tool("ffmpeg"), find_tool("ffprobe")) else {
+            eprintln!("skipped: needs ffmpeg and ffprobe");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("flick-chapters-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let meta = dir.join("meta.txt");
+        std::fs::write(&meta, ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=2000\ntitle=Opening\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=2000\nEND=5000\ntitle=Ending\n").unwrap();
+        let book = dir.join("book.m4b");
+        let ok = Command::new(ffmpeg)
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=d=5", "-i"])
+            .arg(&meta)
+            .args(["-map_chapters", "1", "-c:a", "aac"])
+            .arg(&book)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let ch = run_chapters(book.to_str().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            ch,
+            [
+                Chapter {
+                    title: "Opening".into(),
+                    start: 0.0
+                },
+                Chapter {
+                    title: "Ending".into(),
+                    start: 2.0
+                }
+            ]
+        );
     }
 
     #[test]

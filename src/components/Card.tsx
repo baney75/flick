@@ -79,14 +79,14 @@ function useLongPress(onMore?: (e: MouseEvent) => void) {
 export function ItemCard({ it, onClick, onMore }: { it: Item; onClick: () => void; onMore?: (e: MouseEvent) => void }) {
   const img = useThumb(it)
   const p = progress.value[it.id]
-  const sub = it.kind === 'book'
+  const sub = it.kind === 'book' || it.kind === 'audiobook'
     ? [it.author, it.year].filter(Boolean).join(' · ') || 'Book'
     : it.show
     ? `${episodeLabel(it)} · ${it.title}`
     : [it.year, it.duration ? formatTime(it.duration) : null, it.origin !== 'local' ? originName(it) : null].filter(Boolean).join(' · ')
   return (
-    <Card image={img} title={it.show ?? it.title} sub={sub} shape={it.kind === 'audio' ? 'square' : it.kind === 'book' || (it.poster && it.origin !== 'local') ? 'poster' : 'wide'}
-      icon={it.kind === 'audio' ? 'music' : it.kind === 'book' ? 'book' : 'film'} pct={p && p.dur ? p.pos / p.dur : undefined} badge={badgeFor(downloads.value.get(it.id))}
+    <Card image={img} title={it.show ?? it.title} sub={sub} shape={it.kind === 'audio' || it.kind === 'audiobook' ? 'square' : it.kind === 'book' || (it.poster && it.origin !== 'local') ? 'poster' : 'wide'}
+      icon={it.kind === 'audio' ? 'music' : it.kind === 'book' || it.kind === 'audiobook' ? 'book' : 'film'} pct={p && p.dur ? p.pos / p.dur : undefined} badge={badgeFor(downloads.value.get(it.id))}
       onClick={onClick} onMore={onMore} />
   )
 }

@@ -5,6 +5,7 @@ import { itemKindOf, parseName, parseBook, type Kind, SUB_EXT, ext } from './par
 import { isDesktop, invoke, fileUrl, onDesktopEvent, type ScanEntry, type Probe } from './platform'
 import { kodiResolve } from './servers'
 import { localFor } from './downloads'
+import { groupAudiobooks } from './audiobook'
 import { openEpub, coverBlob } from './epub'
 
 export type Source =
@@ -40,6 +41,8 @@ export interface Item {
   folder?: string
   poster?: string
   server?: string
+  /** An audiobook made of several files, in order. Each part is a chapter; dur is filled in once measured. */
+  parts?: { src: Source; title: string; dur?: number }[]
 }
 
 export interface Folder {
@@ -77,7 +80,7 @@ export function itemFromFile(file: File, src: Source, origin: Origin, folder?: s
 
 /** Title fields for a file: release-name parsing for media, "Author - Title" for books. */
 export function named(name: string, kind: Kind): Pick<Item, 'title' | 'show' | 'season' | 'episode' | 'year' | 'author'> {
-  if (kind === 'book') return parseBook(name)
+  if (kind === 'book' || kind === 'audiobook') return parseBook(name)
   const p = parseName(name)
   return { title: p.title, show: p.show, season: p.season, episode: p.episode, year: p.year }
 }
@@ -129,7 +132,9 @@ export async function scanFolder(f: Folder, files?: File[]): Promise<Item[]> {
       if (it) out.push(it)
     }
   }
-  return out
+  // Parts under an Audiobooks folder become one book. A browser folder's paths start at the folder's own name.
+  return groupAudiobooks(out, (i) => i.src.t === 'path' ? i.src.path : i.src.t === 'handle' ? `${f.name}/${i.src.rel}`
+    : i.src.t === 'session' ? sessionFiles.get(i.src.key)?.webkitRelativePath || '' : '')
 }
 
 /** Merge a fresh scan into the stored items, keeping durations and add dates. */
