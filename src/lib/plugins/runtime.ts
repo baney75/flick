@@ -9,7 +9,9 @@ import * as V from './validate'
 
 /** No allow-same-origin, ever: the opaque origin is what keeps a plugin out of Flick's storage. */
 export const SANDBOX = 'allow-scripts'
-export const HOST_PAGE = '/plugin-host.html'
+// In the apps the plugin's page allows no network, so ctx.fetch (checked against the hosts listed at
+// install) is its only way out. On the website the browser's CORS and private network rules apply.
+export const HOST_PAGE = isDesktop ? '/plugin-host-app.html' : '/plugin-host.html'
 
 export type SourceManifest = V.PluginManifest
 export interface Installed {

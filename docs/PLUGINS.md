@@ -120,8 +120,10 @@ values go only to that one `action()` call and are not saved; keep what you need
     (any public host; for plugins that reach addresses the user types, like Stremio addons). `*`
     never reaches this computer or the local network (`localhost`, `127.0.0.1`, `192.168.x.x`,
     `.local`, or a public name that resolves to one); list those by name, like `127.0.0.1`.
-  - The plugin's own global `fetch` still works in the sandbox on every platform, with the normal
-    CORS rules.
+  - In the desktop and mobile apps, `ctx.fetch` is the only network a plugin has: its sandbox page
+    allows no `fetch`, WebSocket, remote image or media of its own, so `hosts` is what it can reach.
+  - On the website, the sandbox's own `fetch` works with the browser's CORS and private network
+    rules, and `hosts` is not enforced there. The review sheet says so on the website.
 - `ctx.store.get(key)` / `ctx.store.set(key, value)`: this plugin's own saved data (JSON, 1 MB total).
 - `ctx.settings`: current setting values.
 - `ctx.platform`: `'web' | 'desktop' | 'mobile'`.
