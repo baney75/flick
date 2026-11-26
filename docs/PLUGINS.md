@@ -26,7 +26,9 @@ as a single JavaScript file with no build step.
   `{ "api": 1, "plugins": [{ "url", "name", "kind": "source" | "theme", "description" }] }`.
 - The list of installed plugins and their non-secret settings sync between paired devices, along with
   on or off and the chosen theme. Plugins installed from a file stay on that device. Fields
-  marked `secret` (passwords, tokens) never leave the device.
+  marked `secret` (passwords, tokens) never leave the device. Another device installs a synced
+  plugin only when its code is what was reviewed, or asks for no host or tool beyond it; otherwise
+  it says so and waits for the user to add it there and review it.
 - Flick never installs a source on the user's behalf. One exception: on upgrade, a user who already
   used the built-in Stremio section (signed in, or added addons) gets the Stremio plugin installed
   with their data moved over, so nothing they had disappears.

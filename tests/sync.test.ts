@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { Clock, digest, merge, missingFor, write, wins, type Doc } from '../src/lib/sync/doc'
 import { newSecret, openGroup, pairLink, parsePair, seal, unseal } from '../src/lib/sync/crypto'
-import { contentIndex, contentKey, localProgressKeys, progressDocKey, pluginSnapshot } from '../src/lib/sync/keys'
+import { contentIndex, contentKey, localProgressKeys, progressDocKey, pluginSnapshot, mayInstallSynced } from '../src/lib/sync/keys'
+import type { Candidate } from '../src/lib/plugins/registry'
 import type { Installed } from '../src/lib/plugins/registry'
 import type { Item } from '../src/lib/library'
 
@@ -144,7 +145,7 @@ describe('sync keys', () => {
     const rec = (id: string, url: string | null) => ({ id, kind: 'source', url, enabled: true, manifest: { settings }, settings: { lang: 'en', token: 'abc123' } }) as unknown as Installed
     const snap = pluginSnapshot([rec('org.a.one', 'https://a.example/plugin.js'), rec('org.b.two', null)])
     expect([...snap.keys()]).toEqual(['x:https://a.example/plugin.js'])
-    expect(JSON.parse(snap.get('x:https://a.example/plugin.js')!)).toEqual({ on: true, settings: { lang: 'en' } })
+    expect(JSON.parse(snap.get('x:https://a.example/plugin.js')!)).toMatchObject({ on: true, settings: { lang: 'en' } })
     expect([...snap.values()].join()).not.toContain('abc123')
   })
 
@@ -153,5 +154,16 @@ describe('sync keys', () => {
     const snap = pluginSnapshot([rec('org.flick.template', '/plugins/template.js'), rec('org.local.dev', 'http://127.0.0.1:5173/p.js')])
     // A localhost plugin only works on the device that has it, so it does not sync.
     expect([...snap.keys()]).toEqual(['x:/plugins/template.js'])
+  })
+
+  it('another device installs a synced plugin only as reviewed, or asking for nothing more', () => {
+    const rec = { id: 'org.g.p', kind: 'source', url: 'https://gist.example/p.js', enabled: true, sha256: 'aaa', manifest: { settings: [], hosts: ['api.example.com'], tools: [] }, settings: {} } as unknown as Installed
+    const v = JSON.parse(pluginSnapshot([rec]).get('x:https://gist.example/p.js')!)
+    expect(v).toMatchObject({ sha256: 'aaa', hosts: ['api.example.com'], tools: [] })
+    const cand = (sha256: string, hosts: string[], tools: string[] = []) => ({ kind: 'source', sha256, manifest: { hosts, tools } }) as unknown as Candidate
+    expect(mayInstallSynced(v, cand('aaa', ['api.example.com']))).toBe(true)
+    expect(mayInstallSynced(v, cand('bbb', ['api.example.com']))).toBe(true)
+    expect(mayInstallSynced(v, cand('bbb', ['*']))).toBe(false)
+    expect(mayInstallSynced(v, cand('bbb', ['api.example.com'], ['ytdlp']))).toBe(false)
   })
 })

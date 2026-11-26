@@ -5,10 +5,10 @@
 
 import { effect } from '@preact/signals'
 import * as db from '../db'
-import { items, progress, settings, setSettings, reloadItems, saveStremio, stremioExtra, loadStremio, type Progress, type Settings } from '../store'
+import { items, progress, settings, setSettings, notify, reloadItems, saveStremio, stremioExtra, loadStremio, type Progress, type Settings } from '../store'
 import { getServers, saveServer, removeServer, syncServer, type Server } from '../servers'
 import type { Item } from '../library'
-import { contentIndex, localProgressKeys, progressDocKey, pluginSnapshot } from './keys'
+import { contentIndex, localProgressKeys, progressDocKey, pluginSnapshot, mayInstallSynced, type SyncedPlugin } from './keys'
 import { installed, prepare, install, remove, setEnabled, setPluginSettings, isSecret, portable } from '../plugins/registry'
 import { startSync, publish, docValue, docKeys } from './engine'
 import { bus } from './bus'
@@ -165,14 +165,21 @@ async function applyPlugins() {
   try {
     for (const k of docKeys('x:')) {
       const url = k.slice(2)
-      const v = docValue(k) as { on: boolean; settings: Record<string, unknown> } | null
+      const v = docValue(k) as SyncedPlugin | null
       // Only addresses every device can use: a bundled /plugins/ path or https.
       if (portable(url) !== url) continue
       const local = installed.value.find((p) => p.url && portable(p.url) === url)
       if (v == null) { if (local) await remove(local.id); continue }
       let rec = local
       // Installed on another of this person's devices: fetch it here too. A failure waits for the next change.
-      if (!rec) { try { rec = await install(await prepare({ url })) } catch { continue } }
+      if (!rec) {
+        try {
+          const c = await prepare({ url })
+          // Code that changed since it was reviewed, and asks for more, waits for a review on this device.
+          if (!mayInstallSynced(v, c)) { notify(`${c.manifest.name} changed since you added it on another device. Add it in Settings to review it here.`); continue }
+          rec = await install(c)
+        } catch { continue }
+      }
       if (rec.enabled !== v.on) await setEnabled(rec.id, v.on)
       const r = rec
       const patch = Object.fromEntries(Object.entries(v.settings ?? {}).filter(([key, val]) => !isSecret(r, key) && JSON.stringify(r.settings[key]) !== JSON.stringify(val)))
