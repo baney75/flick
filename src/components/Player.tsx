@@ -7,6 +7,7 @@ import { formatTime } from '../lib/parse'
 import { vttUrl, toVtt } from '../lib/subs'
 import { isDesktop, isMobileApp, hasOpfs, invoke } from '../lib/platform'
 import { kodiConvert, convertUrl } from '../lib/servers'
+import { openToolStream } from '../lib/plugins/runtime'
 import { Icon } from './icons'
 
 const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
@@ -85,6 +86,12 @@ function PlayerInner({ req }: { req: PlayRequest }) {
           }
         }
         if (!url) throw new Error('Nothing to play.')
+        if (url.startsWith('flick-tool:')) {
+          setStatus('Starting the stream')
+          url = await openToolStream(url)
+          if (cancelled) return
+          setStatus(null)
+        }
         await attach(v, url)
         if (isDesktop && req.src?.t === 'path') {
           // Subtitles inside MKV and MP4 files arrive after playback starts, so they never delay it.
@@ -111,10 +118,12 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   async function attach(v: HTMLVideoElement, url: string) {
     hls.current?.destroy()
     hls.current = null
+    // A local event playlist (a flick-tool: stream through ffmpeg) is still growing; start at the top, not the live edge.
+    const local = isHls(url) && /^(asset:|https?:\/\/asset\.localhost\/)/.test(url)
     if (isHls(url) && !v.canPlayType('application/vnd.apple.mpegurl')) {
       const { default: Hls } = await import('hls.js')
       if (!Hls.isSupported()) throw new Error('This browser cannot play HLS streams.')
-      const h = new Hls({ enableWorker: true, lowLatencyMode: false, startFragPrefetch: true, maxBufferLength: 60 }) as unknown as HlsLike
+      const h = new Hls({ enableWorker: true, lowLatencyMode: false, startFragPrefetch: true, maxBufferLength: 60, startPosition: local ? 0 : -1 }) as unknown as HlsLike
       h.on(Hls.Events.ERROR, (_e: unknown, d: { fatal: boolean; details: string }) => {
         if (d.fatal) onFail(`Stream error: ${d.details}`)
       })
@@ -123,6 +132,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
       hls.current = h
     } else {
       v.src = url
+      if (local && !req.startAt) v.addEventListener('loadedmetadata', () => { v.currentTime = 0 }, { once: true })
     }
     v.playbackRate = speed
     v.volume = volume

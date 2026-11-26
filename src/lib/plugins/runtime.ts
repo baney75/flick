@@ -3,7 +3,7 @@
 
 import { signal } from '@preact/signals'
 import * as db from '../db'
-import { isDesktop, isMobileApp, invoke } from '../platform'
+import { isDesktop, isMobileApp, invoke, fileUrl } from '../platform'
 import { connect, type Handler, type Rpc } from './rpc'
 import * as V from './validate'
 
@@ -132,6 +132,12 @@ export async function registerHosts(rec: Installed) {
   const m = rec.manifest as V.PluginManifest
   await invoke('plugin_hosts', { id: rec.id, hosts: rec.enabled ? m.hosts : [] })
   await invoke('plugin_tools', { id: rec.id, tools: rec.enabled ? m.tools : [] })
+}
+
+/** A `flick-tool:` stream from a plugin, started on the desktop app; returns a URL the player plays. */
+export async function openToolStream(url: string): Promise<string> {
+  if (!isDesktop) throw new Error('This stream needs the Flick desktop app.')
+  return fileUrl(await invoke<string>('tool_open', { url }))
 }
 
 function frameFor(rec: Installed): Promise<Frame> {

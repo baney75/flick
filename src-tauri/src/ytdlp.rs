@@ -9,12 +9,15 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Manager, Url};
 
 const RELEASES: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download";
+// H.264 and AAC play in every web view and copy into HLS without re-encoding.
+const PLAY_FORMAT: &str =
+    "bv[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/b[vcodec^=avc1][acodec^=mp4a]";
 const DAY: Duration = Duration::from_secs(86_400);
 
 #[derive(Clone, Default, Debug)]
@@ -34,6 +37,8 @@ pub struct PluginTools {
     /// `flick-tool:ytdlp/<token>` to the page it plays. Only resolve() adds entries.
     tokens: Mutex<HashMap<String, String>>,
     fetch: Arc<Mutex<Fetch>>,
+    /// yt-dlp and ffmpeg for the stream playing now. A new stream or app exit stops them.
+    job: Mutex<Vec<Child>>,
 }
 
 /// The release file for this computer, and the name Flick saves it under.
@@ -375,6 +380,214 @@ pub async fn plugin_tool(
     .map_err(|e| e.to_string())?
 }
 
+// ---------- playing a flick-tool: stream ----------
+
+pub fn stop_job(state: &PluginTools) {
+    for mut c in std::mem::take(&mut *state.job.lock().unwrap()) {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+}
+
+/// The URL Tauri's convertFileSrc gives a path. Segment names need it in full: the
+/// playlist URL encodes every slash, so a relative name would resolve to the root.
+fn asset_url(path: &Path) -> String {
+    let mut out = String::from(if cfg!(windows) {
+        "http://asset.localhost/"
+    } else {
+        "asset://localhost/"
+    });
+    for b in path.to_string_lossy().bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+fn segments(playlist: &Path) -> usize {
+    std::fs::read_to_string(playlist)
+        .map(|t| {
+            t.lines()
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn last_line(p: &Path) -> String {
+    let t = std::fs::read_to_string(p).unwrap_or_default();
+    t.lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+/// yt-dlp writes the video to stdout (it picks the format) and ffmpeg turns that into a local HLS
+/// event playlist, so a long video plays while it streams. Returns the playlist once it lists a segment.
+fn stream(
+    bin: &Path,
+    ffmpeg: &Path,
+    page: &str,
+    dir: &Path,
+    base: &str,
+    state: &PluginTools,
+) -> Result<PathBuf, String> {
+    stop_job(state);
+    let playlist = dir.join("index.m3u8");
+    if std::fs::read_to_string(&playlist).is_ok_and(|t| t.contains("#EXT-X-ENDLIST")) {
+        return Ok(playlist);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let file = |n: &str| std::fs::File::create(dir.join(n)).map_err(|e| e.to_string());
+    let mut yt = Command::new(bin)
+        .args([
+            "--no-warnings",
+            "--no-progress",
+            "--no-playlist",
+            "--no-part",
+            "-f",
+            PLAY_FORMAT,
+            "--ffmpeg-location",
+        ])
+        .arg(ffmpeg)
+        .args(["-o", "-", "--", page])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(file("yt-dlp.log")?)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let pipe = yt.stdout.take().ok_or("yt-dlp gave no output")?;
+    let ff = Command::new(ffmpeg)
+        .args([
+            "-nostdin",
+            "-loglevel",
+            "error",
+            "-i",
+            "pipe:0",
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            "-c",
+            "copy",
+            "-f",
+            "hls",
+        ])
+        .args([
+            "-hls_time",
+            "4",
+            "-hls_playlist_type",
+            "event",
+            "-hls_flags",
+            "independent_segments",
+            "-hls_base_url",
+            base,
+        ])
+        .arg(&playlist)
+        .stdin(pipe)
+        .stdout(Stdio::null())
+        .stderr(file("ffmpeg.log")?)
+        .spawn();
+    let ff = match ff {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = yt.kill();
+            return Err(e.to_string());
+        }
+    };
+    *state.job.lock().unwrap() = vec![yt, ff];
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(45) {
+        if segments(&playlist) > 0 {
+            return Ok(playlist);
+        }
+        let ended = state
+            .job
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .any(|c| !matches!(c.try_wait(), Ok(None)));
+        if ended && segments(&playlist) == 0 {
+            stop_job(state);
+            let why = [
+                last_line(&dir.join("yt-dlp.log")),
+                last_line(&dir.join("ffmpeg.log")),
+            ]
+            .into_iter()
+            .find(|l| !l.is_empty());
+            return Err(format!(
+                "This video could not stream: {}",
+                why.unwrap_or_else(|| "yt-dlp stopped early".into())
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    stop_job(state);
+    Err("The video sent nothing within 45 seconds. Try again.".into())
+}
+
+/// Start a `flick-tool:` stream a plugin resolved. Returns the local playlist path for convertFileSrc.
+fn open(env: &Env, state: &PluginTools, cache: &Path, url: &str) -> Result<PathBuf, String> {
+    let token = url
+        .strip_prefix("flick-tool:ytdlp/")
+        .ok_or_else(|| format!("Flick cannot play {url}."))?;
+    let page = state
+        .tokens
+        .lock()
+        .unwrap()
+        .get(token)
+        .cloned()
+        .ok_or("This stream has expired. Open the title again.")?;
+    let ffmpeg = super::find_tool("ffmpeg")
+        .ok_or("Playing this needs ffmpeg. Install it with: brew install ffmpeg")?;
+    let bin = match managed(&env.dir, &env.fetch, Duration::from_secs(300)) {
+        Ok(b) => b,
+        Err(e) => super::find_tool("yt-dlp").ok_or(e)?,
+    };
+    let dir = cache.join(token);
+    stream(&bin, &ffmpeg, &page, &dir, &asset_url(&dir.join("")), state)
+}
+
+#[tauri::command]
+pub async fn tool_open(app: tauri::AppHandle, url: String) -> Result<String, String> {
+    let cache = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("ytdlp");
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<PluginTools>();
+        let p = open(&env(&app, &state)?, &state, &cache, &url)?;
+        Ok(p.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Streams are a cache: drop any older than a day.
+pub fn clean_cache(cache: &Path) {
+    for d in std::fs::read_dir(cache.join("ytdlp"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        if d.metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            > Some(DAY)
+        {
+            let _ = std::fs::remove_dir_all(d.path());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,6 +638,9 @@ mod tests {
             );
         }
         assert!(st.tokens.lock().unwrap().is_empty());
+        // A token only plays what resolve() registered.
+        let err = open(&e, &st, Path::new("/nonexistent"), "flick-tool:ytdlp/abc").unwrap_err();
+        assert!(err.contains("expired"), "{err}");
     }
 
     #[test]
@@ -482,7 +698,7 @@ mod tests {
         assert_eq!(Value::Array(metas(&j)), want);
     }
 
-    /// Real network run on this computer: Flick's own yt-dlp searches and resolves.
+    /// Real network run on this computer: Flick's own yt-dlp searches, resolves and streams.
     /// `FLICK_YTDLP_DIR=<dir> cargo test ytdlp_live -- --ignored --nocapture`
     #[test]
     #[ignore]
@@ -532,5 +748,30 @@ mod tests {
         )
         .unwrap();
         println!("resolve: {url}");
+        let clock = Instant::now();
+        let cache = std::env::temp_dir().join("flick-ytdlp-live-cache");
+        let playlist = open(&e, &st, &cache, url.as_str().unwrap()).unwrap();
+        println!(
+            "stream: first segment listed after {:?}: {}",
+            clock.elapsed(),
+            playlist.display()
+        );
+        let text = std::fs::read_to_string(&playlist).unwrap();
+        let seg = text
+            .lines()
+            .find(|l| !l.is_empty() && !l.starts_with('#'))
+            .unwrap();
+        let name = seg.rsplit("%2F").next().unwrap();
+        let bytes = std::fs::read(playlist.with_file_name(name)).unwrap();
+        println!(
+            "first segment {name}: {} bytes, starts {:02x?}",
+            bytes.len(),
+            &bytes[..4]
+        );
+        assert!(
+            bytes.len() > 10_000 && bytes[0] == 0x47,
+            "an MPEG-TS segment starts with 0x47"
+        );
+        stop_job(&st);
     }
 }
