@@ -3,6 +3,7 @@
 
 import { signal } from '@preact/signals'
 import * as db from '../db'
+import { announce } from '../sync/bus'
 import * as V from './validate'
 import { inspect as sandboxInspect, registerHosts, sha256, stopPlugin, pushSettings, type Installed } from './runtime'
 
@@ -91,6 +92,7 @@ export async function prepare(src: { url?: string; text?: string }, deps: Deps =
 async function save(rec: Installed) {
   await db.put('plugins', rec.id, rec)
   installed.value = [...installed.value.filter((p) => p.id !== rec.id), rec].sort((a, b) => a.manifest.name.localeCompare(b.manifest.name))
+  announce('plugins')
 }
 
 export async function install(c: Candidate, settings?: Record<string, unknown>): Promise<Installed> {
@@ -143,6 +145,7 @@ export async function remove(id: string) {
   await db.del('plugins', id)
   await db.del('pluginData', id)
   installed.value = installed.value.filter((p) => p.id !== id)
+  announce('plugins')
   if (rec) await registerHosts({ ...rec, enabled: false }).catch(() => {})
 }
 

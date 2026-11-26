@@ -8,17 +8,19 @@ import * as db from '../db'
 import { items, progress, settings, setSettings, reloadItems, saveStremio, stremioExtra, loadStremio, type Progress, type Settings } from '../store'
 import { getServers, saveServer, removeServer, syncServer, type Server } from '../servers'
 import type { Item } from '../library'
-import { contentIndex, localProgressKeys, progressDocKey } from './keys'
+import { contentIndex, localProgressKeys, progressDocKey, pluginSnapshot } from './keys'
+import { installed, prepare, install, remove, setEnabled, setPluginSettings, isSecret, absolute } from '../plugins/registry'
 import { startSync, publish, docValue, docKeys } from './engine'
 import { bus } from './bus'
 
 // Settings that follow the person; volume stays per device.
-const SHARED: (keyof Settings)[] = ['autoplayNext', 'skipSeconds', 'theme', 'speed']
+const SHARED: (keyof Settings)[] = ['autoplayNext', 'skipSeconds', 'theme', 'speed', 'look']
 
 let applying = false
 let prevProgress: Record<string, Progress> = {}
 let prevServers = new Map<string, string>()
 let prevAddons = new Set<string>()
+let prevPlugins = new Map<string, string>()
 
 const byId = () => new Map(items.value.map((i) => [i.id, i] as [string, Item]))
 
@@ -46,6 +48,7 @@ export async function startSyncBinding() {
   prevProgress = progress.value
   prevServers = await serverSnapshot()
   prevAddons = new Set(await stremioExtra())
+  prevPlugins = pluginSnapshot(installed.value)
 
   // Offer what this device has, without overwriting what the group already holds. The engine
   // calls this on start and again after joining a new group, whose doc starts empty.
@@ -54,6 +57,7 @@ export async function startSyncBinding() {
     ...SHARED.map((k) => [`s:${k}`, settings.value[k]] as [string, unknown]),
     ...[...prevServers].map(([id, s]) => [`v:${id}`, JSON.parse(s)] as [string, unknown]),
     ...[...prevAddons].map((u) => [`a:${u}`, true] as [string, unknown]),
+    ...[...prevPlugins].map(([k, v]) => [k, JSON.parse(v)] as [string, unknown]),
   ]
   await startSync((keys) => { applyRemote(keys).catch(() => {}) }, offer)
 
@@ -94,6 +98,17 @@ export async function startSyncBinding() {
     prevAddons = next
   })
 
+  bus.addEventListener('plugins', () => {
+    const next = pluginSnapshot(installed.value)
+    if (!applying) {
+      const ch: [string, unknown][] = []
+      for (const [k, v] of next) if (prevPlugins.get(k) !== v) ch.push([k, JSON.parse(v)])
+      for (const k of prevPlugins.keys()) if (!next.has(k)) ch.push([k, null])
+      publish(ch)
+    }
+    prevPlugins = next
+  })
+
   // Folders added later can match progress the group already has.
   let lastCount = -1
   effect(() => {
@@ -107,7 +122,7 @@ async function applyRemote(keys: string[]) {
   const prog = { ...progress.value }
   let progChanged = false
   const settingsPatch: Partial<Settings> = {}
-  let servers = false, addons = false
+  let servers = false, addons = false, plugins = false
 
   for (const k of keys) {
     const v = docValue(k)
@@ -129,6 +144,7 @@ async function applyRemote(keys: string[]) {
       if (SHARED.includes(f) && v != null) (settingsPatch as Record<string, unknown>)[f] = v
     } else if (k.startsWith('v:')) servers = true
     else if (k.startsWith('a:')) addons = true
+    else if (k.startsWith('x:')) plugins = true
   }
 
   applying = true
@@ -141,6 +157,29 @@ async function applyRemote(keys: string[]) {
 
   if (servers) await applyServers()
   if (addons) await applyAddons()
+  if (plugins) await applyPlugins()
+}
+
+async function applyPlugins() {
+  applying = true
+  try {
+    for (const k of docKeys('x:')) {
+      const url = k.slice(2)
+      const v = docValue(k) as { on: boolean; settings: Record<string, unknown> } | null
+      const local = installed.value.find((p) => p.url && absolute(p.url) === url)
+      if (v == null) { if (local) await remove(local.id); continue }
+      let rec = local
+      // Installed on another of this person's devices: fetch it here too. A failure waits for the next change.
+      if (!rec) { try { rec = await install(await prepare({ url })) } catch { continue } }
+      if (rec.enabled !== v.on) await setEnabled(rec.id, v.on)
+      const r = rec
+      const patch = Object.fromEntries(Object.entries(v.settings ?? {}).filter(([key, val]) => !isSecret(r, key) && JSON.stringify(r.settings[key]) !== JSON.stringify(val)))
+      if (Object.keys(patch).length) await setPluginSettings(rec.id, patch)
+    }
+    prevPlugins = pluginSnapshot(installed.value)
+  } finally {
+    applying = false
+  }
 }
 
 async function applyServers() {

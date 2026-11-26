@@ -50,4 +50,11 @@ describe('setup payloads', () => {
     expect(() => S.decodeSetup('***not base64***')).toThrow(/not valid base64url/)
     expect(() => S.decodeSetup(btoa('{oops'))).toThrow(/not valid JSON/)
   })
+
+  it('accepts plugin URLs over https or bundled paths only', () => {
+    expect(S.validateSetup({ v: 1, plugins: ['https://gist.githubusercontent.com/u/1/raw/plugin.js', '/plugins/template.js'] }).plugins).toHaveLength(2)
+    expect(() => S.validateSetup({ v: 1, plugins: ['http://evil.example/p.js'] })).toThrow(/https/)
+    expect(() => S.validateSetup({ v: 1, plugins: ['javascript:alert(1)'] })).toThrow(/https/)
+    expect(() => S.validateSetup({ v: 1, plugins: Array.from({ length: 21 }, (_, i) => `https://p${i}.example/p.js`) })).toThrow(/at most 20/)
+  })
 })

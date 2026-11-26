@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { Clock, digest, merge, missingFor, write, wins, type Doc } from '../src/lib/sync/doc'
 import { newSecret, openGroup, pairLink, parsePair, seal, unseal } from '../src/lib/sync/crypto'
-import { contentIndex, contentKey, localProgressKeys, progressDocKey } from '../src/lib/sync/keys'
+import { contentIndex, contentKey, localProgressKeys, progressDocKey, pluginSnapshot } from '../src/lib/sync/keys'
+import type { Installed } from '../src/lib/plugins/registry'
 import type { Item } from '../src/lib/library'
 
 // Sync two docs the way two devices do: swap digests, send what the other lacks.
@@ -135,5 +136,15 @@ describe('sync keys', () => {
     expect(progressDocKey('st:tt1', { ref: { t: 'stremio', type: 'movie', id: 'tt1', videoId: 'tt1' } }, byId)).toBe('p:k:st:tt1')
     expect(localProgressKeys('p:k:st:tt1', new Map())).toEqual(['st:tt1'])
     expect(progressDocKey('gone', { ref: { t: 'item', id: 'gone' } }, byId)).toBeNull()
+    expect(progressDocKey('pl:org.x.y:tt1:1:2', { ref: { t: 'plugin', p: 'org.x.y', type: 'series', id: 'tt1', videoId: 'tt1:1:2' } }, byId)).toBe('p:k:pl:org.x.y:tt1:1:2')
+  })
+
+  it('syncs installed plugin URLs and settings, never secret ones or file installs', () => {
+    const settings = [{ key: 'lang', label: 'L', type: 'text' }, { key: 'token', label: 'T', type: 'text', secret: true }]
+    const rec = (id: string, url: string | null) => ({ id, kind: 'source', url, enabled: true, manifest: { settings }, settings: { lang: 'en', token: 'abc123' } }) as unknown as Installed
+    const snap = pluginSnapshot([rec('org.a.one', 'https://a.example/plugin.js'), rec('org.b.two', null)])
+    expect([...snap.keys()]).toEqual(['x:https://a.example/plugin.js'])
+    expect(JSON.parse(snap.get('x:https://a.example/plugin.js')!)).toEqual({ on: true, settings: { lang: 'en' } })
+    expect([...snap.values()].join()).not.toContain('abc123')
   })
 })

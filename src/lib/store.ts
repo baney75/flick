@@ -25,8 +25,9 @@ export function notify(text: string, ms = 3200) {
 }
 
 // ---------- settings ----------
-export interface Settings { autoplayNext: boolean; speed: number; volume: number; skipSeconds: number; theme: 'system' | 'dark' | 'light'; removeWatched: boolean }
-const defaults: Settings = { autoplayNext: true, speed: 1, volume: 1, skipSeconds: 10, theme: 'system', removeWatched: false }
+/** theme is light or dark mode; look is an installed theme's id, or '' for Flick's own colors. */
+export interface Settings { autoplayNext: boolean; speed: number; volume: number; skipSeconds: number; theme: 'system' | 'dark' | 'light'; look: string; removeWatched: boolean }
+const defaults: Settings = { autoplayNext: true, speed: 1, volume: 1, skipSeconds: 10, theme: 'system', look: '', removeWatched: false }
 function loadSettings(): Settings {
   try { return { ...defaults, ...JSON.parse(localStorage.getItem('flick.settings') || '{}') } } catch { return defaults }
 }
@@ -96,6 +97,7 @@ function pump() {
 export type Ref =
   | { t: 'item'; id: string }
   | { t: 'stremio'; type: string; id: string; videoId: string }
+  | { t: 'plugin'; p: string; type: string; id: string; videoId: string }
   | { t: 'url'; url: string }
 
 export interface Progress {
@@ -149,6 +151,8 @@ export interface PlayRequest {
   startAt?: number
   ref: Ref
   next?: () => PlayRequest | null
+  /** Called with the position each time the player saves it (a plugin syncs it back). */
+  onSave?: (pos: number, dur: number) => void
 }
 
 export const nowPlaying = signal<PlayRequest | null>(null)

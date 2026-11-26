@@ -29,7 +29,7 @@ export interface PluginManifest {
   actions: ActionDef[]
   catalogs: CatalogDef[]
   /** Optional functions the plugin has. */
-  has: { library: boolean; action: boolean; progress: boolean }
+  has: { library: boolean; action: boolean; progress: boolean; subtitles: boolean }
 }
 export interface Video { id: string; title: string; season?: number; episode?: number; released?: string; thumbnail?: string; overview?: string }
 export interface Meta {
@@ -151,7 +151,7 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
     settings,
     actions,
     catalogs,
-    has: { library: fns.includes('library'), action: fns.includes('action'), progress: fns.includes('progress') },
+    has: { library: fns.includes('library'), action: fns.includes('action'), progress: fns.includes('progress'), subtitles: fns.includes('subtitles') },
   }
   const icon = imgUrl(x.icon)
   if (icon) m.icon = icon

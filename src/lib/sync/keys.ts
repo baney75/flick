@@ -2,6 +2,7 @@
 //   p:i:<content key>  watch progress for a library item
 //   p:k:<key>          watch progress for anything else (Stremio, URLs), keyed as on every device
 //   a:<addon url>      a Stremio addon added by URL (true, or null once removed)
+//   x:<plugin url>     an installed plugin or theme: { on, settings } with secret settings left out, or null once removed
 //   v:<server id>      a Plex or Jellyfin server connection
 //   s:settings         player settings
 //
@@ -11,6 +12,7 @@
 
 import type { Item } from '../library'
 import type { Progress } from '../store'
+import { absolute, publicSettings, type Installed } from '../plugins/registry'
 
 const LOCAL = new Set(['local', 'stored'])
 
@@ -40,6 +42,11 @@ export function localProgressKeys(docKey: string, byContent: Map<string, string[
   if (docKey.startsWith('p:k:')) return [docKey.slice(4)]
   if (docKey.startsWith('p:i:')) return byContent.get(docKey.slice(4)) ?? []
   return []
+}
+
+/** What syncs for each installed plugin: by URL, on or off, non-secret settings. File installs stay local. */
+export function pluginSnapshot(list: Installed[]): Map<string, string> {
+  return new Map(list.filter((p) => p.url).map((p) => [`x:${absolute(p.url!)}`, JSON.stringify({ on: p.enabled, settings: publicSettings(p) })]))
 }
 
 export function contentIndex(items: Item[]): Map<string, string[]> {
