@@ -300,29 +300,53 @@ fn parses_linux_route_and_dns_output() {
             link: Some("wg0".into()),
         }])
     };
-    let mut got = linux_dns(stub(&["127.0.0.53"]), wg).unwrap();
-    assert_eq!(got, wg().unwrap());
-    got = linux_dns(stub(&["127.0.0.54", "9.9.9.9"]), wg).unwrap();
-    assert_eq!(got, [Dns::routed("9.9.9.9"), wg().unwrap().remove(0)]);
+    let wg = || Resolved::Links(wg().unwrap());
+    let mut got = linux_dns(stub(&["127.0.0.53"]), wg()).unwrap();
+    assert_eq!(Resolved::Links(got.clone()), wg());
+    got = linux_dns(stub(&["127.0.0.54", "9.9.9.9"]), wg()).unwrap();
+    let Resolved::Links(w) = wg() else { panic!() };
+    assert_eq!(got, [Dns::routed("9.9.9.9"), w[0].clone()]);
     assert_eq!(
-        linux_dns(stub(&["127.0.0.53"]), || None),
+        linux_dns(stub(&["127.0.0.53"]), Resolved::Unknown),
         None,
         "resolvectl missing"
     );
-    let never = || -> Option<Vec<Dns>> { panic!("not resolved's stub") };
     assert_eq!(
-        linux_dns(stub(&["127.0.0.1"]), never),
+        linux_dns(stub(&["127.0.0.1"]), wg()),
         None,
         "dnsmasq on 127.0.0.1"
     );
     assert_eq!(
-        linux_dns(stub(&["127.0.1.1"]), never),
+        linux_dns(stub(&["127.0.1.1"]), Resolved::Off),
         None,
         "NetworkManager's dnsmasq"
     );
     assert_eq!(
-        linux_dns(stub(&["10.64.0.1"]), never).unwrap(),
+        linux_dns(stub(&["10.64.0.1"]), Resolved::Off).unwrap(),
         [Dns::routed("10.64.0.1")]
+    );
+    assert_eq!(
+        linux_dns(stub(&["127.0.0.53"]), Resolved::Off),
+        None,
+        "stub, no resolved"
+    );
+    // resolved runs though resolv.conf doesn't list its stub (Fedora's nsswitch, uplink mode): its
+    // eth0-bound server counts, so the gate sees the leak.
+    let isp = Dns {
+        server: "75.75.75.75".into(),
+        link: Some("eth0".into()),
+    };
+    let uplink = linux_dns(stub(&["75.75.75.75"]), Resolved::Links(vec![isp.clone()])).unwrap();
+    assert_eq!(uplink, [Dns::routed("75.75.75.75"), isp]);
+    assert_eq!(linux_dns(stub(&["9.9.9.9"]), Resolved::Unknown), None);
+    // Routes that drop traffic go nowhere.
+    let v6 = ["unreachable 2001:db8::1 from :: dev lo proto kernel metric 4294967295 error -101 pref medium", "blackhole 2001:db8::1 dev lo", "prohibit 2001:db8::1 dev lo"];
+    for out in v6 {
+        assert_eq!(parse_route_linux(out), None, "{out}");
+    }
+    assert_eq!(
+        parse_route_linux("2001:db8::1 from :: dev lo src ::1"),
+        None
     );
 }
 
@@ -380,6 +404,7 @@ fn reads_systemd_resolved_links() {
 fn a_linux_full_tunnel_passes_and_meshes_fail() {
     let mut wg = vpn();
     wg.os = "linux";
+    wg.tun = true;
     for to in ["1.1.1.1", "198.51.100.1", "203.0.113.1"] {
         wg = wg.route(to, "wg0");
     }
@@ -392,6 +417,7 @@ fn a_linux_full_tunnel_passes_and_meshes_fail() {
     assert!(decide(&ok).ok, "{:?}", decide(&ok));
     let mut eth = ok.clone().route("1.1.1.1", "eth0");
     eth.addrs.insert("eth0".into(), vec![ip("192.168.1.5")]);
+    eth.tun = false; // eth0, the only interface asked about here, is no TUN device
     assert_eq!(fails(&eth), Some(Fail::NoVpn));
     for mesh in ["tailscale0", "zt5u4y6bc4", "nebula1", "wt0"] {
         let mut m = ok.clone();
@@ -422,11 +448,31 @@ fn linux_tunnels_in_state_unknown_are_up() {
 }
 
 #[test]
+fn linux_tunnels_by_device_type() {
+    // Parish1's tailscale0: tun_flags 0x5001 (IFF_TUN, IFF_NO_PI, multi-queue).
+    assert!(linux_tun("INTERFACE=tailscale0\n", Some("0x5001\n")));
+    assert!(linux_tun("DEVTYPE=wireguard\nINTERFACE=wg0\n", None));
+    assert!(
+        !linux_tun("INTERFACE=tap0\n", Some("0x1002")),
+        "a TAP device"
+    );
+    assert!(
+        !linux_tun("INTERFACE=wg0\n", None),
+        "named wg0, but not WireGuard"
+    );
+    assert!(!linux_tun("DEVTYPE=bridge\n", None));
+}
+
+#[test]
 fn names_tunnels_per_os() {
     assert!(tunnel_name("macos", "utun4", false) && tunnel_name("macos", "ipsec0", false));
     assert!(!tunnel_name("macos", "en0", false) && !tunnel_name("macos", "utun", false));
     assert!(!tunnel_name("macos", "utunx", false) && !tunnel_name("linux", "tunx", false));
-    assert!(tunnel_name("linux", "wg0-mullvad", false) && tunnel_name("linux", "tun0", false));
+    assert!(!tunnel_name("linux", "wg0-mullvad", false) && !tunnel_name("linux", "tun0", false));
+    assert!(
+        tunnel_name("linux", "wg0-mullvad", true),
+        "Linux goes by device type"
+    );
     assert!(
         tunnel_name("linux", "proton0", true),
         "a WireGuard device by type"
