@@ -26,6 +26,11 @@ percent-encoding = "2"
 # Shares this library with the person's other devices; embed-web serves them the Flick app too.
 flick-server = { path = "../server", features = ["embed-web"] }
 if-addrs = "0.15"
+# The VPN gate's exit check (src/vpn.rs): TLS to Cloudflare's trace page from a socket bound to one
+# interface. Same rustls and ring build ureq already uses.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "1"
+socket2 = { version = "0.6", features = ["all"] }
 # Checks the yt-dlp release binary against its published SHA2-256SUMS.
 sha2 = "0.10"
 getrandom = "0.3"

@@ -1,22 +1,25 @@
 // The VPN gate (spec rules 25 to 30): a torrent of any kind, from the built-in engine or a debrid
 // service, plays only while Flick detects a VPN that hides this computer. There is no other mode.
-// These are the route checks: the default route goes through a tunnel that is not a mesh network
-// (Tailscale), and every system DNS server routes through it.
-// Decisions are pure functions over a `Probe`; `System` is the real one, tests use a fake. A
-// system read that fails yields nothing, and nothing fails the gate.
+// The gate passes when the default route goes through a tunnel that is not a mesh network
+// (Tailscale), every system DNS server routes through it, and Cloudflare's trace page sees a
+// different address through the tunnel than through the physical interface.
+// Decisions are pure functions over a `Probe`; `System` is the real one, tests use a fake.
 
 use serde::Serialize;
-use std::io::Write;
-use std::net::IpAddr;
+use std::io::{Read, Write};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::time::Duration;
 
-// Addresses whose routes stand for "all traffic": Cloudflare's resolver, and documentation ranges
-// nobody routes on purpose, so a split tunnel that carries only some destinations fails. The route
-// checks only ask the system how it would reach them.
+// Addresses whose routes stand for "all traffic": Cloudflare's resolver, which the exit check also
+// fetches, and documentation ranges nobody routes on purpose, so a split tunnel that carries only
+// some destinations fails.
 const PROBE_V4: &str = "1.1.1.1";
+const PROBE_V6: &str = "2606:4700:4700::1111";
 const ROUTES_V4: [&str; 3] = [PROBE_V4, "198.51.100.1", "203.0.113.1"];
-const ROUTES_V6: [&str; 2] = ["2606:4700:4700::1111", "2001:db8::1"];
+const ROUTES_V6: [&str; 2] = [PROBE_V6, "2001:db8::1"];
 
 /// Why the gate fails; Settings > Privacy shows the message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -27,6 +30,8 @@ pub enum Fail {
     Split,
     Ipv6Leak,
     Dns,
+    Offline,
+    NotHidden,
     Unchecked,
 }
 
@@ -42,15 +47,35 @@ impl Fail {
                 "IPv6 traffic goes around your VPN. Turn on its IPv6 leak protection."
             }
             Fail::Dns => "Your DNS goes around your VPN. Turn on its DNS leak protection.",
+            Fail::Offline => "Flick can't reach the internet through your VPN.",
+            Fail::NotHidden => {
+                "Your VPN isn't hiding your address: sites see the same address with it on."
+            }
             Fail::Unchecked => "Flick can't check a VPN on this computer yet.",
         }
     }
+}
+
+/// A trace request that failed. Only `Net` means nothing reached the server: the connection was
+/// refused or timed out, as a VPN's kill switch does to the physical link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TraceErr {
+    /// The socket could not be bound to the interface.
+    Bind,
+    /// The connection did not open.
+    Net,
+    /// The connection opened, but no usable answer came back (TLS, a read, a bad response).
+    Answer,
 }
 
 /// What the gate asks of the system. `ip` strings may carry an IPv6 scope (fe80::1%en0).
 pub trait Probe {
     /// The interface the system routes `ip` through.
     fn route(&self, ip: &str) -> Option<String>;
+    /// The first default-route interface that is not a tunnel: where traffic goes without the VPN.
+    /// Ok(None) when every default route is a tunnel or down; Err(Unchecked) when the routes could
+    /// not be read or held no default route.
+    fn physical(&self) -> Result<Option<String>, Fail>;
     /// The DNS servers general lookups use; None when a local stub's upstreams are unknown.
     fn dns(&self) -> Option<Vec<Dns>>;
     /// Addresses of an interface that is up; empty when it is down or missing.
@@ -60,6 +85,8 @@ pub trait Probe {
     fn mesh_service(&self, iface: &str) -> bool;
     /// Some interface has a global IPv6 address (2000::/3).
     fn global_v6(&self) -> bool;
+    /// The `ip=` Cloudflare's trace page reports, bound to `bind` when given.
+    fn trace(&self, v6: bool, bind: Option<&str>) -> Result<IpAddr, TraceErr>;
     /// The system tools the checks read are present.
     fn ready(&self) -> bool {
         true
@@ -123,20 +150,64 @@ pub fn route_check(p: &dyn Probe) -> Result<String, Fail> {
     Ok(iface)
 }
 
+/// Rule 25 d: the address sites see through the tunnel, when it differs from the physical one.
+/// A physical request the network refuses (a VPN's own kill switch) exposes nothing, so it passes.
+pub fn exit_check(p: &dyn Probe) -> Result<IpAddr, Fail> {
+    let phys = p.physical()?;
+    let leaks = |seen: IpAddr, v6: bool| -> Result<bool, Fail> {
+        let Some(ph) = phys.as_deref() else {
+            return Ok(false);
+        };
+        if p.addrs(ph).contains(&seen) {
+            return Ok(true);
+        }
+        match p.trace(v6, Some(ph)) {
+            Ok(ip) => Ok(ip == seen),
+            Err(TraceErr::Net) => Ok(false),
+            Err(TraceErr::Bind | TraceErr::Answer) => Err(Fail::Unchecked),
+        }
+    };
+    let v4 = p.trace(false, None).map_err(|_| Fail::Offline)?;
+    if leaks(v4, false)? {
+        return Err(Fail::NotHidden);
+    }
+    if p.global_v6() {
+        if let Ok(v6) = p.trace(true, None) {
+            if leaks(v6, true)? {
+                return Err(Fail::Ipv6Leak);
+            }
+        }
+    }
+    Ok(v4)
+}
+
+/// "185.65.134.x": the exit address with its last part hidden, for Settings.
+pub fn mask(ip: IpAddr) -> String {
+    let s = ip.to_string();
+    let cut = if ip.is_ipv4() { '.' } else { ':' };
+    match s.rsplit_once(cut) {
+        Some((head, _)) => format!("{head}{cut}x"),
+        None => s,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct GateState {
     pub ok: bool,
     pub iface: Option<String>,
+    pub exit: Option<String>,
     pub reason: Option<Fail>,
     pub message: Option<&'static str>,
 }
 
 impl GateState {
-    pub fn pass(iface: String) -> Self {
+    pub fn pass(iface: String, exit: IpAddr) -> Self {
+        let (iface, exit) = (Some(iface), Some(mask(exit)));
         let (reason, message) = (None, None);
         GateState {
             ok: true,
-            iface: Some(iface),
+            iface,
+            exit,
             reason,
             message,
         }
@@ -146,6 +217,7 @@ impl GateState {
         GateState {
             ok: false,
             iface: None,
+            exit: None,
             reason,
             message,
         }
@@ -163,8 +235,8 @@ pub fn check(p: &dyn Probe) -> GateState {
 
 /// The checks themselves, on any system (tests run them everywhere).
 pub fn decide(p: &dyn Probe) -> GateState {
-    match route_check(p) {
-        Ok(iface) => GateState::pass(iface),
+    match route_check(p).and_then(|i| exit_check(p).map(|ip| (i, ip))) {
+        Ok((iface, ip)) => GateState::pass(iface, ip),
         Err(f) => GateState::fail(f),
     }
 }
@@ -186,6 +258,31 @@ pub fn parse_route_linux(out: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Default-route interfaces in order: the fourth column of `netstat -rn -f inet` (macOS), or
+/// each `dev` of `ip route show default` (Linux), the `nexthop` lines of a multipath route included.
+pub fn parse_defaults(out: &str, linux: bool) -> Vec<String> {
+    let mut found = vec![];
+    let mut in_default = false;
+    for l in out.lines() {
+        let nexthop = l.trim_start().starts_with("nexthop");
+        if !nexthop {
+            in_default = l.starts_with("default");
+        }
+        if !in_default {
+            continue;
+        }
+        let dev = if linux {
+            parse_route_linux(l)
+        } else if nexthop {
+            None
+        } else {
+            l.split_whitespace().nth(3).map(String::from)
+        };
+        found.extend(dev);
+    }
+    found
 }
 
 /// Name servers of `scutil --dns` that answer general lookups: unscoped resolvers with no
@@ -380,7 +477,7 @@ fn resolvectl() -> Option<Vec<Dns>> {
     Some(parse_resolved(&dns, &domains, &routes))
 }
 
-/// The real system: macOS route and scutil; Linux ip and resolv.conf.
+/// The real system: macOS route, netstat and scutil; Linux ip and resolv.conf.
 pub struct System;
 
 impl Probe for System {
@@ -397,6 +494,21 @@ impl Probe for System {
             let fam = if v6 { "-6" } else { "-4" };
             parse_route_linux(&run(ip_bin()?, &[fam, "route", "get", ip], None)?)
         }
+    }
+    fn physical(&self) -> Result<Option<String>, Fail> {
+        let linux = !cfg!(target_os = "macos");
+        let out = if linux {
+            let args = ["-4", "route", "show", "table", "all", "default"];
+            ip_bin().and_then(|ip| run(ip, &args, None))
+        } else {
+            run("/usr/sbin/netstat", &["-rn", "-f", "inet"], None)
+        };
+        let defaults = parse_defaults(&out.ok_or(Fail::Unchecked)?, linux);
+        if defaults.is_empty() {
+            return Err(Fail::Unchecked);
+        }
+        let usable = |i: &String| !self.is_tunnel(i) && !self.addrs(i).is_empty();
+        Ok(defaults.into_iter().find(usable))
     }
     fn dns(&self) -> Option<Vec<Dns>> {
         if cfg!(target_os = "macos") {
@@ -450,6 +562,96 @@ impl Probe for System {
     fn ready(&self) -> bool {
         cfg!(target_os = "macos") || ip_bin().is_some()
     }
+    fn trace(&self, v6: bool, bind: Option<&str>) -> Result<IpAddr, TraceErr> {
+        let ip: IpAddr = if v6 { PROBE_V6 } else { PROBE_V4 }
+            .parse()
+            .map_err(|_| TraceErr::Net)?;
+        let tcp = connect(SocketAddr::new(ip, 443), bind)?;
+        let resp = https_get(tcp, ip).map_err(|_| TraceErr::Answer)?;
+        parse_trace(&resp).ok_or(TraceErr::Answer)
+    }
+}
+
+/// A TCP connection, bound to `bind` when given (IP_BOUND_IF on macOS, SO_BINDTODEVICE on Linux).
+fn connect(addr: SocketAddr, bind: Option<&str>) -> Result<TcpStream, TraceErr> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let net = |_| TraceErr::Net;
+    let s =
+        Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP)).map_err(net)?;
+    if let Some(name) = bind {
+        bind_device(&s, name, addr.is_ipv6()).map_err(|_| TraceErr::Bind)?;
+    }
+    let t = Duration::from_secs(4);
+    s.connect_timeout(&addr.into(), t).map_err(net)?;
+    s.set_read_timeout(Some(t))
+        .and(s.set_write_timeout(Some(t)))
+        .map_err(net)?;
+    Ok(s.into())
+}
+
+#[cfg(target_os = "macos")]
+fn bind_device(s: &socket2::Socket, name: &str, v6: bool) -> std::io::Result<()> {
+    let all = if_addrs::get_if_addrs()?;
+    let idx = all.iter().find(|i| i.name == name).and_then(|i| i.index);
+    let idx = idx
+        .and_then(std::num::NonZeroU32::new)
+        .ok_or(std::io::ErrorKind::NotFound)?;
+    if v6 {
+        s.bind_device_by_index_v6(Some(idx))
+    } else {
+        s.bind_device_by_index_v4(Some(idx))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn bind_device(s: &socket2::Socket, name: &str, _v6: bool) -> std::io::Result<()> {
+    s.bind_device(Some(name.as_bytes()))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn bind_device(_: &socket2::Socket, _: &str, _: bool) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
+/// GET /cdn-cgi/trace over TLS, the server checked against the address itself (Cloudflare's
+/// certificate names 1.1.1.1 and 2606:4700:4700::1111).
+fn https_get(tcp: TcpStream, ip: IpAddr) -> Result<String, Box<dyn std::error::Error>> {
+    let roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    let ring = Arc::new(rustls::crypto::ring::default_provider());
+    let cfg = rustls::ClientConfig::builder_with_provider(ring)
+        .with_safe_default_protocol_versions()?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let conn = rustls::ClientConnection::new(Arc::new(cfg), ip.into())?;
+    let mut tls = rustls::StreamOwned::new(conn, tcp);
+    let host = if ip.is_ipv6() {
+        format!("[{ip}]")
+    } else {
+        ip.to_string()
+    };
+    let req = format!(
+        "GET /cdn-cgi/trace HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Flick\r\nConnection: close\r\n\r\n"
+    );
+    tls.write_all(req.as_bytes())?;
+    let mut buf = vec![];
+    // A server may close without a TLS close_notify; what arrived before that still counts.
+    if let Err(e) = tls.read_to_end(&mut buf) {
+        if buf.is_empty() || e.kind() != std::io::ErrorKind::UnexpectedEof {
+            return Err(e.into());
+        }
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// The `ip=` line of a 200 response from /cdn-cgi/trace.
+pub fn parse_trace(resp: &str) -> Option<IpAddr> {
+    if !resp.starts_with("HTTP/1.1 200") {
+        return None;
+    }
+    resp.lines()
+        .find_map(|l| l.trim().strip_prefix("ip=")?.parse().ok())
 }
 
 /// The gate right now: it passes, or says what failed. The torrent engine and the debrid player
