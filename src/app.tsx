@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'preact/hooks'
-import { route, go, toast, nowPlaying, settings, reloadItems, loadProgress, loadStremio, notify } from './lib/store'
+import { route, go, toast, nowPlaying, settings, reloadItems, loadProgress, notify } from './lib/store'
 import { Home } from './views/Home'
 import { Library, ShowPage } from './views/Library'
-import { Stremio, StremioDetail } from './views/Stremio'
 import { Servers } from './views/Servers'
 import { Settings } from './views/Settings'
 import { PairPage } from './views/Sync'
@@ -20,11 +19,24 @@ import { installSpatialNav } from './lib/spatial'
 import { resumeDownloads } from './lib/downloads'
 import { startOffline } from './lib/offline'
 import { startShare } from './lib/share'
+import { PluginPage, PluginTitle, PluginIcon, SourcesPage } from './views/Plugin'
+import { sources, themes, startPlugins } from './lib/plugins/use'
+import { applyTheme } from './lib/plugins/themes'
+import { migrateStremio } from './lib/plugins/migrate'
+import type { BookLink } from './views/Reader'
+
+function bookLink(qs: URLSearchParams): BookLink | undefined {
+  try {
+    const ref = JSON.parse(qs.get('r') ?? '')
+    const url = qs.get('u') ?? ''
+    if (ref?.t !== 'plugin' || !/^https?:\/\//.test(url)) return undefined
+    return { url, title: qs.get('t') ?? 'Book', key: `pl:${ref.p}:${ref.videoId}`, ref }
+  } catch { return undefined }
+}
 
 const NAV = [
   { path: '/', label: 'Home', icon: 'home' },
   { path: '/library', label: 'Library', icon: 'library' },
-  { path: '/stremio', label: 'Stremio', icon: 'stremio' },
   { path: '/servers', label: 'Servers', icon: 'server' },
   { path: '/settings', label: 'Settings', icon: 'settings' },
 ]
@@ -36,10 +48,12 @@ function View() {
   const qs = new URLSearchParams(query ?? '')
   if (parts[0] === 'library') return <Library />
   if (parts[0] === 'read' && parts[1]) return <Reader key={parts[1]} id={decodeURIComponent(parts[1])} />
+  if (parts[0] === 'read-url' && bookLink(qs)) return <Reader key={r} id="" link={bookLink(qs)} />
+  if (parts[0] === 'p' && parts[1] && parts[3]) return <PluginTitle key={r} p={decodeURIComponent(parts[1])} type={parts[2]} id={decodeURIComponent(parts[3])} videoId={qs.get('v') ?? undefined} />
+  if (parts[0] === 'p' && parts[1]) return <PluginPage key={parts[1]} id={decodeURIComponent(parts[1])} />
+  if (parts[0] === 'sources') return <SourcesPage />
   if (parts[0] === 'listen' && parts[1]) return <Listen key={parts[1]} id={decodeURIComponent(parts[1])} />
   if (parts[0] === 'show' && parts[1]) return <ShowPage name={decodeURIComponent(parts[1])} />
-  if (parts[0] === 'stremio' && parts[2]) return <StremioDetail key={r} type={parts[1]} id={decodeURIComponent(parts[2])} videoId={qs.get('v') ?? undefined} />
-  if (parts[0] === 'stremio') return <Stremio />
   if (parts[0] === 'servers') return <Servers />
   if (parts[0] === 'settings') return <Settings />
   if (parts[0] === 'pair') return <PairPage k={qs.get('k')} />
@@ -56,10 +70,17 @@ export function App() {
     document.documentElement.dataset.theme = theme === 'system' ? '' : theme
   }, [theme])
 
+  const look = settings.value.look
+  const lookTheme = themes.value.find((t) => t.id === look)
+  useEffect(() => {
+    try { applyTheme(lookTheme ?? null) } catch { applyTheme(null) }
+  }, [lookTheme])
+
   useEffect(() => {
     installSpatialNav(() => !!nowPlaying.value)
-    Promise.all([reloadItems(), loadProgress()]).then(startSyncBinding).catch(() => {}).then(startShare)
-    loadStremio()
+    // Plugins load first so the one-time Stremio move can see them, then progress loads already moved.
+    startPlugins().then(() => migrateStremio()).catch(() => {})
+      .finally(() => { Promise.all([reloadItems(), loadProgress()]).then(startSyncBinding).catch(() => {}).then(startShare) })
     resumeDownloads().catch(() => {})
     startOffline()
     addEventListener('flick:db-stale', () => notify('Flick was updated in another tab. Reload this tab to keep going.', 15000))
@@ -116,6 +137,22 @@ export function App() {
             <Icon name={n.icon} size={20} /><span>{n.label}</span>
           </a>
         ))}
+        {/* A phone bar holds five items: with more than one source, one Sources item stands in for them. */}
+        {sources.value.length > 1 && (
+          <a href="#/sources" class={`nav-item phone-only ${current === '/sources' || current === '/p' ? 'on' : ''}`} aria-current={current === '/sources' ? 'page' : undefined}
+            onClick={(e) => { e.preventDefault(); go('/sources') }}>
+            <Icon name="plug" size={20} /><span>Sources</span>
+          </a>
+        )}
+        {sources.value.map((p) => {
+          const path = `/p/${encodeURIComponent(p.id)}`
+          const on = route.value.split('?')[0] === path || route.value.startsWith(path + '/')
+          return (
+            <a href={`#${path}`} class={`nav-item ${sources.value.length > 1 ? 'phone-hide' : ''} ${on ? 'on' : ''}`} aria-current={on ? 'page' : undefined} onClick={(e) => { e.preventDefault(); go(path) }}>
+              <PluginIcon rec={p} size={20} /><span>{p.manifest.name}</span>
+            </a>
+          )
+        })}
       </nav>
       <main class="main" id="main">
         <View />

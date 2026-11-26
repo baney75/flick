@@ -71,6 +71,8 @@ export interface Plugin {
   settings?: Field[]
   actions?: Action[]
   catalogs: Catalog[]
+  /** Optional: the current catalog rows, when they depend on the user (their addons, their account). */
+  userCatalogs?(ctx: Ctx): Promise<Catalog[]>
   catalog(ctx: Ctx, args: { id: string; type: MetaType; search?: string; skip?: number }): Promise<{ items: Meta[]; more?: boolean } | Meta[]>
   meta(ctx: Ctx, args: { type: MetaType; id: string }): Promise<Meta>
   streams(ctx: Ctx, args: { type: MetaType; id: string; videoId: string }): Promise<Stream[]>

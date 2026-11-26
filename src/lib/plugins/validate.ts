@@ -29,7 +29,7 @@ export interface PluginManifest {
   actions: ActionDef[]
   catalogs: CatalogDef[]
   /** Optional functions the plugin has. */
-  has: { library: boolean; action: boolean; progress: boolean }
+  has: { library: boolean; action: boolean; progress: boolean; subtitles: boolean; userCatalogs: boolean }
 }
 export interface Video { id: string; title: string; season?: number; episode?: number; released?: string; thumbnail?: string; overview?: string }
 export interface Meta {
@@ -123,14 +123,7 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
   const platforms = (x.platforms === undefined ? [...PLATFORMS] : list(x.platforms, 'platforms')) as string[]
   for (const p of platforms) if (!(PLATFORMS as readonly string[]).includes(p)) fail(`Unknown platform "${p}".`)
   for (const f of ['catalog', 'meta', 'streams']) if (!fns.includes(f)) fail(`The plugin needs a ${f}() function.`)
-  const catalogs = list(x.catalogs, 'catalogs', 50).map((c): CatalogDef => {
-    if (!isObj(c)) return fail('Each catalog must be an object.')
-    const type = c.type as MetaType
-    if (!TYPES.includes(type)) fail(`Catalog type "${String(c.type)}" is not one of ${TYPES.join(', ')}.`)
-    const out: CatalogDef = { id: str(c.id, 'A catalog id', true, 128), name: str(c.name, 'A catalog name', true, 200), type }
-    if (c.search === true) out.search = true
-    return out
-  })
+  const catalogs = validateCatalogDefs(x.catalogs)
   if (!catalogs.length) fail('The plugin needs at least one catalog.')
   const settings = list(x.settings, 'settings', 50).map((f) => field(f, 'setting'))
   const actions = list(x.actions, 'actions', 20).map((a): ActionDef => {
@@ -151,11 +144,23 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
     settings,
     actions,
     catalogs,
-    has: { library: fns.includes('library'), action: fns.includes('action'), progress: fns.includes('progress') },
+    has: { library: fns.includes('library'), action: fns.includes('action'), progress: fns.includes('progress'), subtitles: fns.includes('subtitles'), userCatalogs: fns.includes('userCatalogs') },
   }
   const icon = imgUrl(x.icon)
   if (icon) m.icon = icon
   return m
+}
+
+/** The catalog list, from the manifest or from userCatalogs() for sources whose rows depend on the user. */
+export function validateCatalogDefs(x: unknown): CatalogDef[] {
+  return list(x, 'catalogs', 50).map((c): CatalogDef => {
+    if (!isObj(c)) return fail('Each catalog must be an object.')
+    const type = c.type as MetaType
+    if (!TYPES.includes(type)) fail(`Catalog type "${String(c.type)}" is not one of ${TYPES.join(', ')}.`)
+    const out: CatalogDef = { id: str(c.id, 'A catalog id', true, 1000), name: str(c.name, 'A catalog name', true, 200), type }
+    if (c.search === true) out.search = true
+    return out
+  })
 }
 
 /** Permissions the new manifest asks for that the installed one did not have. Empty means a quiet update. */

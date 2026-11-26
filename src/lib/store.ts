@@ -2,11 +2,8 @@
 
 import { signal, computed } from '@preact/signals'
 import * as db from './db'
-import { announce } from './sync/bus'
 import type { Item, Source } from './library'
 import { allItems, makeThumb, hasThumb, saveItems, localEpub, KODI_IMG } from './library'
-import type { Addon, LibraryItem } from './stremio'
-import { CINEMETA, OPENSUBS, accountAddons, accountLibrary, fetchManifest } from './stremio'
 
 // ---------- routing ----------
 export const route = signal(location.hash.slice(1) || '/')
@@ -25,8 +22,9 @@ export function notify(text: string, ms = 3200) {
 }
 
 // ---------- settings ----------
-export interface Settings { autoplayNext: boolean; speed: number; volume: number; skipSeconds: number; theme: 'system' | 'dark' | 'light'; removeWatched: boolean }
-const defaults: Settings = { autoplayNext: true, speed: 1, volume: 1, skipSeconds: 10, theme: 'system', removeWatched: false }
+/** theme is light or dark mode; look is an installed theme's id, or '' for Flick's own colors. */
+export interface Settings { autoplayNext: boolean; speed: number; volume: number; skipSeconds: number; theme: 'system' | 'dark' | 'light'; look: string; removeWatched: boolean }
+const defaults: Settings = { autoplayNext: true, speed: 1, volume: 1, skipSeconds: 10, theme: 'system', look: '', removeWatched: false }
 function loadSettings(): Settings {
   try { return { ...defaults, ...JSON.parse(localStorage.getItem('flick.settings') || '{}') } } catch { return defaults }
 }
@@ -95,7 +93,7 @@ function pump() {
 // ---------- watch progress ----------
 export type Ref =
   | { t: 'item'; id: string }
-  | { t: 'stremio'; type: string; id: string; videoId: string }
+  | { t: 'plugin'; p: string; type: string; id: string; videoId: string }
   | { t: 'url'; url: string }
 
 export interface Progress {
@@ -149,6 +147,8 @@ export interface PlayRequest {
   startAt?: number
   ref: Ref
   next?: () => PlayRequest | null
+  /** Called with the position each time the player saves it (a plugin syncs it back). */
+  onSave?: (pos: number, dur: number) => void
 }
 
 export const nowPlaying = signal<PlayRequest | null>(null)
@@ -185,45 +185,4 @@ export function playItem(i: Item) {
   if (i.kind === 'book') return go(`/read/${encodeURIComponent(i.id)}`)
   if (i.kind === 'audiobook') return go(`/listen/${encodeURIComponent(i.id)}`)
   play(itemRequest(i))
-}
-
-// ---------- Stremio ----------
-export interface StremioState { authKey: string | null; email: string | null; addons: Addon[]; library: LibraryItem[]; ready: boolean }
-export const stremio = signal<StremioState>({ authKey: null, email: null, addons: [], library: [], ready: false })
-
-export async function loadStremio() {
-  const saved = await db.get<{ authKey: string | null; email: string | null; extra: string[] }>('kv', 'stremio')
-  const authKey = saved?.authKey ?? null
-  let addons: Addon[] = []
-  let library: LibraryItem[] = []
-  try {
-    addons = authKey ? await accountAddons(authKey) : []
-    if (authKey) library = await accountLibrary(authKey)
-  } catch (e) {
-    notify(`Stremio: ${(e as Error).message}`)
-  }
-  if (!addons.length) {
-    addons = await Promise.all([CINEMETA, OPENSUBS].map((u) => fetchManifest(u).catch(() => null))).then((a) => a.filter(Boolean) as Addon[])
-  }
-  for (const url of saved?.extra ?? []) {
-    if (addons.some((a) => a.transportUrl === url)) continue
-    const a = await fetchManifest(url).catch(() => null)
-    if (a) addons.push(a)
-  }
-  stremio.value = { authKey, email: saved?.email ?? null, addons, library, ready: true }
-}
-
-export async function saveStremio(patch: { authKey?: string | null; email?: string | null; extra?: string[] }) {
-  const saved = (await db.get<{ authKey: string | null; email: string | null; extra: string[] }>('kv', 'stremio')) ?? { authKey: null, email: null, extra: [] }
-  await db.put('kv', 'stremio', { ...saved, ...patch })
-  if (patch.extra) announce('addons')
-}
-
-export async function stremioExtra(): Promise<string[]> {
-  return ((await db.get<{ extra: string[] }>('kv', 'stremio'))?.extra) ?? []
-}
-
-export function openStremioRef(r: { type: string; id: string; videoId: string }) {
-  const v = r.videoId && r.videoId !== r.id ? `?v=${encodeURIComponent(r.videoId)}` : ''
-  go(`/stremio/${r.type}/${encodeURIComponent(r.id)}${v}`)
 }

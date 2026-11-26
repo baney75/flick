@@ -3,6 +3,7 @@
 
 import { signal } from '@preact/signals'
 import * as db from '../db'
+import { announce } from '../sync/bus'
 import * as V from './validate'
 import { inspect as sandboxInspect, registerHosts, sha256, stopPlugin, pushSettings, type Installed } from './runtime'
 
@@ -58,6 +59,22 @@ export function officialList(): Promise<OfficialEntry[]> {
   official ??= fetch(OFFICIAL_INDEX).then((r) => r.json()).then((j) => (Array.isArray(j?.plugins) ? j.plugins : [])).catch(() => { official = null; return [] })
   return official
 }
+/**
+ * A plugin address as it travels to another device, by sync or a setup link: a bundled plugin by its
+ * /plugins/ path (each device serves its own copy), anything else only as https. Null when another
+ * device could not use it (a localhost or app-only address).
+ */
+export function portable(url: string): string | null {
+  const bundled = /^\/plugins\/[\w.-]+$/
+  if (bundled.test(url)) return url
+  const a = absolute(url)
+  try {
+    const u = new URL(a)
+    if (typeof location !== 'undefined' && u.origin === location.origin && bundled.test(u.pathname)) return u.pathname
+  } catch { return null }
+  return /^https:\/\//i.test(a) ? a : null
+}
+
 export function absolute(url: string): string {
   try { return new URL(url, typeof location === 'undefined' ? 'https://flick-player.pages.dev' : location.href).href } catch { return url }
 }
@@ -91,6 +108,7 @@ export async function prepare(src: { url?: string; text?: string }, deps: Deps =
 async function save(rec: Installed) {
   await db.put('plugins', rec.id, rec)
   installed.value = [...installed.value.filter((p) => p.id !== rec.id), rec].sort((a, b) => a.manifest.name.localeCompare(b.manifest.name))
+  announce('plugins')
 }
 
 export async function install(c: Candidate, settings?: Record<string, unknown>): Promise<Installed> {
@@ -143,6 +161,7 @@ export async function remove(id: string) {
   await db.del('plugins', id)
   await db.del('pluginData', id)
   installed.value = installed.value.filter((p) => p.id !== id)
+  announce('plugins')
   if (rec) await registerHosts({ ...rec, enabled: false }).catch(() => {})
 }
 

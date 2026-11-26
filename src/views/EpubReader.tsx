@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from 'preact/hooks'
 import { saveProgress, go, thumbTick, type Progress } from '../lib/store'
 import * as db from '../lib/db'
 import { resolve, hasThumb, type Item } from '../lib/library'
-import { openEpub, chapterPage, coverBlob, toPos, fromPos, type Book } from '../lib/epub'
+import { openEpub, chapterPage, coverBlob, toPos, fromPos, type Book, type PageColor } from '../lib/epub'
+import { PAGE_COLORS, savedColor, saveColor, chapterLeft } from '../lib/pagecolor'
 import { Icon } from '../components/icons'
 
 const pref = (k: string, d: string) => { try { return localStorage.getItem(k) ?? d } catch { return d } }
@@ -18,7 +19,7 @@ export function EpubReader({ it }: { it: Item }) {
   const [pos, setPos] = useState({ page: 0, pages: 1 })
   const [doc, setDoc] = useState('')
   const [size, setSize] = useState(() => Number(pref('flick.reader.size', '100')))
-  const [night, setNight] = useState(() => pref('flick.reader.night', '0') === '1')
+  const [color, setColor] = useState<PageColor>(savedColor)
   const [toc, setToc] = useState(false)
   const frame = useRef<HTMLIFrameElement>(null)
   // Each layout gets a number the frame echoes back, so a frame that is being replaced can't move the place.
@@ -51,9 +52,9 @@ export function EpubReader({ it }: { it: Item }) {
     if (!book) return
     let live = true
     const g = ++gen.current
-    chapterPage(book, at.chapter, { start: at.start, size, night, gen: g }).then((h) => live && setDoc(h), (e) => live && setErr((e as Error).message))
+    chapterPage(book, at.chapter, { start: at.start, size, color, gen: g }).then((h) => live && setDoc(h), (e) => live && setErr((e as Error).message))
     return () => { live = false }
-  }, [book, at, size, night])
+  }, [book, at, size, color])
 
   const leave = () => (history.length > 1 ? history.back() : go('/library'))
   const turn = (d: number) => frame.current?.contentWindow?.postMessage({ t: 'turn', d }, '*')
@@ -96,11 +97,11 @@ export function EpubReader({ it }: { it: Item }) {
   }, [book, at, toc])
 
   const resize = (d: number) => { const s = Math.min(200, Math.max(70, size + d)); setSize(s); setPref('flick.reader.size', String(s)); setAt({ ...at, start: pos.page / pos.pages }) }
-  const toggleNight = () => { setNight(!night); setPref('flick.reader.night', night ? '0' : '1'); setAt({ ...at, start: pos.page / pos.pages }) }
+  const recolor = (c: PageColor) => { setColor(c); saveColor(c); setAt({ ...at, start: pos.page / pos.pages }) }
   const chapterName = book && [...book.toc].reverse().find((t) => t.path === book.spine[at.chapter])?.label
 
   return (
-    <div class={`reader epub ${night ? 'night' : ''}`}>
+    <div class={`reader epub ${color}`}>
       <header class="reader-bar">
         <button class="btn ghost sm" onClick={leave} aria-label="Back"><Icon name="left" size={18} /></button>
         <div class="reader-title"><div class="t1">{it.title}</div><div class="t2">{chapterName ?? it.author}</div></div>
@@ -108,7 +109,7 @@ export function EpubReader({ it }: { it: Item }) {
         {book && book.toc.length > 0 && <button class="btn ghost sm" onClick={() => setToc(!toc)} aria-expanded={toc}>Contents</button>}
         <button class="btn ghost sm" onClick={() => resize(-10)} aria-label="Smaller text">A-</button>
         <button class="btn ghost sm" onClick={() => resize(10)} aria-label="Larger text">A+</button>
-        <button class="btn ghost sm" onClick={toggleNight} aria-pressed={night} title="Night reading">{night ? 'Day' : 'Night'}</button>
+        <ColorPicker color={color} onPick={recolor} />
       </header>
       <div class="reader-stage">
         {err ? (
@@ -126,6 +127,18 @@ export function EpubReader({ it }: { it: Item }) {
           </nav>
         )}
       </div>
+      {book && <footer class="chapter-left">{chapterLeft(pos.page, pos.pages)}</footer>}
+    </div>
+  )
+}
+
+/** Day, Paper and Night as one small segmented control. */
+export function ColorPicker({ color, onPick }: { color: PageColor; onPick: (c: PageColor) => void }) {
+  return (
+    <div class="page-colors" role="radiogroup" aria-label="Page color">
+      {PAGE_COLORS.map((c) => (
+        <button role="radio" aria-checked={color === c.id} class={`swatch-btn ${c.id} ${color === c.id ? 'on' : ''}`} title={c.label} aria-label={c.label} onClick={() => onPick(c.id)}>Aa</button>
+      ))}
     </div>
   )
 }

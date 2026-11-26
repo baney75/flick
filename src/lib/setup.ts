@@ -1,19 +1,21 @@
 // Setup links: one payload that adds addons, servers, folders and settings after the user taps Connect.
 // Link form: https://flick-player.pages.dev/#/setup?c=<base64url(JSON)>
 
-import { settings, setSettings, stremioExtra, saveStremio, loadStremio, reloadItems, type Settings } from './store'
-import { CINEMETA, OPENSUBS, fetchManifest, normalizeAddonUrl } from './stremio'
+import { settings, setSettings, reloadItems, type Settings } from './store'
 import { getServers, saveServer, syncServer, plexManual, flickConnect, type Server } from './servers'
 import { isDesktop } from './platform'
 import { addFolderPath } from './actions'
+import { installed, install, setPluginSettings, portable, type Candidate } from './plugins/registry'
+import { STREMIO_ID, STREMIO_URL } from './plugins/migrate'
 
 export const SETUP_BASE = 'https://flick-player.pages.dev/#/setup?c='
 const MAX_ADDONS = 50
 const MAX_SERVERS = 20
 const MAX_FOLDERS = 50
+const MAX_PLUGINS = 20
 
 export interface SetupServer { type: 'jellyfin' | 'plex' | 'flick'; name?: string; url: string; token: string; userId?: string }
-export interface Setup { v: 1; stremioAddons?: string[]; servers?: SetupServer[]; folders?: string[]; settings?: Partial<Settings> }
+export interface Setup { v: 1; stremioAddons?: string[]; plugins?: string[]; servers?: SetupServer[]; folders?: string[]; settings?: Partial<Settings> }
 export interface SetupResult { label: string; ok: boolean; detail?: string }
 
 function bytesToB64url(bytes: Uint8Array): string {
@@ -38,6 +40,13 @@ export function decodeSetup(str: string): Setup {
   let obj: unknown
   try { obj = JSON.parse(json) } catch { throw new Error('This setup link is damaged: it is not valid JSON.') }
   return validateSetup(obj)
+}
+
+export function normalizeAddonUrl(input: string): string {
+  let u = input.trim()
+  if (u.startsWith('stremio://')) u = 'https://' + u.slice('stremio://'.length)
+  if (!/\/manifest\.json(\?.*)?$/.test(u)) u = u.replace(/\/$/, '') + '/manifest.json'
+  return u
 }
 
 function isHttp(u: string): boolean {
@@ -69,6 +78,15 @@ export function validateSetup(obj: unknown): Setup {
       const u = normalizeAddonUrl(a)
       if (!isHttp(u)) throw new Error(`Addon address must start with http or https: ${a}`)
       return u
+    })
+  }
+
+  const plugins = strList(obj.plugins, 'Plugins', MAX_PLUGINS)
+  if (plugins) {
+    out.plugins = plugins.map((u) => {
+      const url = u.trim()
+      if (!/^https:\/\//i.test(url) && !/^\/plugins\/[\w.-]+$/.test(url)) throw new Error(`Plugin address must start with https: ${u}`)
+      return url
     })
   }
 
@@ -130,24 +148,32 @@ async function toServer(s: SetupServer): Promise<Server> {
   return { id: `jf-${info.Id}`, type: 'jellyfin', name: s.name ?? info.ServerName ?? 'Jellyfin', url: s.url, token: s.token, userId: s.userId }
 }
 
-/** Apply a validated setup. Each item succeeds or fails on its own. */
-export async function applySetup(p: Setup): Promise<SetupResult[]> {
+/** Apply a validated setup. Each item succeeds or fails on its own. A plugin installs only as the review showed it. */
+export async function applySetup(p: Setup, reviewed: Record<string, Candidate> = {}): Promise<SetupResult[]> {
   const out: SetupResult[] = []
-  if (p.stremioAddons?.length) {
-    const added: string[] = []
-    for (const u of p.stremioAddons) {
-      try {
-        const a = await fetchManifest(u)
-        added.push(u)
-        out.push({ label: `Stremio addon: ${a.manifest.name}`, ok: true })
-      } catch (e) {
-        out.push({ label: `Stremio addon at ${u}`, ok: false, detail: (e as Error).message })
-      }
+  for (const u of p.plugins ?? []) {
+    const c = reviewed[u]
+    if (!c) { out.push({ label: `Plugin at ${u}`, ok: false, detail: 'It could not be read for the review, so it was not installed.' }); continue }
+    try {
+      const rec = await install(c)
+      out.push({ label: `Plugin: ${rec.manifest.name} ${rec.manifest.version}`, ok: true })
+    } catch (e) {
+      out.push({ label: `Plugin at ${u}`, ok: false, detail: (e as Error).message })
     }
-    const extra = await stremioExtra()
-    const next = [...extra, ...added.filter((u) => !extra.includes(u))]
-    if (next.length !== extra.length) await saveStremio({ extra: next })
-    await loadStremio()
+  }
+  // Older links carry Stremio addons; they now go into the Stremio plugin's addon list.
+  if (p.stremioAddons?.length) {
+    const label = `Stremio plugin with ${p.stremioAddons.length} addon${p.stremioAddons.length > 1 ? 's' : ''}`
+    try {
+      const have0 = installed.value.find((x) => x.id === STREMIO_ID)
+      if (!have0 && !reviewed[STREMIO_URL]) throw new Error('The Stremio plugin could not be read for the review, so it was not installed.')
+      const rec = have0 ?? (await install(reviewed[STREMIO_URL]))
+      const have = Array.isArray(rec.settings.addons) ? (rec.settings.addons as string[]) : []
+      await setPluginSettings(rec.id, { addons: [...new Set([...have, ...p.stremioAddons])] })
+      out.push({ label, ok: true })
+    } catch (e) {
+      out.push({ label, ok: false, detail: (e as Error).message })
+    }
   }
   for (const s of p.servers ?? []) {
     const label = `${s.type === 'plex' ? 'Plex' : s.type === 'flick' ? 'Flick' : 'Jellyfin'} server at ${s.url}`
@@ -178,15 +204,16 @@ export async function applySetup(p: Setup): Promise<SetupResult[]> {
   return out
 }
 
-/** A setup from this device: added addons, servers and settings. Folders stay local. */
-export async function currentSetup(addonUrls: string[]): Promise<Setup> {
-  const defaults = [CINEMETA, OPENSUBS]
-  const extra = await stremioExtra()
-  const urls = [...new Set([...addonUrls, ...extra])].filter((u) => !defaults.includes(u) && isHttp(u)).slice(0, MAX_ADDONS)
+/** A setup from this device: plugins, Stremio addons, servers and settings. Folders stay local. */
+export async function currentSetup(): Promise<Setup> {
+  const st = installed.value.find((x) => x.id === STREMIO_ID)?.settings.addons
+  const urls = (Array.isArray(st) ? (st as string[]) : []).filter(isHttp).slice(0, MAX_ADDONS)
   // Setup files do not carry Kodi yet.
   const servers = (await getServers()).filter((s): s is Server & { type: SetupServer['type'] } => s.type !== 'kodi').slice(0, MAX_SERVERS).map(({ type, name, url, token, userId }) => (userId ? { type, name, url, token, userId } : { type, name, url, token }))
   const out: Setup = { v: 1, settings: { ...settings.value } }
   if (urls.length) out.stremioAddons = urls
+  const plugins = installed.value.flatMap((x) => (x.url ? [portable(x.url)] : [])).filter((u): u is string => !!u).slice(0, MAX_PLUGINS)
+  if (plugins.length) out.plugins = plugins
   if (servers.length) out.servers = servers
   return out
 }

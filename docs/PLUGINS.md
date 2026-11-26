@@ -24,11 +24,17 @@ as a single JavaScript file with no build step.
 - Plugins that ship with Flick live at `/plugins/<name>.js` (from `plugins/<name>/plugin.js` in the
   repo) and themes at `/plugins/<name>.json`. The official list, `/plugins/index.json`, is
   `{ "api": 1, "plugins": [{ "url", "name", "kind": "source" | "theme", "description" }] }`.
-- The list of installed plugins and their non-secret settings sync between paired devices. Fields
-  marked `secret` (passwords, tokens) never leave the device.
+- The list of installed plugins and their non-secret settings sync between paired devices, along with
+  on or off and the chosen theme. Plugins installed from a file stay on that device. Fields
+  marked `secret` (passwords, tokens) never leave the device. Another device installs a synced
+  plugin only when its code is what was reviewed, or asks for no host or tool beyond it; otherwise
+  it says so and waits for the user to add it there and review it.
 - Flick never installs a source on the user's behalf. One exception: on upgrade, a user who already
-  used the built-in Stremio section (signed in, or added addons) gets the Stremio plugin installed
-  with their data moved over, so nothing they had disappears.
+  used the built-in Stremio section (signed in, added addons, watched something from it, or synced
+  addons from another device) gets the Stremio plugin installed on first launch, with the sign-in key
+  and addons moved into the plugin and that progress pointed at it, so nothing they had disappears.
+  Everyone else gets no Stremio. Old setup links with `stremioAddons` show the Stremio plugin in the
+  review and install it only on Connect all.
 
 ## Sandbox
 
@@ -74,6 +80,8 @@ export default {
   ],
 
   async catalog(ctx, { id, type, search, skip }) { return { items: [/* Meta */], more: true } },
+  // optional: rows that depend on the user (their addons, their account); shown after `catalogs`
+  async userCatalogs(ctx) { return [/* { id, name, type } */] },
   async meta(ctx, { type, id }) { return { /* Meta with videos */ } },
   async streams(ctx, { type, id, videoId }) { return [/* Stream */] },
   // optional:
@@ -151,6 +159,9 @@ values go only to that one `action()` call and are not saved; keep what you need
   "font": "Inter"
 }
 ```
+
+Install a theme like a plugin, then pick it in Settings > Appearance > Colors. Light and dark still
+follow Settings > Appearance > Mode.
 
 Only the listed tokens, `radius` (0 to 24) and `font` are read. Colors must be `#rgb`, `#rrggbb` or
 `#rrggbbaa`. `font` is a family name (letters, digits, spaces, `-`, `_`). Flick does not download

@@ -167,7 +167,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     setError(msg)
   }
 
-  // ---- remote subtitles (Stremio, servers): fetch and convert to VTT ----
+  // ---- remote subtitles (plugins, servers): fetch and convert to VTT ----
   useEffect(() => {
     if (!req.subs?.length) return
     let cancelled = false
@@ -219,6 +219,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     const v = video.current
     if (!v || !v.duration || !isFinite(v.duration)) return
     saveProgress(req.key, { pos: v.currentTime, dur: v.duration, at: Date.now(), title: req.title, subtitle: req.subtitle, poster: req.poster, ref: req.ref })
+    req.onSave?.(v.currentTime, v.duration)
   }, [req])
   useEffect(() => () => save(), [save])
 

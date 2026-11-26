@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
-import { settings, setSettings, notify, items, stremio, go } from '../lib/store'
+import { settings, setSettings, notify, items, go } from '../lib/store'
 import { isDesktop, invoke } from '../lib/platform'
 import { formatBytes } from '../lib/parse'
 import { SyncPanel } from './Sync'
@@ -7,9 +7,10 @@ import { SharePanel } from './Share'
 import { Icon } from '../components/icons'
 import { downloads, removeDownload } from '../lib/downloads'
 import { currentSetup, encodeSetup, validateSetup, SETUP_BASE } from '../lib/setup'
+import { PluginsPanel, ThemePicker } from './Plugins'
 
 async function shareSetup() {
-  const link = SETUP_BASE + encodeSetup(await currentSetup(stremio.value.addons.map((a) => a.transportUrl)))
+  const link = SETUP_BASE + encodeSetup(await currentSetup())
   try {
     await navigator.clipboard.writeText(link)
     notify('Setup link copied. It holds your server tokens: send it only to people you trust.', 6000)
@@ -73,14 +74,17 @@ export function Settings() {
 
       <section class="panel">
         <h3>Appearance</h3>
-        <label>Theme
+        <label>Mode
           <select value={s.theme} onChange={(e) => setSettings({ theme: (e.target as HTMLSelectElement).value as 'system' })}>
             <option value="system">Match the system</option>
             <option value="dark">Dark</option>
             <option value="light">Light</option>
           </select>
         </label>
+        <ThemePicker />
       </section>
+
+      <PluginsPanel />
 
       {isDesktop && (
         <section class="panel">
@@ -95,7 +99,7 @@ export function Settings() {
 
       <section class="panel">
         <h3>Setup</h3>
-        <p class="dim small">Share your addons, servers and settings with one link, or import a setup file someone made for you. You review everything before it connects.</p>
+        <p class="dim small">Share your plugins, servers and settings with one link, or import a setup file someone made for you. You review everything before it connects.</p>
         <p class="err">The link contains your server tokens. Anyone who has it can use your servers, so send it only to people you trust.</p>
         <div class="row">
           <button class="btn" onClick={shareSetup}><Icon name="link" size={16} /> Share my setup</button>
@@ -112,7 +116,7 @@ export function Settings() {
 
       <section class="panel">
         <h3>Privacy</h3>
-        <p class="dim small">Your library, history and sign-in keys stay on this device. Flick has no account, no analytics and no ads. It only talks to the services you connect: Stremio and its addons, and your own servers. Sync goes through a relay that forwards sealed messages it cannot read and stores nothing.</p>
+        <p class="dim small">Your library, history and sign-in keys stay on this device. Flick has no account, no analytics and no ads. It only talks to the services you connect: the plugins you install and your own servers. Each plugin runs in a sandbox, away from your library and keys. Sync goes through a relay that forwards sealed messages it cannot read and stores nothing.</p>
       </section>
     </div>
   )

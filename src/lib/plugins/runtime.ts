@@ -159,6 +159,7 @@ function frameFor(rec: Installed): Promise<Frame> {
 
 const CHECKS: Record<string, (x: unknown) => unknown> = {
   catalog: V.validateCatalog,
+  userCatalogs: V.validateCatalogDefs,
   meta: V.validateMeta,
   streams: V.validateStreams,
   subtitles: V.validateSubs,
@@ -167,7 +168,7 @@ const CHECKS: Record<string, (x: unknown) => unknown> = {
   progress: () => null,
 }
 
-export interface Results { catalog: V.CatalogResult; meta: V.Meta; streams: V.Stream[]; subtitles: V.Sub[]; library: V.Meta[]; action: V.ActionResult; progress: null }
+export interface Results { userCatalogs: V.CatalogDef[]; catalog: V.CatalogResult; meta: V.Meta; streams: V.Stream[]; subtitles: V.Sub[]; library: V.Meta[]; action: V.ActionResult; progress: null }
 
 /** Call one plugin function and check what it returns. A bad result is dropped with a log line. */
 export async function callPlugin<K extends keyof Results>(rec: Installed, fn: K, args: unknown[]): Promise<Results[K]> {

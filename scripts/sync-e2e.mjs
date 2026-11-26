@@ -23,7 +23,8 @@ try {
   const browser = await chromium.launch({ channel: process.env.SMOKE_CHANNEL ?? 'chrome' })
   const open = async () => {
     const ctx = await browser.newContext({ permissions: ['clipboard-read', 'clipboard-write'] })
-    await ctx.addInitScript((r) => localStorage.setItem('flick.relay', r), `ws://127.0.0.1:${RELAY_PORT}`)
+    // Init scripts run in every frame; the plugin sandbox has no storage, as intended.
+    await ctx.addInitScript((r) => { if (window === top) localStorage.setItem('flick.relay', r) }, `ws://127.0.0.1:${RELAY_PORT}`)
     const page = await ctx.newPage()
     page.on('pageerror', (e) => fails.push(`page error: ${e.message}`))
     await page.goto(`${BASE}/#/settings`)
@@ -48,6 +49,11 @@ try {
   check(await until(async () => (await b.getByLabel('Skip buttons jump').inputValue()) === '30'), 'a setting changed on one device appears on the other')
   await b.getByLabel('Default speed').selectOption('1.5')
   check(await until(async () => (await a.getByLabel('Default speed').inputValue()) === '1.5'), 'and the other way')
+
+  // A plugin installed on one device shows up on the other, with its review done on the first.
+  await a.locator('.list-row', { hasText: 'Internet Archive' }).getByRole('button', { name: 'Install' }).click()
+  await a.getByRole('dialog').getByRole('button', { name: 'Install' }).click()
+  check(await until(() => b.locator('.nav-item', { hasText: 'Internet Archive' }).isVisible()), 'a plugin installed on one device appears on the other')
 
   // A device that was offline catches up when it reconnects.
   await b.reload()

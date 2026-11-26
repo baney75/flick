@@ -18,7 +18,7 @@ describe('plugin validation', () => {
     const m = V.validateManifest(manifest(), FNS)
     expect(m.platforms).toEqual(['web', 'desktop', 'mobile'])
     expect(m.tools).toEqual([])
-    expect(m.has).toEqual({ library: false, action: false, progress: false })
+    expect(m.has).toEqual({ library: false, action: false, progress: false, subtitles: false, userCatalogs: false })
   })
   it('refuses bad ids, hosts, tools, types, API versions and missing functions', () => {
     expect(() => V.validateManifest(manifest({ id: 'Films' }), FNS)).toThrow(/reverse-DNS/)

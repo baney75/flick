@@ -1,5 +1,5 @@
 // Headless smoke test: serves the built site, plays a real file, checks the keys,
-// subtitles, saved progress and the Stremio pages. Screenshots land in test-media/shots.
+// subtitles, saved progress, plugins (the Stremio plugin among them) and themes. Screenshots land in test-media/shots.
 import { chromium } from 'playwright'
 import { spawn, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
@@ -61,6 +61,40 @@ const flickFiles = {
   f6: { folder: 'Audiobooks', name: 'John Roe - Server Audiobook.m4b', kind: 'audio', ext: 'm4b', type: 'audio/mp4', body: readFileSync('test-media/audiobook/book.m4b') },
   c3: { folder: 'Books', name: 'John Roe - Server Epub (2022).epub', kind: 'book', ext: 'epub', type: 'application/epub+zip', body: serverEpub },
 }
+const SMOKE_PLUGIN = `
+const r = {}
+const t = async (k, f) => { try { await f(); r[k] = 1 } catch { /* blocked */ } }
+export default {
+  api: 1, id: 'org.smoke.films', name: 'Smoke Films', version: '1.0.0', author: 'Smoke',
+  hosts: ['127.0.0.1'],
+  catalogs: [{ id: 'all', name: 'Smoke catalog', type: 'movie' }, { id: 'sandbox', name: 'Sandbox report', type: 'movie' }, { id: 'find', name: 'Find', type: 'movie', search: true }],
+  async catalog(ctx, { id, search }) {
+    if (id === 'sandbox') {
+      await t('indexedDB', () => new Promise((ok, no) => { const q = indexedDB.open('flick'); q.onsuccess = ok; q.onerror = () => no(q.error) }))
+      await t('localStorage', () => localStorage.length)
+      await t('parent', () => parent.document.title)
+      const open = Object.keys(r)
+      return { items: [{ id: 'probe', type: 'movie', name: open.length ? 'sandbox open: ' + open.join(' ') : 'sandbox: sealed' }] }
+    }
+    const info = await (await ctx.fetch('$BASE/api/info')).json()
+    if (search && !'smoke clip'.includes(search.toLowerCase())) return { items: [] }
+    return { items: [{ id: 'clip', type: 'movie', name: 'Smoke Clip', year: '2024', description: 'From ' + info.name }] }
+  },
+  async meta(ctx, { id }) { return { id, type: 'movie', name: 'Smoke Clip', year: '2024', description: 'A test clip.' } },
+  async streams(ctx, { id }) {
+    await ctx.store.set('last', id)
+    return [
+      { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream SD 480p', quality: '480p' },
+      { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream 1080p HDR 1.2 GB', quality: '1080p' },
+      { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream 720p', quality: '720p' },
+    ]
+  },
+}`
+const SMOKE_THEME = {
+  flick: 'theme', api: 1, id: 'org.smoke.theme', name: 'Smoke Green', version: '1.0.0', author: 'Smoke',
+  light: { bg: '#f4f1ea', surface: '#ffffff', fg: '#1d2420', dim: '#5c675f', line: '#dcd6c8', accent: '#2f7a4f' },
+  dark: { bg: '#101512', surface: '#18201b', fg: '#eef2ec', dim: '#9aa79d', line: '#26302a', accent: '#2f7a4f' },
+}
 const flick = createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Headers', 'Authorization, Range')
@@ -70,6 +104,9 @@ const flick = createServer((req, res) => {
   const u = new URL(req.url, 'http://x')
   const json = (code, o) => res.writeHead(code, { 'content-type': 'application/json' }).end(JSON.stringify(o))
   if (u.pathname === '/api/info') return json(200, { app: 'flick-server', v: 1, name: 'Smoke NAS', version: '0.0.0' })
+  // A test source plugin and theme, installed through Settings > Plugins.
+  if (u.pathname === '/plugin.js') return res.writeHead(200, { 'content-type': 'text/javascript' }).end(SMOKE_PLUGIN.replaceAll('$BASE', `http://127.0.0.1:${flick.address().port}`))
+  if (u.pathname === '/theme.json') return json(200, SMOKE_THEME)
   if (req.headers.authorization !== `Bearer ${FLICK_CODE}` && u.searchParams.get('t') !== FLICK_CODE) return json(401, { error: 'wrong code' })
   if (u.pathname === '/api/library') {
     return json(200, { name: 'Smoke NAS', folders: ['Movies', 'Books'], items: Object.entries(flickFiles).map(([id, f]) => ({ id, folder: f.folder, path: f.path ?? f.name, name: f.name, kind: f.kind, ext: f.ext, size: f.body.length, mtime: 1732550400000 })) })
@@ -151,26 +188,6 @@ try {
   }))
   check(saved.length === 1 && saved[0].pos > 10, `progress saved (${saved[0]?.pos?.toFixed(1)}s)`)
 
-  // Stremio without an account: Cinemeta catalogs and a title page.
-  await page.goto(`${BASE}/#/stremio`)
-  const firstCard = page.locator('.row-section .card:not(.skeleton)').first()
-  await firstCard.waitFor({ timeout: 15000 })
-  check(await page.locator('.row-section').count() > 1, `Cinemeta catalogs load (${await page.locator('.row-section').count()} rows)`)
-  await page.screenshot({ path: 'test-media/shots/stremio.png' })
-  await firstCard.click()
-  await page.locator('.detail-info').waitFor({ timeout: 15000 })
-  await page.locator('.streams').waitFor()
-  check(true, 'title page opens with details and a streams section')
-  await page.waitForTimeout(1200)
-  await page.screenshot({ path: 'test-media/shots/detail.png' })
-
-  // Search.
-  await page.goto(`${BASE}/#/stremio`)
-  await page.getByLabel('Search Stremio').fill('interstellar')
-  await page.keyboard.press('Enter')
-  await page.getByText(/Interstellar/).first().waitFor({ timeout: 15000 })
-  check(true, 'Stremio search finds Interstellar')
-
   // Setup link: review first, apply only on Connect all.
   const setupCode = Buffer.from(JSON.stringify({ v: 1, settings: { skipSeconds: 30 } })).toString('base64url')
   await page.goto(`${BASE}/#/setup?c=${setupCode}`)
@@ -180,6 +197,13 @@ try {
   await page.getByText('Done').waitFor()
   check(await page.evaluate(() => JSON.parse(localStorage.getItem('flick.settings')).skipSeconds === 30), 'Connect all applies the setup')
   await page.screenshot({ path: 'test-media/shots/setup.png' })
+
+  // An older setup link with Stremio addons offers the Stremio plugin in the review, and installs nothing before the tap.
+  const oldCode = Buffer.from(JSON.stringify({ v: 1, stremioAddons: ['stremio://v3-cinemeta.strem.io/manifest.json'] })).toString('base64url')
+  await page.goto(`${BASE}/#/setup?c=${oldCode}`)
+  check(await page.getByText(/Plugin: Stremio .*reaches any public website, 127\.0\.0\.1$/).waitFor({ timeout: 15000 }).then(() => true, () => false)
+    && await page.getByText('Stremio addon in the Stremio plugin: https://v3-cinemeta.strem.io/manifest.json').isVisible(), 'old setup link with Stremio addons offers the Stremio plugin')
+  check(await page.evaluate(() => new Promise((res) => { const r = indexedDB.open('flick'); r.onsuccess = () => { const q = r.result.transaction('plugins').objectStore('plugins').count(); q.onsuccess = () => res(q.result === 0) } })), 'and installs nothing before the tap')
 
   // Sharing this library is a desktop feature: the website has no server to run.
   await page.goto(`${BASE}/#/settings`)
@@ -261,8 +285,9 @@ try {
   check(await epubCard.locator('img').waitFor({ timeout: 8000 }).then(() => true, () => false), 'EPUB cover shows as its poster')
   await epubCard.click()
   const pageNo = page.locator('.reader-page')
-  await pageNo.filter({ hasText: /^Page 1 of [2-9]/ }).waitFor({ timeout: 10000 })
-  check(true, `EPUB opens paged (${await pageNo.innerText()})`)
+  const paged = await pageNo.filter({ hasText: /^Page 1 of ([2-9]|\d\d+)/ }).waitFor({ timeout: 10000 }).then(() => true, () => false)
+  check(paged, `EPUB opens paged (${await pageNo.innerText().catch(() => 'no page number')})`)
+  if (!paged) throw new Error('the EPUB reader did not open')
   await page.keyboard.press('ArrowRight')
   check(await pageNo.filter({ hasText: /^Page 2 of/ }).waitFor({ timeout: 3000 }).then(() => true, () => false), 'arrow key turns the EPUB page')
   const frame = page.frameLocator('.epub-frame')
@@ -303,7 +328,7 @@ try {
   }
   for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight')
   await page.waitForTimeout(1500)
-  const landed = await page.locator('.reader-title .t2').innerText()
+  const landed = (await page.locator('.reader-title .t2').innerText()).split(' · ')[0]
   check(landed === 'Chapter Two', `quick turns past a chapter's end land in the next chapter (${landed})`)
   await page.getByRole('button', { name: 'Contents' }).click()
   await page.locator('.epub-toc').getByText('Chapter Two').click()
@@ -315,8 +340,26 @@ try {
   await page.getByRole('button', { name: 'Larger text' }).click()
   await page.getByRole('button', { name: 'Larger text' }).click()
   check(await page.waitForFunction((b) => { const t = document.querySelector('.reader-page')?.textContent; return t && t !== b }, before2, { timeout: 5000 }).then(() => true, () => false), 'larger text repaginates the chapter')
+  check(/\d+ pages? left in this chapter|Last page of this chapter/.test(await page.locator('.chapter-left').innerText().catch(() => '')), 'the reader shows pages left in the chapter')
   await page.emulateMedia({ colorScheme: 'light' })
-  await page.getByRole('button', { name: 'Night', exact: true }).click()
+  await page.getByRole('radio', { name: 'Paper', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('.epub-frame')?.srcdoc.includes('#f4ecd8'), null, { timeout: 5000 }).catch(() => {})
+  const paper = await page.evaluate(() => {
+    const [r, , b] = getComputedStyle(document.querySelector('.reader')).backgroundColor.match(/\d+/g).map(Number)
+    return { warm: r - b, frame: document.querySelector('.epub-frame')?.srcdoc.includes('#f4ecd8') }
+  })
+  check(paper.warm > 15 && paper.frame, `Paper gives the page and toolbar a warm sepia (red minus blue ${paper.warm})`)
+  await page.screenshot({ path: 'test-media/shots/epub-paper.png' })
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await page.getByRole('radio', { name: 'Day', exact: true }).click()
+  const dayBg = await page.evaluate(() => getComputedStyle(document.querySelector('.reader')).backgroundColor.match(/\d+/g).slice(0, 3).reduce((a, n) => a + Number(n), 0) / 3)
+  check(dayBg > 200, `Day keeps the toolbar light when the system is dark (bg ${Math.round(dayBg)})`)
+  await page.setViewportSize({ width: 390, height: 844 })
+  const left = await page.evaluate(() => { const e = document.querySelector('.chapter-left'); const r = e?.getBoundingClientRect(); return e ? { text: e.textContent, fits: r.height > 0 && r.right <= innerWidth && r.bottom <= innerHeight && [r.left + 2, r.right - 2].every((x) => document.elementFromPoint(x, r.top + r.height / 2)?.closest('.chapter-left') === e) } : null })
+  check(!!left?.fits && /left in this chapter|Last page/.test(left.text), `pages left in the chapter show whole on a phone (${left?.text})`)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.emulateMedia({ colorScheme: 'light' })
+  await page.getByRole('radio', { name: 'Night', exact: true }).click()
   const chrome = await page.evaluate(() => {
     const lum = (c) => { const [r, g, b] = c.match(/\d+/g).map(Number); return (r * 299 + g * 587 + b * 114) / 1000 }
     const r = document.querySelector('.reader'), t = document.querySelector('.reader-title .t1')
@@ -437,6 +480,80 @@ try {
   const appNet = await ownFetch('/plugin-host-app.html')
   check(webNet === 'reached' && appNet === 'blocked', `in the apps a plugin's own fetch is refused (app page ${appNet}, website page ${webNet})`)
 
+  // A source plugin from a URL: review first, then its page, a title page, a stream that plays.
+  await page.goto(`${BASE}/#/settings`)
+  const addForm = page.locator('form', { has: page.getByLabel('Plugin address') })
+  await page.getByLabel('Plugin address').fill(`${FLICK_URL}/plugin.js`)
+  await addForm.getByRole('button', { name: 'Add' }).click()
+  const sheet = page.getByRole('dialog')
+  await sheet.waitFor({ timeout: 15000 })
+  check(await sheet.getByText('Not from Flick').isVisible() && await sheet.getByText('127.0.0.1').first().isVisible(), 'review sheet shows the hosts and "Not from Flick"')
+  check(await sheet.locator('.web-hosts').isVisible(), 'on the website the review sheet says the host list is not enforced')
+  const count = () => page.evaluate(() => new Promise((res) => { const r = indexedDB.open('flick'); r.onsuccess = () => { const q = r.result.transaction('plugins').objectStore('plugins').count(); q.onsuccess = () => res(q.result) } }))
+  check(await count() === 0, 'nothing installs before the tap')
+  await sheet.getByRole('button', { name: 'Install' }).click()
+  await sheet.waitFor({ state: 'detached' })
+  check(await count() === 1, 'Install saves the plugin')
+  await page.locator('.nav-item', { hasText: 'Smoke Films' }).click()
+  check(await page.getByText('Smoke Clip').first().waitFor({ timeout: 15000 }).then(() => true, () => false), 'plugin page shows its catalog')
+  check(await page.getByText('sandbox: sealed').waitFor({ timeout: 15000 }).then(() => true, () => false), 'a plugin in the real runtime cannot reach Flick storage or the page')
+  await page.screenshot({ path: 'test-media/shots/plugin-page.png' })
+  await page.getByText('Smoke Clip').first().click()
+  await page.locator('.stream').first().waitFor({ timeout: 15000 })
+  check((await page.locator('.stream').first().innerText()).includes('Smoke stream'), 'plugin title page lists a stream')
+  const qs = await page.locator('.stream-q').allInnerTexts()
+  check(qs.length === 3 && /1080p/.test(qs[0]) && /SD/.test(qs[2]), `streams are grouped by quality, best first (${qs.join(' / ') || 'no groups'})`)
+  check(/Play 1080p/.test(await page.locator('.play-best').innerText().catch(() => '')), 'title page offers one Play for the best stream')
+  check(/HDR/.test(await page.locator('.stream').first().innerText()) && /1\.2 GB/.test(await page.locator('.stream').first().innerText()), 'a stream shows its HDR and size as tags')
+  await page.screenshot({ path: 'test-media/shots/plugin-title.png' })
+  await page.locator('.stream').first().click()
+  await page.locator('.player').waitFor()
+  check(await page.waitForFunction(() => { const v = document.querySelector('.player video'); return v && v.currentTime > 0.5 }, null, { timeout: 8000 }).then(() => true, () => false), 'a plugin stream plays in the player')
+  await page.keyboard.press('Escape')
+  await page.locator('.player').waitFor({ state: 'detached' })
+  await page.goto(`${BASE}/#/`)
+  await page.getByLabel('Search your plugins').fill('smoke')
+  await page.keyboard.press('Enter')
+  check(await page.locator('.row-section', { hasText: 'Smoke Films · Find' }).getByText('Smoke Clip').waitFor({ timeout: 15000 }).then(() => true, () => false), 'Home search finds titles in plugin catalogs')
+
+  // A theme changes Flick's colors.
+  await page.goto(`${BASE}/#/settings`)
+  const accent = () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())
+  const accent0 = await accent()
+  await page.getByLabel('Plugin address').fill(`${FLICK_URL}/theme.json`)
+  await addForm.getByRole('button', { name: 'Add' }).click()
+  await sheet.getByRole('button', { name: 'Install' }).click()
+  await page.getByLabel('Colors').selectOption('org.smoke.theme')
+  await page.waitForFunction(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() === '#2f7a4f', null, { timeout: 5000 }).catch(() => {})
+  check(accent0 !== "#2f7a4f" && await accent() === "#2f7a4f", `a theme sets --accent (${accent0} -> ${await accent()})`)
+  await page.screenshot({ path: 'test-media/shots/plugin-theme.png' })
+  await page.getByLabel('Colors').selectOption('')
+
+  // The Stremio plugin from Flick's list, without an account: Cinemeta rows, a title page, search.
+  await page.locator('.list-row', { hasText: 'Stremio' }).getByRole('button', { name: 'Install' }).click()
+  await sheet.waitFor({ timeout: 15000 })
+  check(!(await sheet.getByText('Not from Flick').isVisible()), 'the Stremio plugin reviews as from Flick')
+  await sheet.getByRole('button', { name: 'Install' }).click()
+  await sheet.waitFor({ state: 'detached' })
+  await page.locator('.nav-item', { hasText: 'Stremio' }).click()
+  const firstCard = page.locator('.row-section .card:not(.skeleton)').first()
+  await firstCard.waitFor({ timeout: 20000 })
+  check(await page.locator('.row-section').count() > 1, `Stremio plugin shows Cinemeta rows (${await page.locator('.row-section').count()} rows)`)
+  await page.screenshot({ path: 'test-media/shots/stremio.png' })
+  await firstCard.click()
+  await page.locator('.detail-info').waitFor({ timeout: 20000 })
+  check(true, 'Stremio plugin title page opens with details')
+  await page.waitForTimeout(1200)
+  await page.screenshot({ path: 'test-media/shots/detail.png' })
+  check(await page.evaluate(() => getComputedStyle(document.querySelector('.backdrop'), '::after').content !== 'none'), 'title page art has a scrim behind the text')
+  await page.goBack()
+  await page.getByLabel('Search Stremio').fill('interstellar')
+  await page.keyboard.press('Enter')
+  check(await page.getByText(/Interstellar/).first().waitFor({ timeout: 20000 }).then(() => true, () => false), 'Stremio plugin search finds Interstellar')
+  check(await page.locator('.result-grid .card').count() > 2, `plugin search shows results as a poster grid (${await page.locator('.result-grid .card').count()} in grids)`)
+  check(!(await page.locator('.nav-item', { hasText: 'Sources' }).isVisible()) && await page.locator('.nav-item', { hasText: 'Stremio' }).isVisible(), 'desktop sidebar lists each source, no Sources item')
+  const stremioPage = page.url()
+
   // Phone layout.
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(`${BASE}/#/library`)
@@ -451,9 +568,15 @@ try {
   const chipsWrap = await page.evaluate(() => { const c = [...document.querySelectorAll('.toolbar .chip')].map((e) => e.getBoundingClientRect().top); return new Set(c.map(Math.round)).size })
   check(chipsWrap === 1, `filter chips stay on one scrolling line (${chipsWrap} lines)`)
   await page.screenshot({ path: 'test-media/shots/phone-library.png' })
-  await page.goto(`${BASE}/#/stremio`)
-  await page.locator('.row-section .card:not(.skeleton)').first().waitFor({ timeout: 15000 })
+  await page.goto(stremioPage)
+  await page.locator('.row-section .card:not(.skeleton)').first().waitFor({ timeout: 20000 })
   await page.screenshot({ path: 'test-media/shots/phone-stremio.png' })
+  const bar = await page.locator('.sidebar .nav-item:visible').allInnerTexts()
+  check(bar.length <= 5 && bar.includes('Sources'), `phone bar holds at most 5 items, with Sources for 2 sources (${bar.join(', ')})`)
+  await page.locator('.nav-item', { hasText: 'Sources' }).click()
+  await page.locator('.source-tile').first().waitFor({ timeout: 5000 }).catch(() => {})
+  check(await page.locator('.source-tile').count() === 2, `Sources page shows a tile for each source (${await page.locator('.source-tile').count()})`)
+  await page.screenshot({ path: 'test-media/shots/phone-sources.png' })
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.join(' | ') : ''}`)
   await browser.close()
