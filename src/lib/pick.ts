@@ -153,7 +153,9 @@ function scoreOf(c: Candidate, rel: Release, prefs: Prefs, dev: Device, ctx: Pic
   const video = c.media === 'video'
   const target = LADDER[Math.max(LADDER.indexOf(prefs.maxQuality), LADDER.indexOf(dev.maxQuality))] as MaxQuality
   const bytes = c.sizeBytes ?? rel.bytes
-  const overBandwidth = (video || c.media === 'audio') && bytes && c.durSec && ctx.mbps
+  // Only what comes over the network; a file on this device plays at any bitrate.
+  const remote = c.place !== 'download' && c.place !== 'device'
+  const overBandwidth = (video || c.media === 'audio') && remote && bytes && c.durSec && ctx.mbps
     ? Number((bytes * 8) / c.durSec > ctx.mbps * 1e6 * 0.8) : 0
   const codec = rel.codec && rel.codec !== 'h264' && dev.codecs[rel.codec] === true ? 0 : 1
   const swarm = c.via === 'p2p' || c.via === 'debrid-fetch'
@@ -183,9 +185,10 @@ function stickyOf(list: Ranked[], ctx: PickCtx): Ranked | undefined {
   const ok = list.filter((r) => !r.blocked)
   const hand = ok.find((r) => r.c.id === ctx.picked)
   if (hand) return hand
-  const read = list.filter((r) => isText(r.c) && r.c.progressAt !== undefined)
+  // The newest progress on a copy that plays: a blocked copy's place is no use right now.
+  const read = ok.filter((r) => isText(r.c) && r.c.progressAt !== undefined)
     .sort((a, b) => b.c.progressAt! - a.c.progressAt!)[0]
-  if (read && !read.blocked) return read
+  if (read) return read
   return ok.find((r) => r.c.place === 'download')
 }
 

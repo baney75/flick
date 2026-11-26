@@ -54,6 +54,8 @@ describe('bandwidth', () => {
   const big = c('1080p 4.0 GB', { durSec: 7200 }), small = c('1080p 1.5 GB', { durSec: 7200 })
   it('a bitrate over 80% of the speed ranks after one that fits', () => expect(top([big, small], prefs(), dev(), ctx({ mbps: 5 }))).toBe(small.id))
   it('ignored with no speed known', () => expect(top([big, small])).toBe(big.id))
+  it('a big file on this device is never over the bandwidth', () =>
+    expect(top([c('srv 1080p 1.5 GB', { place: 'server', durSec: 7200 }), c('dev 1080p 4.0 GB', { place: 'device', durSec: 7200 })], prefs(), dev(), ctx({ mbps: 5 }))).toBe('dev 1080p 4.0 GB'))
 })
 
 describe('HDR', () => {
@@ -139,6 +141,11 @@ describe('stickiness', () => {
     const pl = c('pl', { media: 'audiobook', format: 'm4b', progressAt: 1000 })
     expect(top([pl, abs])).toBe('abs')
     expect(top([pl, c('abs2', { media: 'audiobook', place: 'server', format: 'mp3' })])).toBe('pl')
+  })
+  it('newest progress on a blocked copy falls back to the newest one that plays', () => {
+    const p2p = c('p2p', { media: 'audiobook', via: 'p2p', format: 'm4b', progressAt: 3000 })
+    const srv = c('srv', { media: 'audiobook', place: 'server', format: 'mp3', progressAt: 2000 })
+    expect(top([c('m4b', { media: 'audiobook', format: 'm4b' }), p2p, srv], prefs(), dev(), ctx({ gate: false }))).toBe('srv')
   })
 })
 
