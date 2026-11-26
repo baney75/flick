@@ -55,6 +55,7 @@ interface Entry { type: Title['type']; name: string; year?: number; srcs: Src[];
  * Groups movies, shows and plugin library items into titles. Two entries are one title when the
  * type and normalized name match and the years match. An entry with no year joins the one dated
  * title of that name; with two or more dated ones it would be a guess, so it stays its own card.
+ * Two items from the same plugin library are never one title (a 1978 and a 2004 series of one name).
  */
 export function buildTitles(movies: Item[], shows: Map<string, Item[]>, libs: PluginLib[], saved: (id: string) => boolean): Title[] {
   const entries: Entry[] = []
@@ -65,13 +66,16 @@ export function buildTitles(movies: Item[], shows: Map<string, Item[]>, libs: Pl
   for (const eps of shows.values()) {
     entries.push({ type: 'show', name: eps[0].show!, srcs: [{ t: 'show', name: eps[0].show!, eps }], addedAt: Math.max(...eps.map((e) => e.addedAt)) })
   }
+  // A plugin says nothing about when a title was added, so plugin titles sort after dated ones.
   for (const { p, pname, list } of libs) for (const m of list) {
     const type = m.type === 'movie' ? 'movie' : m.type === 'series' ? 'show' : 'other'
-    entries.push({ type, name: m.name, year: type === 'movie' ? yearOf(m.year) : undefined, srcs: [{ t: 'plugin', p, pname, m }], addedAt: m.progress?.at ?? 0 })
+    entries.push({ type, name: m.name, year: type === 'movie' ? yearOf(m.year) : undefined, srcs: [{ t: 'plugin', p, pname, m }], addedAt: 0 })
   }
 
   const groups = new Map<string, Title[]>()
   const keyOf = (e: Entry) => `${e.type}|${e.type === 'other' ? srcKey(e.srcs[0]) : normTitle(e.name)}`
+  const pluginOf = (x: { srcs: Src[] }) => x.srcs.find((s) => s.t === 'plugin')?.p
+  const fits = (t: Title, e: Entry) => !pluginOf(e) || !t.srcs.some((s) => s.t === 'plugin' && s.p === pluginOf(e))
   const add = (e: Entry, into?: Title) => {
     if (into) {
       into.srcs.push(...e.srcs)
@@ -80,19 +84,23 @@ export function buildTitles(movies: Item[], shows: Map<string, Item[]>, libs: Pl
       return
     }
     const k = keyOf(e)
-    const t: Title = { key: `${k}|${e.year ?? ''}`, ...e, srcs: [...e.srcs] }
+    const t: Title = { key: '', ...e, srcs: [...e.srcs] }
     groups.set(k, [...(groups.get(k) ?? []), t])
   }
   // Dated entries first, so an undated one knows how many dated titles share its name.
   for (const e of entries.filter((x) => x.year !== undefined || x.type === 'show')) {
-    add(e, groups.get(keyOf(e))?.find((t) => e.type === 'show' || t.year === e.year))
+    add(e, groups.get(keyOf(e))?.find((t) => (e.type === 'show' || t.year === e.year) && fits(t, e)))
   }
   for (const e of entries.filter((x) => x.year === undefined && x.type !== 'show')) {
-    const same = groups.get(keyOf(e)) ?? []
+    const same = (groups.get(keyOf(e)) ?? []).filter((t) => fits(t, e))
     const dated = same.filter((t) => t.year !== undefined)
     add(e, e.type === 'other' ? undefined : dated.length === 1 ? dated[0] : same.find((t) => t.year === undefined))
   }
-  return [...groups.values()].flat()
+  // The key names the title's steadiest source, a library item before a plugin one, so a choice
+  // remembered under it holds whichever library finished loading first.
+  const all = [...groups.values()].flat()
+  for (const t of all) t.key = srcKey([...t.srcs].sort((a, b) => Number(a.t === 'plugin') - Number(b.t === 'plugin'))[0]).replace(/^dl:/, 'item:')
+  return all
 }
 
 /** Short names for a title's badge: "Jellyfin · Stremio". */
@@ -113,8 +121,8 @@ type Pos = { pos: number; dur: number; at: number }
 export function latestProgress(t: Title, prog: Record<string, Pos | undefined>, pluginProg: (p: string, m: Meta) => Pos | undefined): number | undefined {
   let best: Pos | undefined
   for (const s of t.srcs) {
-    const p = s.t === 'item' ? prog[s.it.id] : s.t === 'plugin' ? pluginProg(s.p, s.m) ?? s.m.progress : undefined
-    if (p && p.dur && (!best || p.at > best.at)) best = p
+    const ps = s.t === 'item' ? [prog[s.it.id]] : s.t === 'show' ? s.eps.map((e) => prog[e.id]) : [pluginProg(s.p, s.m) ?? s.m.progress]
+    for (const p of ps) if (p && p.dur && (!best || p.at > best.at)) best = p
   }
   return best ? best.pos / best.dur : undefined
 }

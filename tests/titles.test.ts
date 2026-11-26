@@ -76,18 +76,48 @@ describe('one library', () => {
 })
 
 describe('the remembered pick', () => {
-  beforeEach(() => { try { localStorage.clear() } catch { /* no storage in this runner */ } })
+  beforeEach(() => {
+    // The node runner has no working localStorage; a Map stands in for the browser's.
+    const m = new Map<string, string>()
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => m.set(k, v) } })
+  })
   it('comes first next time', () => {
     const t = buildTitles([movie('Interstellar', 2014)], new Map(), stremio(meta('Interstellar', '2014')), none)[0]
     const pl = t.srcs.find((s) => s.t === 'plugin')!
     remember(t.key, srcKey(pl))
-    const picked = pickedFor(t.key)
-    if (typeof localStorage !== 'undefined') expect(picked).toBe(srcKey(pl))
-    expect(ranked(t.srcs, srcKey(pl))[0]).toBe(pl)
+    expect(pickedFor(t.key)).toBe(srcKey(pl))
+    expect(ranked(t.srcs, pickedFor(t.key))[0]).toBe(pl)
+  })
+  it('keeps its key whether or not the plugin library has loaded', () => {
+    const dune = movie('Dune')
+    const before = buildTitles([dune], new Map(), [], none)[0].key
+    const after = buildTitles([dune], new Map(), stremio(meta('Dune', '2021')), none)
+    expect(after).toHaveLength(1)
+    expect(after[0].key).toBe(before)
+  })
+})
+
+describe('plugin library titles', () => {
+  it('never merge two items from the same plugin', () => {
+    const t = buildTitles([], showMap(ep('Battlestar Galactica')), stremio(meta('Battlestar Galactica', '1978', 'series'), meta('Battlestar Galactica', '2004', 'series')), none)
+    expect(t).toHaveLength(2)
+    expect(t.map((x) => x.srcs.filter((s) => s.t === 'plugin').length)).toEqual([1, 1])
+  })
+  it('sort after dated library items under Recently added, whatever was watched last', () => {
+    const m = { ...meta('Arrival', '2016'), progress: { pos: 1, dur: 2, at: Date.now() } }
+    const t = buildTitles([movie('Heat', 1995)], new Map(), stremio(m), none)
+    expect(t.find((x) => x.name === 'Arrival')!.addedAt).toBe(0)
+    const srv = movie('Arrival', 2016)
+    expect(buildTitles([srv], new Map(), stremio(m), none)[0].addedAt).toBe(srv.addedAt)
   })
 })
 
 describe('progress on a merged card', () => {
+  it('counts a show\'s episodes', () => {
+    const e = ep('Fargo')
+    const t = buildTitles([], showMap(e), stremio({ ...meta('Fargo', '2014–', 'series'), progress: { pos: 10, dur: 100, at: 5 } }), none)[0]
+    expect(latestProgress(t, { [e.id]: { pos: 50, dur: 100, at: 9 } }, () => undefined)).toBe(0.5)
+  })
   it('comes from the source that saved last', () => {
     const it0 = movie('Interstellar', 2014)
     const m = { ...meta('Interstellar', '2014'), progress: { pos: 90, dur: 100, at: 50 } }
