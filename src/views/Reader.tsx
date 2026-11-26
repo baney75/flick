@@ -7,7 +7,9 @@ import * as db from '../lib/db'
 import { resolve, srcName, type Item } from '../lib/library'
 import { clampPage, ext } from '../lib/parse'
 import { Icon } from '../components/icons'
-import { EpubReader } from './EpubReader'
+import { EpubReader, ColorPicker } from './EpubReader'
+import { savedColor, saveColor } from '../lib/pagecolor'
+import type { PageColor } from '../lib/epub'
 
 type Pdf = import('pdfjs-dist').PDFDocumentProxy
 
@@ -55,7 +57,7 @@ function PdfReader({ id, link }: { id: string; link?: BookLink }) {
   // Bumped by Try again: after a reload, a folder needs a click before the browser lets Flick read it again.
   const [tries, setTries] = useState(0)
   const [page, setPage] = useState(1)
-  const [night, setNight] = useState(() => { try { return localStorage.getItem('flick.reader.night') === '1' } catch { return false } })
+  const [color, setColor] = useState<PageColor>(savedColor)
   const canvas = useRef<HTMLCanvasElement>(null)
   const [size, setSize] = useState({ w: 0, h: 0 })
 
@@ -137,16 +139,13 @@ function PdfReader({ id, link }: { id: string; link?: BookLink }) {
     return () => removeEventListener('keydown', k)
   }, [pdf])
 
-  const toggleNight = () => {
-    setNight(!night)
-    try { localStorage.setItem('flick.reader.night', night ? '0' : '1') } catch { /* private mode */ }
-  }
+  const recolor = (c: PageColor) => { setColor(c); saveColor(c) }
 
   if (!it && !loaded.value) return <div class="reader"><div class="reader-stage"><span class="spinner" aria-label="Opening" /></div></div>
   if (!it) return <div class="page"><p class="dim">This book is not in your library.</p><a href="#/library">Back to library</a></div>
 
   return (
-    <div class={`reader ${night ? 'night' : ''}`}>
+    <div class={`reader ${color}`}>
       <header class="reader-bar">
         <button class="btn ghost sm" onClick={leave} aria-label="Back"><Icon name="left" size={18} /></button>
         <div class="reader-title"><div class="t1">{it.title}</div>{it.author && <div class="t2">{it.author}</div>}</div>
@@ -157,7 +156,7 @@ function PdfReader({ id, link }: { id: string; link?: BookLink }) {
             <span>of {pdf.numPages}</span>
           </label>
         )}
-        <button class="btn ghost sm" onClick={toggleNight} aria-pressed={night} title="Night reading">{night ? 'Day' : 'Night'}</button>
+        <ColorPicker color={color} onPick={recolor} />
       </header>
       <div class="reader-stage" ref={stage} onClick={(e) => {
         const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
