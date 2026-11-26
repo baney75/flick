@@ -50,18 +50,50 @@ export function srcCandidates(srcs: Src[], progressAt: (s: Src) => number | unde
   })
 }
 
+/** A debrid service plugin as the ranker needs it (SPEC-debrid rules 6 and 9). */
+export interface ServiceInfo { id: string; vpnOptional: boolean; debridHosts: string[] }
+
+/** What Flick already knows about debrid services; the ranker never asks them anything (rule 12). */
+export interface Debrid {
+  /** Every installed service: a stream on one of their download hosts is a debrid stream. */
+  known: ServiceInfo[]
+  /** The services set up to resolve torrents, in the user's order. */
+  order: ServiceInfo[]
+  /** The `cached` answers already fetched: whether this service has this infoHash ready. */
+  cached?: (service: string, infoHash: string) => boolean
+}
+
+/** A stream with SPEC-torrent rule 2's torrent in place of a playable url. */
+export type StreamIn = Omit<Stream, 'url'> & { url?: string; torrent?: { infoHash: string; fileIdx?: number } }
+
+const hostOf = (url: string) => { try { return new URL(url).hostname.toLowerCase() } catch { return '' } }
+const onHost = (host: string, hosts: string[]) => !!host && hosts.some((h) => host === h || host.endsWith(`.${h}`))
+
+/** How a stream's bytes arrive: a torrent through a service or peers, a link on a debrid host, or direct. */
+function viaOf(s: StreamIn, d: Debrid | undefined): Pick<Candidate, 'via' | 'service' | 'vpnOptional'> {
+  if (s.torrent) {
+    const hash = s.torrent.infoHash.toLowerCase()
+    const svc = d?.order.find((x) => d.cached?.(x.id, hash)) ?? d?.order[0]
+    if (!svc) return { via: 'p2p' }
+    return { via: d?.cached?.(svc.id, hash) ? 'debrid-cached' : 'debrid-fetch', service: svc.id, vpnOptional: svc.vpnOptional }
+  }
+  // Rule 6: an addon link already resolved on a debrid host is a torrent for the VPN gate.
+  const svc = d?.known.find((x) => onHost(hostOf(s.url ?? ''), x.debridHosts))
+  return svc ? { via: 'debrid-cached', service: svc.id, vpnOptional: svc.vpnOptional } : { via: 'direct' }
+}
+
 /** One candidate per stream a plugin returned for one video, id `${key}#${index}`. */
-export function streamCandidates(key: string, list: Stream[], o: { audiobook?: boolean; episode?: boolean } = {}): Candidate[] {
+export function streamCandidates(key: string, list: StreamIn[], o: { audiobook?: boolean; episode?: boolean; debrid?: Debrid } = {}): Candidate[] {
   return list.map((s, i) => {
     const media: Candidate['media'] = s.kind === 'book' ? 'book' : s.kind === 'audio' ? (o.audiobook ? 'audiobook' : 'audio') : 'video'
-    const c: Candidate = { id: `${key}#${i}`, media, place: 'plugin', via: 'direct', text: [s.title, s.group].filter(Boolean).join('\n'), order: i }
+    const c: Candidate = { id: `${key}#${i}`, media, place: 'plugin', text: [s.title, s.group].filter(Boolean).join('\n'), order: i, ...viaOf(s, o.debrid) }
     if (s.quality) c.quality = s.quality
     if (s.subs?.length) c.subs = s.subs.map((x) => ({ lang: x.lang }))
     if (s.external) c.external = true
     if (s.needsDesktop) c.needsDesktop = true
     if (o.episode) c.episode = true
     let path = ''
-    try { path = new URL(s.url).pathname } catch { /* not a URL: no format */ }
+    try { path = new URL(s.url ?? '').pathname } catch { /* not a URL, or a torrent: no format */ }
     const ext = extOf(path)
     if (ext) c.format = ext
     return c
@@ -69,7 +101,7 @@ export function streamCandidates(key: string, list: Stream[], o: { audiobook?: b
 }
 
 /** Rule 2: every candidate of a title, its library sources and the streams already fetched for it. */
-export function candidatesOf(srcs: Src[], streams?: { key: string; list: Stream[]; audiobook?: boolean; episode?: boolean }, progressAt?: (s: Src) => number | undefined): Candidate[] {
+export function candidatesOf(srcs: Src[], streams?: { key: string; list: StreamIn[]; audiobook?: boolean; episode?: boolean; debrid?: Debrid }, progressAt?: (s: Src) => number | undefined): Candidate[] {
   const own = srcCandidates(srcs, progressAt)
   if (!streams) return own
   const n = own.length
