@@ -1,7 +1,6 @@
 {
   "api": 1,
   "plugins": [
-    { "url": "/plugins/template.js", "name": "Internet Archive films", "kind": "source", "description": "Public domain feature films from archive.org." },
     { "url": "/plugins/archive.js", "name": "Internet Archive", "kind": "source", "description": "Public domain films, classic TV, audiobooks, old-time radio and books from archive.org." }
   ]
 }
