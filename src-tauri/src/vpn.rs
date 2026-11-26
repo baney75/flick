@@ -8,6 +8,7 @@
 use serde::Serialize;
 use std::io::Write;
 use std::net::IpAddr;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 // Addresses whose routes stand for "all traffic": Cloudflare's resolver, and documentation ranges
@@ -125,9 +126,10 @@ impl GateState {
     }
 }
 
-/// Every check of rule 25, in order. Only macOS has detection yet; elsewhere it never passes.
+/// Every check of rule 25, in order. Only macOS and Linux have detection; elsewhere (Windows) it
+/// never passes.
 pub fn check(p: &dyn Probe) -> GateState {
-    if !cfg!(target_os = "macos") {
+    if !cfg!(any(target_os = "macos", target_os = "linux")) {
         return GateState::fail(Fail::Unchecked);
     }
     decide(p)
@@ -147,6 +149,17 @@ pub fn parse_route_macos(out: &str) -> Option<String> {
         .find_map(|l| l.trim().strip_prefix("interface:"))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// The `dev` of `ip route get <ip>` on Linux ("1.1.1.1 via 10.0.0.1 dev wg0 src ...").
+pub fn parse_route_linux(out: &str) -> Option<String> {
+    let mut w = out.split_whitespace();
+    while let Some(t) = w.next() {
+        if t == "dev" {
+            return w.next().map(String::from);
+        }
+    }
+    None
 }
 
 /// Name servers of `scutil --dns` that answer general lookups: unscoped resolvers with no
@@ -179,6 +192,37 @@ pub fn parse_scutil_dns(out: &str) -> Vec<String> {
         .collect()
 }
 
+/// `nameserver` lines from a resolv.conf.
+pub fn parse_resolv_conf(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|l| {
+            let mut w = l.split_whitespace();
+            (w.next() == Some("nameserver"))
+                .then(|| w.next().map(String::from))
+                .flatten()
+        })
+        .collect()
+}
+
+/// A local stub resolver (systemd-resolved's 127.0.0.53) counts only through its upstreams.
+/// None when a stub's upstreams are unknown.
+pub fn expand_stub(servers: Vec<String>, upstream_conf: Option<&str>) -> Option<Vec<String>> {
+    let loopback = |s: &str| s.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
+    let mut out = vec![];
+    for s in servers {
+        if !loopback(&s) {
+            out.push(s);
+            continue;
+        }
+        let up = parse_resolv_conf(upstream_conf?);
+        if up.is_empty() || up.iter().any(|u| loopback(u)) {
+            return None;
+        }
+        out.extend(up);
+    }
+    Some(out)
+}
+
 /// Service ids of connected Tailscale services in `scutil --nc list`.
 pub fn parse_mesh_services(out: &str) -> Vec<String> {
     out.lines()
@@ -194,13 +238,17 @@ pub fn parse_interface_name(out: &str) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-/// macOS VPN interfaces: utun and ipsec, each with a number.
-pub fn tunnel_name(name: &str) -> bool {
+/// macOS utun and ipsec; Linux tun, wg, or any TUN or WireGuard device by type (Proton, Nord).
+pub fn tunnel_name(os: &str, name: &str, tun_device: bool) -> bool {
     let num = |p: &str| {
         name.strip_prefix(p)
             .is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))
     };
-    num("utun") || num("ipsec")
+    match os {
+        "macos" => num("utun") || num("ipsec"),
+        "linux" => num("tun") || name.starts_with("wg") || tun_device,
+        _ => false,
+    }
 }
 
 fn run(bin: &str, args: &[&str], stdin: Option<&str>) -> Option<String> {
@@ -219,7 +267,12 @@ fn run(bin: &str, args: &[&str], stdin: Option<&str>) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The real system: macOS `route` and `scutil`.
+fn ip_bin() -> Option<&'static str> {
+    let bins = ["/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip", "/bin/ip"];
+    bins.into_iter().find(|p| Path::new(p).is_file())
+}
+
+/// The real system: macOS route and scutil; Linux ip and resolv.conf.
 pub struct System;
 
 impl Probe for System {
@@ -233,12 +286,18 @@ impl Probe for System {
             };
             parse_route_macos(&run("/sbin/route", args, None)?)
         } else {
-            None
+            let fam = if v6 { "-6" } else { "-4" };
+            parse_route_linux(&run(ip_bin()?, &[fam, "route", "get", ip], None)?)
         }
     }
     fn dns(&self) -> Option<Vec<String>> {
-        let out = run("/usr/sbin/scutil", &["--dns"], None)?;
-        Some(parse_scutil_dns(&out))
+        if cfg!(target_os = "macos") {
+            let out = run("/usr/sbin/scutil", &["--dns"], None)?;
+            return Some(parse_scutil_dns(&out));
+        }
+        let conf = std::fs::read_to_string("/etc/resolv.conf").ok()?;
+        let stub = std::fs::read_to_string("/run/systemd/resolve/resolv.conf").ok();
+        expand_stub(parse_resolv_conf(&conf), stub.as_deref())
     }
     fn addrs(&self, iface: &str) -> Vec<IpAddr> {
         let all = if_addrs::get_if_addrs().unwrap_or_default();
@@ -248,9 +307,15 @@ impl Probe for System {
         all.iter().filter(up).map(|i| i.ip()).collect()
     }
     fn is_tunnel(&self, iface: &str) -> bool {
-        tunnel_name(iface)
+        let sys = Path::new("/sys/class/net").join(iface);
+        let uevent = std::fs::read_to_string(sys.join("uevent")).unwrap_or_default();
+        let dev = uevent.contains("DEVTYPE=wireguard") || sys.join("tun_flags").exists();
+        tunnel_name(std::env::consts::OS, iface, dev)
     }
     fn mesh_service(&self, iface: &str) -> bool {
+        if !cfg!(target_os = "macos") {
+            return iface.starts_with("tailscale");
+        }
         let list = run("/usr/sbin/scutil", &["--nc", "list"], None).unwrap_or_default();
         parse_mesh_services(&list).iter().any(|id| {
             let q = format!("show State:/Network/Service/{id}/IPv4\n");

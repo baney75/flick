@@ -22,7 +22,7 @@ impl Probe for Fake {
         self.addrs.get(iface).cloned().unwrap_or_default()
     }
     fn is_tunnel(&self, iface: &str) -> bool {
-        tunnel_name(iface)
+        tunnel_name("macos", iface, false)
     }
     fn mesh_service(&self, _: &str) -> bool {
         self.mesh
@@ -168,9 +168,41 @@ fn parses_macos_route_dns_and_service_output() {
 }
 
 #[test]
-fn names_macos_tunnels() {
-    assert!(tunnel_name("utun4") && tunnel_name("ipsec0"));
-    assert!(!tunnel_name("en0") && !tunnel_name("utun") && !tunnel_name("utunx"));
+fn parses_linux_route_and_dns_output() {
+    let get = "1.1.1.1 dev wg0 table 51820 src 10.66.0.2 uid 1000 \n    cache \n";
+    assert_eq!(parse_route_linux(get).as_deref(), Some("wg0"));
+    assert_eq!(parse_route_linux(""), None);
+    let conf = "# generated\nnameserver 127.0.0.53\noptions edns0\nsearch lan\n";
+    assert_eq!(parse_resolv_conf(conf), ["127.0.0.53"]);
+    let stub = vec!["127.0.0.53".to_string()];
+    let up = Some("nameserver 10.64.0.1\n");
+    assert_eq!(
+        expand_stub(stub.clone(), up),
+        Some(vec!["10.64.0.1".to_string()])
+    );
+    assert_eq!(expand_stub(stub.clone(), None), None);
+    assert_eq!(expand_stub(stub.clone(), Some("# none\n")), None);
+    assert_eq!(expand_stub(stub, Some("nameserver 127.0.0.1\n")), None);
+}
+
+#[test]
+fn names_tunnels_per_os() {
+    assert!(tunnel_name("macos", "utun4", false) && tunnel_name("macos", "ipsec0", false));
+    assert!(!tunnel_name("macos", "en0", false) && !tunnel_name("macos", "utun", false));
+    assert!(tunnel_name("linux", "wg0-mullvad", false) && tunnel_name("linux", "tun0", false));
+    assert!(
+        tunnel_name("linux", "proton0", true),
+        "a WireGuard device by type"
+    );
+    assert!(!tunnel_name("linux", "eth0", false) && !tunnel_name("linux", "tunl0", false));
+    assert!(
+        tunnel_name("linux", "tailscale0", true),
+        "a TUN device; the mesh check refuses it"
+    );
+    assert!(
+        !tunnel_name("windows", "Wintun", true),
+        "Windows has no detection yet"
+    );
 }
 
 /// The gate on this computer, for a manual check:
