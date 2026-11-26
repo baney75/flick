@@ -11,7 +11,7 @@ const KEY = 'flick.speedTest'
 export function gateLine(g: Gate | null): string {
   if (!g) return 'Checking for a VPN.'
   if (!g.ok) return g.message || 'Turn on your VPN to play torrents.'
-  return `Protected by ${g.iface}${g.exit ? `, leaving from ${g.exit}` : ''}.`
+  return `Protected by ${g.iface || 'your VPN'}${g.exit ? `, leaving from ${g.exit}` : ''}.`
 }
 
 function lastResult(): SpeedResult | null {
@@ -34,15 +34,16 @@ export function VpnPanel() {
     if (!isDesktop || isMobileApp) return
     check()
     let off: (() => void) | undefined
-    onDesktopEvent<Gate>('vpn-gate', setGate).then((f) => { off = f }, () => {})
-    return () => off?.()
+    let gone = false
+    onDesktopEvent<Gate>('vpn-gate', setGate).then((f) => { if (gone) f(); else off = f }, () => {})
+    return () => { gone = true; off?.() }
   }, [])
   if (!isDesktop || isMobileApp) return <p class="dim small">{DESKTOP_ONLY}</p>
   const test = async () => {
     setRunning(true)
     setErr('')
     try {
-      const r = await speedTest((await check()).ok)
+      const r = await speedTest((await check(true)).ok)
       setLast(r)
       try { localStorage.setItem(KEY, JSON.stringify(r)) } catch { /* private mode */ }
     } catch (e) {
@@ -58,6 +59,7 @@ export function VpnPanel() {
         <button class="btn" onClick={() => check(true)}>Check again</button>
         <button class="btn" onClick={test} disabled={running}>{running ? 'Testing speed' : 'Test speed'}</button>
       </div>
+      <p class="dim small">Test speed downloads up to 25 MB from Cloudflare (speed.cloudflare.com) when you press it.</p>
       {last && <p class="small">{speedLabel(last)} <span class="dim">· tested {new Date(last.at).toLocaleString()}</span></p>}
       {err && <p class="err">{err}</p>}
     </div>

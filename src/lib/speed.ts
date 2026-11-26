@@ -51,24 +51,43 @@ const browser: SpeedDeps = {
   after: (ms, fn) => { const t = setTimeout(fn, ms); return () => clearTimeout(t) },
 }
 
-async function ping(d: SpeedDeps): Promise<number> {
-  const start = d.now()
-  const r = await d.fetch(PING_URL, { signal: new AbortController().signal, cache: 'no-store' })
-  await r.arrayBuffer()
-  return d.now() - start
+const NO_ANSWER = "The speed test server didn't answer."
+
+/** Five latency samples, all within one 10-second deadline. */
+async function pings(d: SpeedDeps): Promise<number[]> {
+  const ctl = new AbortController()
+  const cancel = d.after(LIMIT_MS, () => ctl.abort())
+  const out: number[] = []
+  try {
+    for (let i = 0; i < PINGS; i++) {
+      const start = d.now()
+      const r = await d.fetch(PING_URL, { signal: ctl.signal, cache: 'no-store' })
+      if (!r.ok) throw new Error(`The speed test server answered ${r.status}.`)
+      await r.arrayBuffer()
+      out.push(d.now() - start)
+    }
+  } catch (e) {
+    throw ctl.signal.aborted ? new Error(NO_ANSWER) : e
+  } finally {
+    cancel()
+  }
+  return out
 }
 
-/** Bytes read and the time they took, stopping at the limits; a stalled body stops at 10 s. */
+/** Bytes read and the time they took from the first response, stopping at the limits: 25 MB,
+ *  or 10 seconds from the request, which also ends a stalled body. */
 export async function download(d: SpeedDeps): Promise<{ bytes: number; ms: number }> {
   const ctl = new AbortController()
-  const start = d.now()
+  const sent = d.now()
+  let start = sent
   const cancel = d.after(LIMIT_MS, () => ctl.abort())
   let bytes = 0
   try {
     const r = await d.fetch(SPEED_URL, { signal: ctl.signal, cache: 'no-store' })
     if (!r.ok || !r.body) throw new Error(`The speed test server answered ${r.status}.`)
+    start = d.now() // time to the first byte is latency, not throughput
     const reader = r.body.getReader()
-    while (!shouldStop(bytes, d.now() - start)) {
+    while (!shouldStop(bytes, d.now() - sent)) {
       const { done, value } = await reader.read()
       if (done) break
       bytes += value.byteLength
@@ -79,28 +98,31 @@ export async function download(d: SpeedDeps): Promise<{ bytes: number; ms: numbe
   } finally {
     cancel()
   }
+  if (!bytes) throw new Error(NO_ANSWER)
   return { bytes, ms: Math.min(d.now() - start, LIMIT_MS) }
 }
 
 /** The whole test: 5 pings for latency, then the download. `vpn` is the gate's state. */
 export async function speedTest(vpn: boolean, d: SpeedDeps = browser): Promise<SpeedResult> {
-  const pings: number[] = []
-  for (let i = 0; i < PINGS; i++) pings.push(await ping(d))
+  const ms = median(await pings(d))
   const got = await download(d)
-  return { vpn, mbps: mbps(got.bytes, got.ms), ms: median(pings), at: Date.now() }
+  return { vpn, mbps: mbps(got.bytes, got.ms), ms, at: Date.now() }
 }
 
 /** Download speed over the last 5 seconds, from bytes reported as they arrive. P7's debrid
  *  player feeds it the bytes it fetches; the engine's stats feed it for torrents. */
 export class RateMeter {
   private samples: [number, number][] = []
+  /** `start`: when the stream began, so a meter younger than 5 s divides by its age. */
+  constructor(private start: number) {}
   add(bytes: number, at: number) {
     this.samples.push([at, bytes])
     this.samples = this.samples.filter(([t]) => t > at - WINDOW_MS)
   }
   mbps(now: number): number {
     const recent = this.samples.filter(([t]) => t > now - WINDOW_MS)
-    return mbps(recent.reduce((n, [, b]) => n + b, 0), WINDOW_MS)
+    const span = Math.max(Math.min(WINDOW_MS, now - this.start), 1000)
+    return mbps(recent.reduce((n, [, b]) => n + b, 0), span)
   }
 }
 
