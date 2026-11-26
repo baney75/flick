@@ -242,6 +242,11 @@ const RESOLVED_DNS: &str = "Global: 1.1.1.1#cloudflare-dns.com\nLink 2 (eth0): 7
 const RESOLVED_DOMAINS: &str = "Global:\nLink 2 (eth0): lan\nLink 3 (wg0): ~.\nLink 4 (docker0):\n";
 const RESOLVED_ROUTES: &str = "Link 2 (eth0): yes\nLink 3 (wg0): yes\nLink 4 (docker0): no\n";
 
+// Parish1 (Ubuntu, Tailscale, DNS over TLS to Cloudflare), cut short, with `~.` added on a
+// wrapped line: values wrap onto indented lines.
+const RESOLVED_WRAPPED: &str = "Global: 1.1.1.1#cloudflare-dns.com 1.0.0.1#cloudflare-dns.com\n        2606:4700:4700::1111#cloudflare-dns.com\nLink 3 (wlp0s20f3):\nLink 4 (tailscale0): 100.100.100.100 fd7a:115c:a1e0::53\nLink 2 (enp118s0):\n";
+const RESOLVED_WRAPPED_DOMAINS: &str = "Global:\nLink 4 (tailscale0): tail2b1ef8.ts.net ~0.e.1.a.c.5.1.1.a.7.d.f.ip6.arpa\n        ~100.100.in-addr.arpa ~.\nLink 2 (enp118s0):\n";
+
 #[test]
 fn reads_systemd_resolved_links() {
     let link = |s: &str, l: &str| Dns {
@@ -271,6 +276,13 @@ fn reads_systemd_resolved_links() {
     assert!(
         parse_resolved(RESOLVED_DNS, &no_catch_all, "").contains(&eth0),
         "unknown means on"
+    );
+    let wrapped = parse_resolved(RESOLVED_WRAPPED, RESOLVED_WRAPPED_DOMAINS, "");
+    let ts = link("100.100.100.100", "tailscale0");
+    let v6 = Dns::routed("2606:4700:4700::1111");
+    assert_eq!(
+        wrapped[2..],
+        [v6, ts, link("fd7a:115c:a1e0::53", "tailscale0")]
     );
 }
 

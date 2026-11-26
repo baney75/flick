@@ -253,19 +253,24 @@ pub fn linux_dns(
     Some(out)
 }
 
-/// One `resolvectl` listing: (None for Global or the link's name, its values).
+/// One `resolvectl` listing: (None for Global or the link's name, its values). Long values
+/// wrap onto indented lines that continue the scope above them.
 fn scopes(out: &str) -> Vec<(Option<String>, Vec<String>)> {
-    out.lines()
-        .filter_map(|l| {
-            let (head, vals) = l.trim().split_once(':')?;
-            let link = match head.strip_prefix("Link ") {
-                Some(rest) => Some(rest.split_once('(')?.1.strip_suffix(')')?.to_string()),
-                None if head == "Global" => None,
-                None => return None,
-            };
-            Some((link, vals.split_whitespace().map(String::from).collect()))
-        })
-        .collect()
+    let mut all: Vec<(Option<String>, Vec<String>)> = vec![];
+    for l in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let words = |v: &str| v.split_whitespace().map(String::from).collect::<Vec<_>>();
+        let link = l.strip_prefix("Link ").and_then(|r| r.split_once("): "));
+        let link = link.or_else(|| l.strip_prefix("Link ")?.strip_suffix("):").map(|r| (r, "")));
+        if let Some((head, vals)) = link {
+            let name = head.split_once('(').map_or("", |h| h.1);
+            all.push((Some(name.to_string()), words(vals)));
+        } else if let Some(vals) = l.strip_prefix("Global:") {
+            all.push((None, words(vals)));
+        } else if let Some(last) = all.last_mut() {
+            last.1.extend(words(l));
+        }
+    }
+    all
 }
 
 /// The servers systemd-resolved sends general lookups to, from `resolvectl dns`, `domain` and
