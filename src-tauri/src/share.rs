@@ -123,7 +123,7 @@ fn tailscale_off(port: u16) {
         return;
     };
     let serve = run_cli(&cli, &["serve".into(), "status".into(), "--json".into()]);
-    if serve.is_some_and(|s| reach::parse_serve_status(&s, &host, port) == reach::Slot::Ours) {
+    if serve.is_some_and(|s| reach::parse_serve_status(&s, &host, port) == Ok(reach::Slot::Ours)) {
         run_cli(&cli, &reach::serve_off_args(port));
     }
 }
