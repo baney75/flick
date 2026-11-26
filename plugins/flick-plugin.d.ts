@@ -59,6 +59,7 @@ export interface Ctx {
 
 export interface Plugin {
   api: 1
+  kind?: 'source'
   id: string
   name: string
   version: string
@@ -80,6 +81,38 @@ export interface Plugin {
   library?(ctx: Ctx): Promise<Meta[]>
   action?(ctx: Ctx, id: string, values: Record<string, any>): Promise<{ ok: boolean; message?: string }>
   progress?(ctx: Ctx, args: { type: MetaType; id: string; videoId: string; pos: number; dur: number }): Promise<void>
+}
+
+/** A torrent as Flick hands it to a service: nothing else about the title or the user. */
+export interface Torrent { infoHash: string; fileIdx?: number; name?: string }
+export type AccountResult = { ok: true; name: string; plan?: string; expires?: string } | { ok: false; message: string }
+export type ResolveResult = { url: string } | { wait: { pct?: number; message: string } } | { error: string }
+
+/** A service plugin (a debrid service): turns a torrent into an https link on its own hosts. */
+export interface ServicePlugin {
+  api: 1
+  kind: 'service'
+  provides: 'debrid'[]
+  id: string
+  name: string
+  version: string
+  author?: string
+  description?: string
+  icon?: string
+  /** Named hosts only, never `*`: the API and the download hosts. */
+  hosts: string[]
+  /** The hosts its download links come from; each also in `hosts`. A stream on one of these needs the VPN gate. */
+  debridHosts: string[]
+  platforms?: Platform[]
+  settings?: Field[]
+  actions?: Action[]
+  /** Checks the key in ctx.settings. */
+  account(ctx: Ctx): Promise<AccountResult>
+  /** The lowercase infoHashes (of at most 100 asked) already on the service. Return [] when it cannot tell. */
+  cached(ctx: Ctx, hashes: string[]): Promise<string[]>
+  /** An https link on `hosts`, or `wait` while the service fetches it (Flick asks again every 3 s, up to 10 min). */
+  resolve(ctx: Ctx, torrent: Torrent): Promise<ResolveResult>
+  action?(ctx: Ctx, id: string, values: Record<string, any>): Promise<{ ok: boolean; message?: string }>
 }
 
 export interface Theme {

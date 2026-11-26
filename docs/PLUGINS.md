@@ -4,11 +4,12 @@ Flick's core is a player, a library and a reader. Every outside source (Stremio,
 YouTube, anything else) and every look (themes) is a plugin. Anyone, or their AI agent, can write one
 as a single JavaScript file with no build step.
 
-## Two kinds
+## Three kinds
 
 | Kind | File | Runs code | What it can do |
 | --- | --- | --- | --- |
 | Source plugin | one ES module, `plugin.js` | yes, in a sandbox | catalogs, search, title pages, streams, library rows, settings, sign-in |
+| Service plugin | one ES module, `plugin.js`, with `kind: 'service'` | yes, in a sandbox | a debrid service: checks a key, says which torrents it has, turns a torrent into an https link |
 | Theme | one JSON file, `theme.json` | no | colors, radius, font for light and dark |
 
 ## Install
@@ -23,7 +24,7 @@ as a single JavaScript file with no build step.
   did not already have updates quietly (dropping one is fine). New permissions wait for a tap.
 - Plugins that ship with Flick live at `/plugins/<name>.js` (from `plugins/<name>/plugin.js` in the
   repo) and themes at `/plugins/<name>.json`. The official list, `/plugins/index.json`, is
-  `{ "api": 1, "plugins": [{ "url", "name", "kind": "source" | "theme", "description" }] }`.
+  `{ "api": 1, "plugins": [{ "url", "name", "kind": "source" | "service" | "theme", "description" }] }`.
 - The list of installed plugins and their non-secret settings sync between paired devices, along with
   on or off and the chosen theme. Plugins installed from a file stay on that device. Fields
   marked `secret` (passwords, tokens) never leave the device. Another device installs a synced
@@ -152,6 +153,41 @@ values go only to that one `action()` call and are not saved; keep what you need
   it got. A yt-dlp on PATH is used only when Flick's own fails. Playing needs ffmpeg.
 - `ctx.log(...)`: shows in Settings > Plugins > this plugin > Log.
 
+## A service plugin
+
+A debrid service (TorBox, Real-Debrid and the like) fetches a torrent on its own servers and hands back
+an https link, so the torrent plays with no peer-to-peer traffic from this computer. A service plugin
+has no catalogs; it exports `kind: 'service'`, `provides: ['debrid']` and three functions:
+
+```js
+export default {
+  api: 1, kind: 'service', provides: ['debrid'],
+  id: 'app.example.debrid', name: 'Example Debrid', version: '1.0.0',
+  hosts: ['api.example.app', '*.cdn.example.net'],   // named hosts only, never `*`
+  debridHosts: ['*.cdn.example.net'],                // where its download links live; each also in hosts
+  settings: [{ key: 'apiKey', label: 'API key', type: 'password', help: 'Find it at https://example.app/settings.' }],
+
+  async account(ctx) { return { ok: true, name: 'Example', plan: 'Pro', expires: '2027-03-01' } }, // or { ok: false, message }
+  async cached(ctx, hashes) { return [/* the asked infoHashes it already has */] },
+  async resolve(ctx, { infoHash, fileIdx, name }) { return { url: 'https://x.cdn.example.net/file.mkv' } },
+}
+```
+
+- `account(ctx)` checks the key in `ctx.settings`: `{ ok: true, name, plan?, expires? }`, or
+  `{ ok: false, message }` with the service's own words.
+- `cached(ctx, hashes)` gets at most 100 lowercase infoHashes and returns the ones already on the
+  service. Flick keeps only hashes it asked about. A service with no way to tell returns `[]`.
+- `resolve(ctx, torrent)` gets `{ infoHash, fileIdx?, name? }` and returns `{ url }`, `{ wait: { pct?,
+  message } }` while the service fetches a torrent it does not have yet, or `{ error }`. Flick asks
+  again every 3 seconds while it gets `wait`, for at most 10 minutes. A `url` that is not https, or not
+  on the plugin's `hosts`, is refused.
+- Flick sends a service only the infoHash, file index and file name: never the library, other titles
+  or a Stremio account. It calls a service only for a torrent stream, only in the desktop app, and only
+  while a VPN is on and hides this computer. A stream whose link is on a service's `debridHosts` is
+  held to the same rule.
+- The key is a `password` field, so it is secret: it stays on the device, never syncs and never goes
+  in a setup link. A service plugin cannot use desktop tools.
+
 ## A theme
 
 ```json
@@ -178,7 +214,7 @@ tokens.
 
 ## For agents
 
-- `skills/flick-plugin/SKILL.md` and `skills/flick-theme/SKILL.md` teach an agent to write, check and
+- `skills/flick-plugin/SKILL.md` (sources and services) and `skills/flick-theme/SKILL.md` teach an agent to write, check and
   publish one.
 - `plugins/template/plugin.js` is a working starting point.
 - `npm run plugin:check -- <file or URL>` loads a plugin the way Flick does, validates the manifest,
@@ -188,5 +224,6 @@ tokens.
   entry would be dropped by the validator, or when `ctx.fetch` goes to a host missing from `hosts`.
   It runs the plugin in Node, outside the sandbox, so check only code you are willing to run.
   Desktop tools are stubs there: the manifest must list the tool, `ytdlp.search` answers with
-  recorded results and `ytdlp.resolve` checks the URL against `hosts`.
+  recorded results and `ytdlp.resolve` checks the URL against `hosts`. For a service plugin it calls
+  `account()` with `--set apiKey=<key>`, and with `--hash <infoHash>` also `cached()` and one `resolve()`.
 - Settings > Plugins > Make your own copies a prompt for any AI agent that points at this file.
