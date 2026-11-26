@@ -1369,7 +1369,8 @@ pub fn run() {
             share::share_status,
             share::share_new_code,
             ytdlp::plugin_tools,
-            ytdlp::plugin_tool
+            ytdlp::plugin_tool,
+            ytdlp::tool_open
         ])
         .setup(|app| {
             // Files passed on the command line: `Flick movie.mkv`.
@@ -1379,6 +1380,9 @@ pub fn run() {
                 .collect();
             if !args.is_empty() {
                 queue_open(app.handle(), args);
+            }
+            if let Ok(cache) = app.path().app_cache_dir() {
+                std::thread::spawn(move || ytdlp::clean_cache(&cache));
             }
             Ok(())
         })
@@ -1397,6 +1401,7 @@ pub fn run() {
         }
         if let tauri::RunEvent::Exit = &event {
             share::stop_all(handle);
+            ytdlp::stop_job(&handle.state::<ytdlp::PluginTools>());
         }
         let _ = (handle, event);
     });

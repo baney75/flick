@@ -83,7 +83,11 @@ export default {
   async meta(ctx, { id }) { return { id, type: 'movie', name: 'Smoke Clip', year: '2024', description: 'A test clip.' } },
   async streams(ctx, { id }) {
     await ctx.store.set('last', id)
-    return [{ url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream', quality: '720p' }]
+    return [
+      { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream SD 480p', quality: '480p' },
+      { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream 1080p HDR 1.2 GB', quality: '1080p' },
+      { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream 720p', quality: '720p' },
+    ]
   },
 }`
 const SMOKE_THEME = {
@@ -497,6 +501,11 @@ try {
   await page.getByText('Smoke Clip').first().click()
   await page.locator('.stream').first().waitFor({ timeout: 15000 })
   check((await page.locator('.stream').first().innerText()).includes('Smoke stream'), 'plugin title page lists a stream')
+  const qs = await page.locator('.stream-q').allInnerTexts()
+  check(qs.length === 3 && /1080p/.test(qs[0]) && /SD/.test(qs[2]), `streams are grouped by quality, best first (${qs.join(' / ') || 'no groups'})`)
+  check(/Play 1080p/.test(await page.locator('.play-best').innerText().catch(() => '')), 'title page offers one Play for the best stream')
+  check(/HDR/.test(await page.locator('.stream').first().innerText()) && /1\.2 GB/.test(await page.locator('.stream').first().innerText()), 'a stream shows its HDR and size as tags')
+  await page.screenshot({ path: 'test-media/shots/plugin-title.png' })
   await page.locator('.stream').first().click()
   await page.locator('.player').waitFor()
   check(await page.waitForFunction(() => { const v = document.querySelector('.player video'); return v && v.currentTime > 0.5 }, null, { timeout: 8000 }).then(() => true, () => false), 'a plugin stream plays in the player')
@@ -536,10 +545,13 @@ try {
   check(true, 'Stremio plugin title page opens with details')
   await page.waitForTimeout(1200)
   await page.screenshot({ path: 'test-media/shots/detail.png' })
+  check(await page.evaluate(() => getComputedStyle(document.querySelector('.backdrop'), '::after').content !== 'none'), 'title page art has a scrim behind the text')
   await page.goBack()
   await page.getByLabel('Search Stremio').fill('interstellar')
   await page.keyboard.press('Enter')
   check(await page.getByText(/Interstellar/).first().waitFor({ timeout: 20000 }).then(() => true, () => false), 'Stremio plugin search finds Interstellar')
+  check(await page.locator('.result-grid .card').count() > 2, `plugin search shows results as a poster grid (${await page.locator('.result-grid .card').count()} in grids)`)
+  check(!(await page.locator('.nav-item', { hasText: 'Sources' }).isVisible()) && await page.locator('.nav-item', { hasText: 'Stremio' }).isVisible(), 'desktop sidebar lists each source, no Sources item')
   const stremioPage = page.url()
 
   // Phone layout.
@@ -559,6 +571,12 @@ try {
   await page.goto(stremioPage)
   await page.locator('.row-section .card:not(.skeleton)').first().waitFor({ timeout: 20000 })
   await page.screenshot({ path: 'test-media/shots/phone-stremio.png' })
+  const bar = await page.locator('.sidebar .nav-item:visible').allInnerTexts()
+  check(bar.length <= 5 && bar.includes('Sources'), `phone bar holds at most 5 items, with Sources for 2 sources (${bar.join(', ')})`)
+  await page.locator('.nav-item', { hasText: 'Sources' }).click()
+  await page.locator('.source-tile').first().waitFor({ timeout: 5000 }).catch(() => {})
+  check(await page.locator('.source-tile').count() === 2, `Sources page shows a tile for each source (${await page.locator('.source-tile').count()})`)
+  await page.screenshot({ path: 'test-media/shots/phone-sources.png' })
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.join(' | ') : ''}`)
   await browser.close()

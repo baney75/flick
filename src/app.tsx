@@ -19,7 +19,7 @@ import { installSpatialNav } from './lib/spatial'
 import { resumeDownloads } from './lib/downloads'
 import { startOffline } from './lib/offline'
 import { startShare } from './lib/share'
-import { PluginPage, PluginTitle, PluginIcon } from './views/Plugin'
+import { PluginPage, PluginTitle, PluginIcon, SourcesPage } from './views/Plugin'
 import { sources, themes, startPlugins } from './lib/plugins/use'
 import { applyTheme } from './lib/plugins/themes'
 import { migrateStremio } from './lib/plugins/migrate'
@@ -51,6 +51,7 @@ function View() {
   if (parts[0] === 'read-url' && bookLink(qs)) return <Reader key={r} id="" link={bookLink(qs)} />
   if (parts[0] === 'p' && parts[1] && parts[3]) return <PluginTitle key={r} p={decodeURIComponent(parts[1])} type={parts[2]} id={decodeURIComponent(parts[3])} videoId={qs.get('v') ?? undefined} />
   if (parts[0] === 'p' && parts[1]) return <PluginPage key={parts[1]} id={decodeURIComponent(parts[1])} />
+  if (parts[0] === 'sources') return <SourcesPage />
   if (parts[0] === 'listen' && parts[1]) return <Listen key={parts[1]} id={decodeURIComponent(parts[1])} />
   if (parts[0] === 'show' && parts[1]) return <ShowPage name={decodeURIComponent(parts[1])} />
   if (parts[0] === 'servers') return <Servers />
@@ -136,11 +137,18 @@ export function App() {
             <Icon name={n.icon} size={20} /><span>{n.label}</span>
           </a>
         ))}
+        {/* A phone bar holds five items: with more than one source, one Sources item stands in for them. */}
+        {sources.value.length > 1 && (
+          <a href="#/sources" class={`nav-item phone-only ${current === '/sources' || current === '/p' ? 'on' : ''}`} aria-current={current === '/sources' ? 'page' : undefined}
+            onClick={(e) => { e.preventDefault(); go('/sources') }}>
+            <Icon name="plug" size={20} /><span>Sources</span>
+          </a>
+        )}
         {sources.value.map((p) => {
           const path = `/p/${encodeURIComponent(p.id)}`
           const on = route.value.split('?')[0] === path || route.value.startsWith(path + '/')
           return (
-            <a href={`#${path}`} class={`nav-item ${on ? 'on' : ''}`} aria-current={on ? 'page' : undefined} onClick={(e) => { e.preventDefault(); go(path) }}>
+            <a href={`#${path}`} class={`nav-item ${sources.value.length > 1 ? 'phone-hide' : ''} ${on ? 'on' : ''}`} aria-current={on ? 'page' : undefined} onClick={(e) => { e.preventDefault(); go(path) }}>
               <PluginIcon rec={p} size={20} /><span>{p.manifest.name}</span>
             </a>
           )
