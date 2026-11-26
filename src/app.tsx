@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { route, go, toast, nowPlaying, settings, reloadItems, loadProgress, notify } from './lib/store'
 import { Home } from './views/Home'
 import { Library, ShowPage } from './views/Library'
+import { Continue } from './views/Continue'
 import { Settings } from './views/Settings'
 import { PairPage } from './views/Sync'
 import { startSyncBinding } from './lib/sync/bind'
@@ -39,6 +40,7 @@ function bookLink(qs: URLSearchParams): BookLink | undefined {
 
 const NAV = [
   { path: '/', label: 'Home', icon: 'home' },
+  { path: '/continue', label: 'Continue', icon: 'clock' },
   { path: '/library', label: 'Library', icon: 'library' },
   { path: '/settings', label: 'Settings', icon: 'settings' },
 ]
@@ -48,6 +50,7 @@ function View() {
   const [path, query] = r.split('?')
   const parts = path.split('/').filter(Boolean)
   const qs = new URLSearchParams(query ?? '')
+  if (parts[0] === 'continue') return <Continue />
   if (parts[0] === 'library') return <Library />
   if (parts[0] === 'read' && parts[1]) return <Reader key={parts[1]} id={decodeURIComponent(parts[1])} />
   if (parts[0] === 'read-url' && bookLink(qs)) return <Reader key={r} id="" link={bookLink(qs)} />
