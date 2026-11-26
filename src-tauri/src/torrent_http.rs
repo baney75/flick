@@ -9,7 +9,8 @@ use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
 
 /// A file the server can stream: its size, its name (for the media type), and a reader from an
-/// offset. The torrent engine gives one per active torrent.
+/// offset. The torrent engine gives one per active torrent. A read waiting on a missing piece
+/// holds one of the server's few workers, so it must give up with an error after a while.
 pub trait Source: Send + Sync {
     fn len(&self) -> u64;
     fn name(&self) -> &str;
@@ -25,14 +26,21 @@ pub fn media_type(name: &str) -> Option<&'static str> {
         "mkv" => "video/x-matroska",
         "mov" => "video/quicktime",
         "avi" => "video/x-msvideo",
-        "ts" | "m2ts" => "video/mp2t",
+        "wmv" => "video/x-ms-wmv",
+        "flv" => "video/x-flv",
+        "ts" | "m2ts" | "mts" => "video/mp2t",
+        "mpg" | "mpeg" => "video/mpeg",
+        "ogv" => "video/ogg",
+        "3gp" => "video/3gpp",
         "mp3" => "audio/mpeg",
-        "m4a" | "m4b" => "audio/mp4",
+        "m4a" | "m4b" | "alac" => "audio/mp4",
         "aac" => "audio/aac",
         "flac" => "audio/flac",
         "ogg" | "oga" => "audio/ogg",
         "opus" => "audio/opus",
         "wav" => "audio/wav",
+        "aiff" | "aif" => "audio/aiff",
+        "wma" => "audio/x-ms-wma",
         _ => return None,
     })
 }
@@ -97,6 +105,9 @@ fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// Requests answered at once; a burst of abandoned seeks can't grow threads without limit.
+const WORKERS: usize = 8;
+
 pub struct Server {
     port: u16,
     token: String,
@@ -117,13 +128,15 @@ impl Server {
         let token = raw.iter().map(|b| format!("{b:02x}")).collect();
         let files = Mutex::default();
         let server = Arc::new(Server { port, token, files });
-        let s = Arc::clone(&server);
-        std::thread::spawn(move || {
-            for req in http.incoming_requests() {
-                let s = Arc::clone(&s);
-                std::thread::spawn(move || s.answer(req));
-            }
-        });
+        let http = Arc::new(http);
+        for _ in 0..WORKERS {
+            let (s, http) = (Arc::clone(&server), Arc::clone(&http));
+            std::thread::spawn(move || {
+                for req in http.incoming_requests() {
+                    s.answer(req);
+                }
+            });
+        }
         Ok(server)
     }
 
@@ -131,8 +144,13 @@ impl Server {
         self.files.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Serves `source` under `key` and returns the URL the player opens. Refuses a non-media file.
+    /// Serves `source` under `key` (lowercase letters, digits and `/`, such as an info hash and a
+    /// file index) and returns the URL the player opens. Refuses a non-media file.
     pub fn add(&self, key: &str, source: Arc<dyn Source>) -> Result<String, String> {
+        let plain = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'/';
+        if key.is_empty() || !key.bytes().all(plain) {
+            return Err(format!("A stream key holds only a-z, 0-9 and /: {key:?}"));
+        }
         if media_type(source.name()).is_none() {
             return Err("Flick only plays video and audio files from torrents.".into());
         }
@@ -159,12 +177,12 @@ impl Server {
         let admitted = admit(&method, host.as_deref(), req.url(), self.port, &self.token);
         let source = admitted.and_then(|key| self.files().get(&key).cloned().ok_or(404));
         let result = match source {
-            Ok(src) => respond(src.as_ref(), range.as_deref()),
+            Ok(src) => respond(src.as_ref(), range.as_deref(), method == "HEAD"),
             Err(code) => Err(code),
         };
         let sent = match result {
             Ok(r) => req.respond(r),
-            Err(code) => req.respond(tiny_http::Response::empty(code)),
+            Err(code) => req.respond(sized(code, safety(), Box::new(io::empty()), 0)),
         };
         if let Err(e) = sent {
             eprintln!("torrent stream: {e}");
@@ -178,15 +196,34 @@ fn header(k: &str, v: &str) -> tiny_http::Header {
     tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).expect("ascii header")
 }
 
-fn respond(src: &dyn Source, range: Option<&str>) -> Result<Body, u16> {
+/// On every answer, refusals too.
+fn safety() -> Vec<tiny_http::Header> {
+    vec![
+        header("X-Content-Type-Options", "nosniff"),
+        header("Cache-Control", "no-store"),
+    ]
+}
+
+/// A response that always sends Content-Length; tiny_http would otherwise switch to chunked at
+/// 32 KB and drop the length, which media players need for ranges.
+fn sized(
+    status: u16,
+    headers: Vec<tiny_http::Header>,
+    body: Box<dyn Read + Send>,
+    n: usize,
+) -> Body {
+    tiny_http::Response::new(status.into(), headers, body, Some(n), None)
+        .with_chunked_threshold(usize::MAX)
+}
+
+/// The answer for a source. A HEAD gets the same headers without opening the source, since
+/// opening a torrent reader at an offset reprioritizes pieces.
+fn respond(src: &dyn Source, range: Option<&str>, head: bool) -> Result<Body, u16> {
     let len = src.len();
     let mime = media_type(src.name()).ok_or(404u16)?;
-    let mut headers = vec![
-        header("Content-Type", mime),
-        header("X-Content-Type-Options", "nosniff"),
-        header("Accept-Ranges", "bytes"),
-        header("Cache-Control", "no-store"),
-    ];
+    let mut headers = safety();
+    headers.push(header("Content-Type", mime));
+    headers.push(header("Accept-Ranges", "bytes"));
     let (status, start, count) = match parse_range(range, len) {
         Span::All => (200, 0, len),
         Span::Part(a, b) => {
@@ -195,26 +232,15 @@ fn respond(src: &dyn Source, range: Option<&str>) -> Result<Body, u16> {
         }
         Span::Unsatisfiable => {
             headers.push(header("Content-Range", &format!("bytes */{len}")));
-            let empty: Box<dyn Read + Send> = Box::new(io::empty());
-            return Ok(tiny_http::Response::new(
-                416.into(),
-                headers,
-                empty,
-                Some(0),
-                None,
-            ));
+            return Ok(sized(416, headers, Box::new(io::empty()), 0));
         }
     };
-    let reader = src.open(start).map_err(|_| 503u16)?;
-    let body: Box<dyn Read + Send> = Box::new(reader.take(count));
     let size = usize::try_from(count).map_err(|_| 500u16)?;
-    Ok(tiny_http::Response::new(
-        status.into(),
-        headers,
-        body,
-        Some(size),
-        None,
-    ))
+    let body: Box<dyn Read + Send> = match head {
+        true => Box::new(io::empty()),
+        false => Box::new(src.open(start).map_err(|_| 503u16)?.take(count)),
+    };
+    Ok(sized(status, headers, body, size))
 }
 
 #[cfg(test)]
@@ -224,6 +250,21 @@ mod tests {
     use std::net::TcpStream;
 
     struct Mem(Vec<u8>, &'static str);
+
+    /// A source that must not be opened (a HEAD reads only its size).
+    struct Sealed;
+
+    impl Source for Sealed {
+        fn len(&self) -> u64 {
+            100_000
+        }
+        fn name(&self) -> &str {
+            "big.mkv"
+        }
+        fn open(&self, _: u64) -> io::Result<Box<dyn Read + Send>> {
+            panic!("a HEAD opened the source")
+        }
+    }
 
     impl Source for Mem {
         fn len(&self) -> u64 {
@@ -239,8 +280,12 @@ mod tests {
 
     /// Sends a raw request and returns the status, the headers (lowercase names) and the body.
     fn get(port: u16, path: &str, extra: &str) -> (u16, String, Vec<u8>) {
+        send(port, "GET", path, extra)
+    }
+
+    fn send(port: u16, method: &str, path: &str, extra: &str) -> (u16, String, Vec<u8>) {
         let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        let req = format!("GET {path} HTTP/1.1\r\n{extra}Connection: close\r\n\r\n");
+        let req = format!("{method} {path} HTTP/1.1\r\n{extra}Connection: close\r\n\r\n");
         c.write_all(req.as_bytes()).unwrap();
         let mut out = vec![];
         c.read_to_end(&mut out).unwrap();
@@ -293,8 +338,40 @@ mod tests {
             Err(405)
         );
         assert_eq!(media_type("Big Buck Bunny.MP4"), Some("video/mp4"));
+        for ext in crate::VIDEO.iter().chain(crate::AUDIO) {
+            assert!(media_type(&format!("a.{ext}")).is_some(), "{ext}");
+        }
         assert_eq!(media_type("setup.exe"), None);
         assert_eq!(media_type("README"), None);
+    }
+
+    #[test]
+    fn sends_the_length_of_large_files_and_heads_without_reading() {
+        let s = Server::start().unwrap();
+        let big: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+        let url = s.add("big/0", Arc::new(Mem(big, "big.mp4"))).unwrap();
+        let path = url.rsplit_once(&s.token).unwrap().1;
+        let path = format!("/{}{path}", s.token);
+        let host = format!("Host: 127.0.0.1:{}\r\n", s.port);
+        let whole = get(s.port, &path, &host);
+        let part = get(s.port, &path, &format!("{host}Range: bytes=0-\r\n"));
+        for (code, head, body) in [whole, part] {
+            assert!(head.contains("content-length: 100000"), "{code} {head}");
+            assert!(!head.contains("transfer-encoding"), "{code} {head}");
+            assert_eq!(body.len(), 100_000);
+        }
+        let sealed = s.add("sealed/0", Arc::new(Sealed)).unwrap();
+        let path = sealed.rsplit_once(&s.token).unwrap().1;
+        let path = format!("/{}{path}", s.token);
+        let range = format!("{host}Range: bytes=1000-\r\n");
+        let (code, head, body) = send(s.port, "HEAD", &path, &range);
+        assert_eq!(code, 206);
+        assert!(
+            head.contains("content-range: bytes 1000-99999/100000"),
+            "{head}"
+        );
+        assert!(head.contains("content-length: 99000"), "{head}");
+        assert!(body.is_empty());
     }
 
     #[test]
@@ -330,7 +407,10 @@ mod tests {
         assert!(head.contains("content-range: bytes */5000"), "{head}");
 
         let bad_host = format!("Host: localhost:{}\r\n", s.port);
-        assert_eq!(get(s.port, &path, &bad_host).0, 403);
+        let (code, head, _) = get(s.port, &path, &bad_host);
+        assert_eq!(code, 403);
+        assert!(head.contains("x-content-type-options: nosniff"), "{head}");
+        assert!(head.contains("cache-control: no-store"), "{head}");
         assert_eq!(
             get(s.port, "/0123456789abcdef0123456789abcdef/dd82/0", &host).0,
             403
@@ -341,6 +421,10 @@ mod tests {
         assert_eq!(get(s.port, &path, &host).0, 404, "a stopped torrent");
 
         assert!(s.add("x/0", Arc::new(Mem(vec![1], "run.sh"))).is_err());
+        for key in ["", "a b", "a?b", "A/0", "a%2f"] {
+            let mem = Arc::new(Mem(vec![1], "a.mp4"));
+            assert!(s.add(key, mem).is_err(), "{key:?}");
+        }
         // Listening on 127.0.0.1 only: this computer's other addresses refuse the connection.
         let lan = if_addrs::get_if_addrs()
             .unwrap()
