@@ -99,7 +99,10 @@ function Book({ it }: { it: Item }) {
 
   const save = () => {
     if (!total) return
-    saveProgress(it.id, { pos: t, dur: total, book: true, at: Date.now(), title: it.title, subtitle: it.author, ref: { t: 'item', id: it.id } }).catch(() => {})
+    // Read the place from the player itself: state can lag a pause by one timeupdate.
+    const a = audio.current
+    const pos = pending.current ?? (a && parts[part] ? offsets[part] + a.currentTime : t)
+    saveProgress(it.id, { pos, dur: total, book: true, at: Date.now(), title: it.title, subtitle: it.author, ref: { t: 'item', id: it.id } }).catch(() => {})
   }
 
   // Seek anywhere in the book: switch parts when the time is in another file.
@@ -123,7 +126,13 @@ function Book({ it }: { it: Item }) {
     if (!a) return
     const g = offsets[part] + a.currentTime
     setT(g)
-    if (sleepDue(sleep, Date.now(), g)) { a.pause(); setSleep(null) }
+    if (sleepDue(sleep, Date.now(), g)) {
+      a.pause()
+      // Stop on the chapter's last moment even when the last timeupdate ran past it,
+      // so the book reopens in the chapter the listener fell asleep to.
+      if (sleep && 'at' in sleep) seek(sleep.at - 0.1)
+      setSleep(null)
+    }
     if (Date.now() - lastSave.current > 5000) { lastSave.current = Date.now(); save() }
   }
   const onEnded = () => {
