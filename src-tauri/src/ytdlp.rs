@@ -255,8 +255,11 @@ struct Env {
     fetch: Arc<Mutex<Fetch>>,
 }
 
-fn token_for(url: &str) -> String {
-    hex(&Sha256::digest(url.as_bytes())[..12])
+/// A fresh random token per resolve, so no other plugin can work out the token for a page and play it.
+fn new_token() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|e| format!("random: {e}"))?;
+    Ok(hex(&bytes))
 }
 
 /// One ctx.tools call. `tools` and `hosts` are the plugin's own, from its installed manifest.
@@ -309,7 +312,7 @@ fn run_tool(
                     "This plugin may not play {url}. Its hosts list does not include it."
                 ));
             }
-            let token = token_for(parsed.as_str());
+            let token = new_token()?;
             state
                 .tokens
                 .lock()
@@ -616,6 +619,23 @@ mod tests {
         );
         let ok = run_tool(&e, &st, &s(&["ytdlp"]), &hosts, "ytdlp", "resolve", &url).unwrap();
         assert!(ok.as_str().unwrap().starts_with("flick-tool:ytdlp/"));
+    }
+
+    #[test]
+    fn a_stream_token_cannot_be_worked_out_from_the_page() {
+        let (st, e) = (PluginTools::default(), env_in(Path::new("/nonexistent")));
+        let (t, hosts) = (s(&["ytdlp"]), s(&["www.youtube.com"]));
+        let page = "https://www.youtube.com/watch?v=aqz-KE-bpKQ";
+        let url = [json!(page)];
+        let a = run_tool(&e, &st, &t, &hosts, "ytdlp", "resolve", &url).unwrap();
+        let b = run_tool(&e, &st, &t, &hosts, "ytdlp", "resolve", &url).unwrap();
+        assert_ne!(a, b, "the same page got the same token twice");
+        let guess = format!(
+            "flick-tool:ytdlp/{}",
+            hex(&Sha256::digest(page.as_bytes())[..12])
+        );
+        assert_ne!(a.as_str().unwrap(), guess);
+        assert_eq!(a.as_str().unwrap().len(), "flick-tool:ytdlp/".len() + 32);
     }
 
     #[test]
