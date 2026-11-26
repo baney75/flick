@@ -36,7 +36,8 @@ export function Library() {
     return () => removeEventListener('keydown', k)
   }, [])
 
-  const all = items.value
+  // Photos have their own tab and are in no other (All, Movies, Shows, Music).
+  const all = useMemo(() => items.value.filter((i) => i.kind !== 'photo'), [items.value])
   const dl = downloads.value
   const list = useMemo(() => {
     const needle = norm(q.trim())

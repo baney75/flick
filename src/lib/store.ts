@@ -62,7 +62,9 @@ let thumbRunning = 0
 const queued = new Set<string>()
 export function queueThumbs(list: Item[]) {
   for (const i of list) {
-    if ((i.kind === 'video' || localEpub(i)) && !i.poster && !queued.has(i.id)) {
+    // A photo is done once it has a date, with or without a thumbnail (HEIC in Chrome has none).
+    const photo = i.kind === 'photo' && i.taken === undefined
+    if ((i.kind === 'video' || photo || localEpub(i)) && !i.poster && !queued.has(i.id)) {
       queued.add(i.id)
       thumbQueue.push(i)
     }
@@ -75,7 +77,12 @@ function pump() {
     thumbRunning++
     ;(async () => {
       try {
-        if (!(await hasThumb(it.id)) || (it.kind === 'video' && !it.duration)) {
+        if (it.kind === 'photo') {
+          await makeThumb(it)
+          // A file from a folder this browser keeps only for the visit stays out of storage.
+          if (it.src.t !== 'session') await saveItems([it])
+          thumbTick.value++
+        } else if (!(await hasThumb(it.id)) || (it.kind === 'video' && !it.duration)) {
           const dur = await makeThumb(it)
           if (dur && !it.duration) {
             it.duration = dur

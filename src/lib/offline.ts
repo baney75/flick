@@ -9,7 +9,8 @@ import { progress, settings, notify } from './store'
 
 /** Server items can be saved. Kodi needs the app, which sends the Kodi login. */
 export function canDownload(it: Item): boolean {
-  if (it.parts) return false
+  // Photos never leave the device or the person's own server, so they are never downloaded.
+  if (it.parts || it.kind === 'photo') return false
   if (it.src.t === 'kodi') return isDesktop
   return it.src.t === 'url' && (it.origin === 'jellyfin' || it.origin === 'plex' || it.origin === 'flick')
 }
