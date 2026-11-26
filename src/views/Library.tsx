@@ -11,8 +11,10 @@ import { formatBytes, formatTime } from '../lib/parse'
 import { hasOpfs } from '../lib/platform'
 import { downloads, cancelDownload, removeDownload } from '../lib/downloads'
 import { canDownload, isSaved, save, badgeFor } from '../lib/offline'
+import { photoSet } from '../lib/photos'
+import { Photos } from './Photos'
 
-type Tab = 'all' | 'movies' | 'shows' | 'music' | 'books' | 'audiobooks' | 'stored' | 'downloads'
+type Tab = 'all' | 'movies' | 'shows' | 'music' | 'books' | 'audiobooks' | 'photos' | 'stored' | 'downloads'
 type Sort = 'added' | 'title' | 'year'
 
 const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
@@ -50,6 +52,7 @@ export function Library() {
 
   // Photos have their own tab and are in no other (All, Movies, Shows, Music).
   const all = useMemo(() => items.value.filter((i) => i.kind !== 'photo'), [items.value])
+  const photos = useMemo(() => photoSet(items.value), [items.value])
   const dl = downloads.value
   const libs = useMemo(() => sources.value.filter((r) => r.manifest.has.library)
     .map((r) => ({ p: r.id, pname: r.manifest.name, list: libraries.value[r.id] ?? [] })), [sources.value, libraries.value])
@@ -88,6 +91,7 @@ export function Library() {
     music: all.filter((i) => i.kind === 'audio').length,
     books: all.filter((i) => i.kind === 'book').length,
     audiobooks: all.filter((i) => i.kind === 'audiobook').length,
+    photos: photos.length,
     stored: all.filter((i) => i.origin === 'stored').length,
     downloads: all.filter((i) => isSaved(dl.get(i.id))).length,
   }
@@ -144,13 +148,13 @@ export function Library() {
 
       <div class="toolbar">
         <div class="chips" role="tablist">
-          {(['all', 'movies', 'shows', 'music', 'books', 'audiobooks', 'stored', 'downloads'] as Tab[]).filter((t) => !['books', 'audiobooks', 'stored', 'downloads'].includes(t) || counts[t] || tab === t).map((t) => (
+          {(['all', 'movies', 'shows', 'music', 'books', 'audiobooks', 'photos', 'stored', 'downloads'] as Tab[]).filter((t) => !['books', 'audiobooks', 'photos', 'stored', 'downloads'].includes(t) || counts[t] || tab === t).map((t) => (
             <button role="tab" aria-selected={tab === t} class={`chip ${tab === t ? 'on' : ''}`} onClick={() => setTab(t)}>
               {t === 'all' ? 'All' : t[0].toUpperCase() + t.slice(1)} <span>{counts[t]}</span>
             </button>
           ))}
         </div>
-        {tab !== 'shows' && (
+        {tab !== 'shows' && tab !== 'photos' && (
           <select value={sort} onChange={(e) => setSort((e.target as HTMLSelectElement).value as Sort)} aria-label="Sort">
             <option value="added">Recently added</option>
             <option value="title">Title</option>
@@ -159,7 +163,7 @@ export function Library() {
         )}
       </div>
 
-      {counts.all === 0 ? (
+      {counts.all === 0 && !photos.length ? (
         <div class="empty">
           <Icon name="library" size={40} />
           <h2>Your library is empty</h2>
@@ -169,6 +173,8 @@ export function Library() {
             <button class="btn" onClick={openFiles}>Just play a file</button>
           </div>
         </div>
+      ) : tab === 'photos' ? (
+        <Photos list={photos} />
       ) : list.length === 0 ? (
         <p class="dim center">Nothing matches “{q}”.</p>
       ) : (

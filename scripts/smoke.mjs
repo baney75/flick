@@ -2,7 +2,7 @@
 // subtitles, saved progress, plugins (the Stremio plugin among them) and themes. Screenshots land in test-media/shots.
 import { chromium } from 'playwright'
 import { spawn, execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, utimesSync, rmSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { make as makeAudio } from '../tests/media-setup.mjs'
 import { makeEpub, EVIL } from './epub-fixture.mjs'
@@ -128,6 +128,51 @@ const flick = createServer((req, res) => {
 })
 await new Promise((r) => flick.listen(0, '127.0.0.1', r))
 const FLICK_URL = `http://127.0.0.1:${flick.address().port}`
+
+// Photos: a phone folder (3 JPG, a HEIC Chrome cannot decode, an H.264 MOV), a movies-only folder,
+// and a second mock server with 2,000 photos that counts thumbnail and full-size requests.
+const phone = 'test-media/Phone'
+rmSync(phone, { recursive: true, force: true }); mkdirSync(phone, { recursive: true })
+for (const [i, c] of [[1, 'red'], [2, 'green'], [3, 'blue']]) {
+  execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `color=c=${c}:s=1600x1200`, '-frames:v', '1', `${phone}/IMG_000${i}.JPG`])
+}
+writeFileSync(`${phone}/IMG_0004.HEIC`, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypheic\0\0\0\0mif1heic'), Buffer.alloc(64)]))
+execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=30', '-t', '3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', `${phone}/IMG_0005.MOV`])
+// One month, newest first: the MOV, then the photos, then the HEIC.
+for (const [n, day] of [['IMG_0005.MOV', 7], ['IMG_0003.JPG', 6], ['IMG_0002.JPG', 5], ['IMG_0001.JPG', 4], ['IMG_0004.HEIC', 3]]) {
+  const t = new Date(2026, 9, day, 12); utimesSync(`${phone}/${n}`, t, t)
+}
+const films = 'test-media/Films'
+rmSync(films, { recursive: true, force: true }); mkdirSync(films, { recursive: true })
+writeFileSync(`${films}/Heat (1995).webm`, readFileSync(media))
+writeFileSync(`${films}/Heat (1995).jpg`, readFileSync(`${phone}/IMG_0001.JPG`))
+writeFileSync(`${films}/fanart.jpg`, readFileSync(`${phone}/IMG_0001.JPG`))
+execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=gray:s=64x64', '-frames:v', '1', 'test-media/thumb.jpg'])
+const smallThumb = readFileSync('test-media/thumb.jpg')
+const nasHits = { thumb: 0, photoMedia: 0 }
+const nasItems = Array.from({ length: 2000 }, (_, n) => ({ id: `p${n}`, folder: 'Photos', path: `Trip/IMG_${n}.jpg`, name: `IMG_${n}.jpg`, kind: 'photo', ext: 'jpg', size: 3000000, mtime: Date.UTC(2024, 0, 1) + n * 3600000 * 9 }))
+// The newest item, so its tile is on the first screen.
+nasItems.push({ id: 'h1', folder: 'Photos', path: 'Trip/IMG_9999.HEIC', name: 'IMG_9999.HEIC', kind: 'photo', ext: 'heic', size: 2000000, mtime: Date.UTC(2026, 5, 1), taken: '2026-06-01T09:00:00' })
+const nas = createServer((req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Range')
+  if (req.method === 'OPTIONS') return res.writeHead(204).end()
+  const u = new URL(req.url, 'http://x')
+  const json = (code, o) => res.writeHead(code, { 'content-type': 'application/json' }).end(JSON.stringify(o))
+  if (u.pathname === '/api/info') return json(200, { app: 'flick-server', v: 1, name: 'Photo NAS', version: '0.0.0' })
+  if (req.headers.authorization !== `Bearer ${FLICK_CODE}` && u.searchParams.get('t') !== FLICK_CODE) return json(401, { error: 'wrong code' })
+  if (u.pathname === '/api/library') return json(200, { name: 'Photo NAS', folders: ['Photos'], items: nasItems })
+  if (u.pathname.startsWith('/thumb/')) {
+    nasHits.thumb++
+    // A HEIC the server cannot thumbnail answers 415, as flick-server does.
+    if (u.pathname === '/thumb/h1') return json(415, { error: 'cannot thumbnail' })
+    return res.writeHead(200, { 'content-type': 'image/jpeg' }).end(smallThumb)
+  }
+  if (u.pathname.startsWith('/media/')) { nasHits.photoMedia++; return json(404, { error: 'not here' }) }
+  json(404, { error: 'not found' })
+})
+await new Promise((r) => nas.listen(0, '127.0.0.1', r))
+const NAS_URL = `http://127.0.0.1:${nas.address().port}`
 
 const server = process.env.SMOKE_BASE ? null : spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' })
 const fails = []
@@ -651,11 +696,86 @@ try {
   await page.waitForTimeout(400)
   check(await page.locator('h1', { hasText: 'Settings' }).isVisible() && await page.evaluate(() => { const r = document.getElementById('servers')?.getBoundingClientRect(); return !!r && r.top < innerHeight && r.bottom > 0 }), '#/servers opens Settings at the Servers panel')
 
+  // Photos, in fresh contexts so nothing else is in the library. The folder is added the way Safari and
+  // Firefox do it (a directory input), which hands Flick the files themselves.
+  const photoPage = async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    await ctx.addInitScript(() => { delete window.showDirectoryPicker })
+    const p = await ctx.newPage()
+    p.on('pageerror', (e) => errors.push(e.message))
+    return p
+  }
+  const addDir = async (p, dir) => {
+    await p.goto(`${BASE}/#/library`)
+    const ch = p.waitForEvent('filechooser')
+    await p.getByRole('button', { name: 'Add folder' }).first().click()
+    await (await ch).setFiles(dir)
+  }
+  const pp = await photoPage()
+  await addDir(pp, phone)
+  const photosTab = pp.getByRole('tab', { name: /Photos/ })
+  check(await photosTab.waitFor({ timeout: 10000 }).then(() => true, () => false) && /5/.test(await photosTab.innerText()), 'a phone folder gets a Photos tab with 5 items')
+  await photosTab.click()
+  await pp.locator('.photo-tile img').nth(2).waitFor({ timeout: 10000 })
+  check(await pp.locator('.photos-month').count() === 1 && await pp.locator('.photo-tile').count() === 5, 'the 5 phone items are one month group')
+  // The three photo tiles once their thumbnails have loaded (the video's tile has a play badge).
+  const tileSizes = await pp.waitForFunction(() => {
+    const w = [...document.querySelectorAll('.photo-tile img')].filter((i) => !i.closest('.photo-tile').querySelector('.photo-play')).map((i) => i.naturalWidth)
+    return w.length === 3 && w.every((x) => x > 0) && w
+  }, null, { timeout: 10000 }).then((h) => h.jsonValue(), () => [])
+  check(tileSizes.length === 3 && tileSizes.every((w) => w > 0 && w <= 480), `photo tiles are small thumbnails (${tileSizes.join(', ')} px wide)`)
+  check(await pp.locator('.photo-file', { hasText: 'IMG_0004' }).waitFor({ timeout: 10000 }).then(() => true, () => false), 'a HEIC the browser cannot show is a file tile with its name')
+  check(await pp.getByRole('tab', { name: /^All/ }).innerText().then((t) => /\b1\b/.test(t)), 'photos are not in All, only the phone video is')
+  await pp.locator('.photo-tile').first().click()
+  const movPlays = await pp.waitForFunction(() => { const v = document.querySelector('.photo-viewer video'); return v && v.readyState >= 2 && v.currentTime > 0.3 }, null, { timeout: 10000 }).then(() => true, () => false)
+  check(movPlays, 'the phone MOV plays inline in the photo viewer')
+  await pp.keyboard.press('ArrowRight')
+  const full = await pp.waitForFunction(() => document.querySelector('.photo-viewer img')?.naturalWidth ?? 0, null, { timeout: 5000 }).then((h) => h.jsonValue(), () => 0)
+  check(full === 1600 && /2 of 5/.test(await pp.locator('.photo-viewer-bar').innerText()), `ArrowRight shows the next photo at full size (${full} px)`)
+  await pp.mouse.move(900, 400); await pp.mouse.down(); await pp.mouse.move(600, 400, { steps: 5 }); await pp.mouse.up()
+  check(/3 of 5/.test(await pp.locator('.photo-viewer-bar').innerText()), 'a swipe moves to the next photo')
+  await pp.screenshot({ path: 'test-media/shots/photo-viewer.png' })
+  await pp.keyboard.press('Escape')
+  check(await pp.locator('.photo-viewer').count() === 0 && pp.url().endsWith('#/library'), 'Escape closes the viewer and stays in the Library')
+  await pp.screenshot({ path: 'test-media/shots/photos.png' })
+  await pp.context().close()
+
+  const mp = await photoPage()
+  await addDir(mp, films)
+  await mp.getByText('Heat').first().waitFor({ timeout: 10000 })
+  check(await mp.getByRole('tab', { name: /Photos/ }).count() === 0, 'a folder of movies and their posters has no Photos tab')
+  await mp.context().close()
+
+  const np = await photoPage()
+  const nasSetup = Buffer.from(JSON.stringify({ v: 1, servers: [{ type: 'flick', name: 'Photo NAS', url: NAS_URL, token: FLICK_CODE }] })).toString('base64url')
+  await np.goto(`${BASE}/#/setup?c=${nasSetup}`)
+  await np.getByRole('button', { name: 'Connect all' }).click()
+  await np.getByText('Done').waitFor()
+  await np.goto(`${BASE}/#/library`)
+  await np.getByRole('tab', { name: /Photos/ }).click()
+  await np.locator('.photo-tile img').first().waitFor({ timeout: 10000 })
+  check(/2001/.test(await np.getByRole('tab', { name: /Photos/ }).innerText()), 'a flick-server share lists its photos')
+  await np.waitForTimeout(500)
+  const firstScreen = nasHits.thumb
+  check(firstScreen > 0 && firstScreen < 200, `the first screen asks the server for ${firstScreen} thumbnails, not 2,000`)
+  check(await np.locator('.photo-file', { hasText: 'IMG_9999' }).waitFor({ timeout: 15000 }).then(() => true, () => false), 'a server HEIC with no thumbnail is a file tile')
+  let most = 0
+  const atEnd = async () => np.evaluate(() => { const m = document.querySelector('.main'); return m.scrollTop + m.clientHeight >= m.scrollHeight - 4 })
+  for (let y = 0; y < 200 && !(await atEnd()); y++) {
+    await np.evaluate(() => { const m = document.querySelector('.main'); m.style.scrollBehavior = 'auto'; m.scrollTop += m.clientHeight })
+    await np.waitForTimeout(60)
+    most = Math.max(most, await np.locator('.photo-tile').count())
+  }
+  await np.waitForTimeout(500)
+  check(await atEnd() && nasHits.photoMedia === 0 && most < 400, `2,000 photos scroll to the end with no full-size loads (${nasHits.thumb} thumbnails, ${nasHits.photoMedia} full files, at most ${most} tiles at once)`)
+  await np.context().close()
+
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.join(' | ') : ''}`)
   await browser.close()
 } finally {
   server?.kill()
   flick.close()
+  nas.close()
 }
 if (fails.length) { console.error(`\n${fails.length} check(s) failed`); process.exit(1) }
 console.log('\nsmoke: all checks passed')
