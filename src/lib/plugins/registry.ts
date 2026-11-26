@@ -135,7 +135,8 @@ export async function install(c: Candidate, settings?: Record<string, unknown>):
 }
 
 export async function loadPlugins() {
-  const rows = await db.all<Installed>('plugins')
+  // A service installed while prepare() still called every plugin a source gets its kind back.
+  const rows = (await db.all<Installed>('plugins')).map((r) => (r.kind === 'source' && (r.manifest as V.PluginManifest).kind === 'service' ? { ...r, kind: 'service' as const } : r))
   installed.value = rows.sort((a, b) => a.manifest.name.localeCompare(b.manifest.name))
   for (const r of rows) await registerHosts(r).catch(() => {})
 }

@@ -34,6 +34,11 @@ describe('service plugin manifest', () => {
     expect(() => V.validateManifest(service({ provides: ['vpn'] }), SFNS)).toThrow(/no service called "vpn"/)
     expect(() => V.validateManifest(service({ kind: 'daemon' }), SFNS)).toThrow(/no plugin kind called "daemon"/)
   })
+  it('a service is desktop only', () => {
+    expect(V.validateManifest(service(), SFNS).platforms).toEqual(['desktop'])
+    expect(() => V.validateManifest(service({ platforms: ['web', 'desktop'] }), SFNS)).toThrow(/only in the desktop app/)
+    expect(() => V.validateManifest(service({ platforms: ['mobile'] }), SFNS)).toThrow(/only in the desktop app/)
+  })
   it('vpnOptional is a true or false that only a service sets', () => {
     expect(V.validateManifest(service(), SFNS).vpnOptional).toBe(false)
     expect(V.validateManifest(service({ vpnOptional: true }), SFNS).vpnOptional).toBe(true)

@@ -65,6 +65,16 @@ describe('service keys', () => {
   })
 })
 
+describe('service records', () => {
+  it('a service stored as a source gets its kind back on load', async () => {
+    const db = await import('../src/lib/db')
+    await db.put('plugins', 'app.torbox', rec({ kind: 'source' }))
+    await R.loadPlugins()
+    expect(R.installed.value.find((p) => p.id === 'app.torbox')!.kind).toBe('service')
+    await R.remove('app.torbox')
+  })
+})
+
 describe('service updates', () => {
   it('dropping a debrid host waits for a tap', () => {
     expect(V.addedPermissions(manifest, { ...manifest, debridHosts: [] })).toEqual(['stop treating *.tb-cdn.st as a debrid host'])

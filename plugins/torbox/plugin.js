@@ -97,10 +97,12 @@ export default {
     const hash = String(infoHash).toLowerCase()
     let id = (await torrentIds(ctx))[hash]
     if (id == null) id = await addTorrent(ctx, hash)
-    let t = await api(ctx, `/torrents/mylist?id=${encodeURIComponent(id)}&bypass_cache=true`)
-    // Removed from the TorBox list since: add it again.
-    if (!t) { await rememberId(ctx, hash, null); id = await addTorrent(ctx, hash); t = await api(ctx, `/torrents/mylist?id=${encodeURIComponent(id)}&bypass_cache=true`) }
-    if (!t) return { wait: { message: 'TorBox is adding it' } }
+    let t = null
+    try { t = await api(ctx, `/torrents/mylist?id=${encodeURIComponent(id)}&bypass_cache=true`) } catch { t = null }
+    // Removed from the TorBox list since: forget it, and the next call adds it again.
+    if (!t) { await rememberId(ctx, hash, null); return { wait: { message: 'TorBox is adding it' } } }
+    const state = String(t.download_state ?? '')
+    if (/^(error|failed|missingFiles)/i.test(state)) { await rememberId(ctx, hash, null); return { error: `TorBox could not fetch this torrent (${state}).` } }
     if (t.download_finished && t.download_present) {
       const f = pickFile(t.files, fileIdx, name)
       if (!f) return { error: 'TorBox has this torrent but no file in it to play.' }
@@ -109,7 +111,6 @@ export default {
       return { url }
     }
     const p = Number(t.progress)
-    const state = String(t.download_state ?? '')
     const wait = { message: STATES[state.split(' ')[0]] ?? 'TorBox is fetching it' }
     if (Number.isFinite(p)) wait.pct = p <= 1 ? p * 100 : p
     return { wait }

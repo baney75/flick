@@ -67,6 +67,19 @@ describe('TorBox plugin', () => {
     for (const r of ctx.requests) expect(r.url.startsWith('https://api.torbox.app/')).toBe(true)
   })
 
+  it('resolve: a torrent deleted from the TorBox list is added again; a dead one is an error', async () => {
+    let list = 'mylist_gone'
+    const route = (r: Req): Reply => (r.url.includes('/createtorrent') ? F.createtorrent : r.url.includes('/mylist') ? F[list] : { status: 404, body: {} })
+    const ctx = fakeCtx({ apiKey: KEY }, route)
+    await ctx.store.set('ids', { [HASH]: 99 })
+    expect(await torbox.resolve(ctx, { infoHash: HASH })).toEqual({ wait: { message: 'TorBox is adding it' } })
+    expect(await ctx.store.get('ids')).toEqual({})
+    list = 'mylist_error'
+    expect(await torbox.resolve(ctx, { infoHash: HASH })).toEqual({ error: 'TorBox could not fetch this torrent (error).' })
+    expect(ctx.requests.filter((r) => r.url.endsWith('/createtorrent'))).toHaveLength(1)
+    expect(await ctx.store.get('ids')).toEqual({})
+  })
+
   it('picks the file: fileIdx, then the name, then the largest video', () => {
     const files = (F.mylist_done.body as { data: { files: { id: number }[] } }).data.files
     expect(pickFile(files, 1).id).toBe(1)

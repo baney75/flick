@@ -140,10 +140,12 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
   for (const h of hosts) if (!validHost(h)) fail(`"${h}" is not a host name. Use names like "example.com" or "*.example.com".`)
   const tools = list(x.tools, 'tools', 10).map((t) => str(t, 'A tool', true))
   for (const t of tools) if (!(TOOLS as readonly string[]).includes(t)) fail(`Flick has no desktop tool called "${t}".`)
-  const platforms = (x.platforms === undefined ? [...PLATFORMS] : list(x.platforms, 'platforms')) as string[]
-  for (const p of platforms) if (!(PLATFORMS as readonly string[]).includes(p)) fail(`Unknown platform "${p}".`)
   const kind = x.kind ?? 'source'
   if (!(KINDS as readonly unknown[]).includes(kind)) fail(`Flick has no plugin kind called "${String(kind)}".`)
+  // A service holds the user's key; only the desktop app holds it to its hosts and to https.
+  const platforms = (x.platforms === undefined ? (kind === 'service' ? ['desktop'] : [...PLATFORMS]) : list(x.platforms, 'platforms')) as string[]
+  for (const p of platforms) if (!(PLATFORMS as readonly string[]).includes(p)) fail(`Unknown platform "${p}".`)
+  if (kind === 'service' && platforms.join() !== 'desktop') fail('A service plugin works only in the desktop app: platforms: ["desktop"].')
   let catalogs: CatalogDef[] = [], provides: string[] = [], debridHosts: string[] = []
   if (x.vpnOptional !== undefined && typeof x.vpnOptional !== 'boolean') fail('vpnOptional must be true or false.')
   if (x.vpnOptional !== undefined && kind !== 'service') fail('Only a service plugin can set vpnOptional.')
