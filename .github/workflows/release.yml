@@ -36,6 +36,8 @@ jobs:
     needs: release
     strategy:
       fail-fast: false
+      # One at a time: each job rewrites latest.json on the draft, and two at once can drop a platform.
+      max-parallel: 1
       matrix:
         include:
           - { os: macos-latest, args: '--target universal-apple-darwin' }
