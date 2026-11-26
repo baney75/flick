@@ -1370,7 +1370,9 @@ pub fn run() {
             share::share_new_code,
             ytdlp::plugin_tools,
             ytdlp::plugin_tool,
-            ytdlp::tool_open
+            ytdlp::tool_open,
+            ytdlp::tool_download,
+            ytdlp::tool_download_clean
         ])
         .setup(|app| {
             // Files passed on the command line: `Flick movie.mkv`.

@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 pub const MAX_ITEMS: usize = 200_000;
+/// Photos have a cap of their own, so a big camera roll never pushes videos, music or books out.
+pub const MAX_PHOTOS: usize = 200_000;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Item {
@@ -17,6 +19,12 @@ pub struct Item {
     pub ext: String,
     pub size: u64,
     pub mtime: u64,
+    /// Photos only: when the picture was taken, from EXIF DateTimeOriginal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub taken: Option<String>,
+    /// Whether `taken` was looked for, so a quick scan's empty date is not reused as "no date".
+    #[serde(skip)]
+    pub dated: bool,
     #[serde(skip)]
     pub abs: PathBuf,
 }
@@ -41,6 +49,7 @@ pub fn kind(ext: &str) -> Option<&'static str> {
         "mp3" | "m4a" | "m4b" | "aac" | "flac" | "wav" | "ogg" | "oga" | "opus" | "alac"
         | "aiff" | "wma" => Some("audio"),
         "pdf" | "epub" => Some("book"),
+        "jpg" | "jpeg" | "png" | "heic" | "heif" | "webp" | "gif" | "avif" => Some("photo"),
         _ => None,
     }
 }
@@ -58,6 +67,13 @@ pub fn content_type(ext: &str) -> &'static str {
         "wav" => "audio/wav",
         "pdf" => "application/pdf",
         "epub" => "application/epub+zip",
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "heic" => "image/heic",
+        "heif" => "image/heif",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "avif" => "image/avif",
         _ => "application/octet-stream",
     }
 }
@@ -91,7 +107,34 @@ fn hidden(name: &std::ffi::OsStr) -> bool {
     name.to_string_lossy().starts_with('.')
 }
 
+/// How many items a scan keeps: `media` for video, audio and books, `photos` for photos.
+#[derive(Clone, Copy, Debug)]
+pub struct Caps {
+    pub media: usize,
+    pub photos: usize,
+}
+
+impl Default for Caps {
+    fn default() -> Self {
+        Caps {
+            media: MAX_ITEMS,
+            photos: MAX_PHOTOS,
+        }
+    }
+}
+
 pub fn scan(roots: &[PathBuf]) -> Index {
+    scan_with(roots, None, true)
+}
+
+/// Scans, reusing `prev`'s capture dates for photos whose size and mtime have not changed.
+/// With `dates` off, photos it has no date for are left undated and nothing is opened.
+pub fn scan_with(roots: &[PathBuf], prev: Option<&Index>, dates: bool) -> Index {
+    scan_capped(roots, prev, dates, Caps::default())
+}
+
+pub fn scan_capped(roots: &[PathBuf], prev: Option<&Index>, dates: bool, caps: Caps) -> Index {
+    let (mut media, mut photos) = (0, 0);
     let mut idx = Index {
         folders: labels(roots),
         ..Default::default()
@@ -104,14 +147,40 @@ pub fn scan(roots: &[PathBuf]) -> Index {
             .into_iter()
             .filter_entry(|e| e.depth() == 0 || !hidden(e.file_name()))
         {
-            if idx.items.len() >= MAX_ITEMS {
+            if media >= caps.media && photos >= caps.photos {
                 return idx;
             }
             let Ok(e) = e else { continue };
             if !e.file_type().is_file() {
                 continue;
             }
-            if let Some(item) = make_item(root, &folder, e.path()) {
+            if let Some(mut item) = make_item(root, &folder, e.path()) {
+                let count = if item.kind == "photo" {
+                    (&mut photos, caps.photos)
+                } else {
+                    (&mut media, caps.media)
+                };
+                if *count.0 >= count.1 {
+                    continue;
+                }
+                *count.0 += 1;
+                if item.kind == "photo" {
+                    match prev.and_then(|p| p.get(&item.id)) {
+                        Some(old)
+                            if old.size == item.size
+                                && old.mtime == item.mtime
+                                && (old.dated || !dates) =>
+                        {
+                            item.taken = old.taken.clone();
+                            item.dated = old.dated;
+                        }
+                        _ if dates => {
+                            item.taken = taken(&item.abs);
+                            item.dated = true;
+                        }
+                        _ => {}
+                    }
+                }
                 idx.by_id.insert(item.id.clone(), idx.items.len());
                 idx.items.push(item);
             }
@@ -143,6 +212,31 @@ fn make_item(root: &Path, folder: &str, abs: &Path) -> Option<Item> {
         ext,
         size: meta.len(),
         mtime: mtime.map_or(0, |d| d.as_millis() as u64),
+        taken: None,
+        dated: false,
         abs: abs.to_path_buf(),
     })
+}
+
+/// EXIF DateTimeOriginal as `YYYY-MM-DDTHH:MM:SS`: the camera's wall clock, with no time zone.
+/// Reads only the metadata at the start of the file, so it stays cheap.
+pub fn taken(abs: &Path) -> Option<String> {
+    let file = std::fs::File::open(abs).ok()?;
+    let exif = exif::Reader::new()
+        .read_from_container(&mut std::io::BufReader::new(file))
+        .ok()?;
+    let field = exif.get_field(exif::Tag::DateTimeOriginal, exif::In::PRIMARY)?;
+    let exif::Value::Ascii(ref v) = field.value else {
+        return None;
+    };
+    let d = exif::DateTime::from_ascii(v.first()?).ok()?;
+    // Cameras with no clock set write zeros.
+    let date_ok = d.year >= 1900 && (1..=12).contains(&d.month) && (1..=31).contains(&d.day);
+    if !date_ok || d.hour > 23 || d.minute > 59 || d.second > 60 {
+        return None;
+    }
+    Some(format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+        d.year, d.month, d.day, d.hour, d.minute, d.second
+    ))
 }

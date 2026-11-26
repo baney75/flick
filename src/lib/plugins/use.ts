@@ -15,7 +15,7 @@ export const themes = computed(() => installed.value.filter((p) => p.kind === 't
 
 export const sourceById = (id: string) => sources.value.find((p) => p.id === id)
 
-export const progressKey = (p: string, videoId: string) => `pl:${p}:${videoId}`
+export { progressKey } from './resume'
 
 export function titlePath(p: string, type: string, id: string, videoId?: string) {
   const v = videoId && videoId !== id ? `?v=${encodeURIComponent(videoId)}` : ''

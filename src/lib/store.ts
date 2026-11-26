@@ -149,6 +149,8 @@ export interface PlayRequest {
   next?: () => PlayRequest | null
   /** Called with the position each time the player saves it (a plugin syncs it back). */
   onSave?: (pos: number, dur: number) => void
+  /** Stream from the source even when a downloaded copy exists (the user chose the server). */
+  stream?: boolean
 }
 
 export const nowPlaying = signal<PlayRequest | null>(null)

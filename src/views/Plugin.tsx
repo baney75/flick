@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from 'preact/hooks'
 import type { ComponentChildren } from 'preact'
-import { go, play, notify } from '../lib/store'
+import { go, play, notify, progress } from '../lib/store'
 import { Card, Row } from '../components/Card'
 import { Icon } from '../components/icons'
 import { isDesktop, isMobileApp } from '../lib/platform'
@@ -14,6 +14,8 @@ import { installed } from '../lib/plugins/registry'
 import { sources, sourceById, searchAll, titlePath, progressKey, libraries, loadLibrary, continueOf, type Source, type Found } from '../lib/plugins/use'
 import type { CatalogDef, Meta, Stream, Video } from '../lib/plugins/validate'
 import { sections, best, qualityOf, hdrOf, sizeOf, downloadable } from '../lib/plugins/streams'
+import { resumeOf, unfinished } from '../lib/plugins/resume'
+import { formatTime } from '../lib/parse'
 
 const shape = (m: Meta) => (m.posterShape === 'landscape' ? 'wide' : m.posterShape === 'square' ? 'square' : 'poster')
 
@@ -152,9 +154,13 @@ export function PluginTitle({ p, type, id, videoId }: { p: string; type: string;
     callPlugin(rec, 'meta', [{ type, id }]).then((m) => {
       setMeta(m)
       const vids = m.videos ?? []
+      // With no episode asked for, open where the user left off.
+      const back = videoId ? null : resumeOf(progress.value, rec.id, id, vids)
+      const pick = videoId ?? back?.videoId
       if (vids.length > 1) {
-        const cur = videoId ? vids.find((v) => v.id === videoId) : null
+        const cur = pick ? vids.find((v) => v.id === pick) : null
         setSeason(cur?.season ?? vids.find((v) => (v.season ?? 0) > 0)?.season ?? vids[0].season ?? 0)
+        if (back) setVid(back.videoId)
       } else if (!videoId) setVid(vids[0]?.id ?? id)
     }).catch((e) => { setErr((e as Error).message); setMeta(null) })
   }, [rec?.sha256, type, id])
@@ -245,7 +251,9 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     saveStream(saved)
   }
 
-  const start = async (s: Stream) => {
+  const last = progress.value[key]
+  const resumeAt = unfinished(last) ? last.pos : 0
+  const start = async (s: Stream, startAt?: number) => {
     if (s.external) { window.open(s.url, '_blank', 'noopener'); return }
     if (s.kind === 'book') {
       go(`/read-url?u=${encodeURIComponent(s.url)}&t=${encodeURIComponent(meta.name)}&r=${encodeURIComponent(JSON.stringify(ref))}`)
@@ -264,6 +272,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       poster: video?.thumbnail ?? meta.background ?? meta.poster,
       subs: subs.slice(0, 12).map((x) => ({ label: x.label ?? x.lang, lang: x.lang, url: x.url })),
       ref,
+      startAt,
       onSave,
     })
   }
@@ -304,8 +313,9 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
         <h2>Streams{video ? ` · ${epLabel(video) || video.title}` : ''}</h2>
         {list === null && <span class="spinner sm" />}
         {dl?.state === 'done'
-          ? <button class="btn primary play-best" onClick={() => playSaved(dl, { onSave })}><Icon name="play" size={16} /> Play downloaded</button>
-          : top && <button class="btn primary play-best" onClick={() => start(top)}><Icon name="play" size={16} /> Play{qualityOf(top) !== 'Other' ? ` ${qualityOf(top)}` : ''}</button>}
+          ? <button class="btn primary play-best" onClick={() => playSaved(dl, { onSave })}><Icon name="play" size={16} /> {resumeAt ? `Resume downloaded ${formatTime(resumeAt)}` : 'Play downloaded'}</button>
+          : top && <button class="btn primary play-best" onClick={() => start(top)}><Icon name="play" size={16} /> {resumeAt ? `Resume ${formatTime(resumeAt)}` : `Play${qualityOf(top) !== 'Other' ? ` ${qualityOf(top)}` : ''}`}</button>}
+        {(dl?.state === 'done' || top) && resumeAt > 0 && <button class="btn ghost start-over" onClick={() => (dl?.state === 'done' ? playSaved(dl, { onSave, startAt: 0 }) : start(top!, 0))}>Start over</button>}
       </div>
       {dl && !(dl.state === 'failed' && dl.error === 'Canceled' && !dl.part) && (
         <p class="dl-status small">

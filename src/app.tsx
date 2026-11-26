@@ -9,6 +9,7 @@ import { Setup } from './views/Setup'
 import { Reader } from './views/Reader'
 import { Listen } from './views/Listen'
 import { Player } from './components/Player'
+import { SourceSheet } from './components/Titles'
 import { Icon } from './components/icons'
 import { Logo } from './components/Logo'
 import { playFiles, playPaths } from './lib/actions'
@@ -141,6 +142,7 @@ export function App() {
         <View />
       </main>
       <Player />
+      <SourceSheet />
       {drag && <div class="dropzone"><div><Icon name="play" size={40} /><p>Drop to play</p></div></div>}
       {toast.value && <div class="toast" role="status" key={toast.value.id}>{toast.value.text}</div>}
     </div>
