@@ -1,0 +1,14 @@
+{
+  "_source": "Shapes from https://www.premiumize.me/api (2026-11-26). Values are made up.",
+  "account_ok": { "status": 200, "body": { "status": "success", "customer_id": "1234567", "premium_until": 1803859200, "limit_used": 0.42, "booster_points": 0 } },
+  "account_bad": { "status": 200, "body": { "status": "error", "message": "Not logged in.", "code": "authentication_failed" } },
+  "cache_check": { "status": 200, "body": { "status": "success", "response": [false, true, false], "filename": [null, "Movie.2024.1080p", null], "filesize": [0, "8100000000", 0] } },
+  "directdl_miss": { "status": 200, "body": { "status": "error", "message": "content not in cache" } },
+  "directdl_hit": { "status": 200, "body": { "status": "success", "content": [
+    { "path": "Show.S01/Show.S01E01.1080p.mkv", "size": 2100000000, "link": "https://a7.energycdn.com/dl/x1/Show.S01E01.1080p.mkv" },
+    { "path": "Show.S01/Show.S01E02.1080p.mkv", "size": 2200000000, "link": "https://a7.energycdn.com/dl/x2/Show.S01E02.1080p.mkv" }
+  ] } },
+  "create": { "status": 200, "body": { "status": "success", "id": "PMT1", "name": "Show.S01" } },
+  "list_40": { "status": 200, "body": { "status": "success", "transfers": [ { "id": "PMT1", "name": "Show.S01", "status": "running", "progress": 0.4, "message": "Downloading", "folder_id": null, "file_id": null } ] } },
+  "list_error": { "status": 200, "body": { "status": "success", "transfers": [ { "id": "PMT1", "name": "Show.S01", "status": "error", "progress": 0, "message": "No seeds", "folder_id": null, "file_id": null } ] } }
+}
