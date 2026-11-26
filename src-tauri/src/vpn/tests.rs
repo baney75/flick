@@ -12,7 +12,7 @@ struct Fake {
     os: &'static str,
     ready: bool,
     tun: bool,
-    physical: Option<String>,
+    physical: Result<Option<String>, Fail>,
     traces: HashMap<(bool, Option<String>), Result<IpAddr, TraceErr>>,
 }
 
@@ -20,7 +20,7 @@ impl Probe for Fake {
     fn route(&self, ip: &str) -> Option<String> {
         self.routes.get(ip).cloned()
     }
-    fn physical(&self) -> Option<String> {
+    fn physical(&self) -> Result<Option<String>, Fail> {
         self.physical.clone()
     }
     fn dns(&self) -> Option<Vec<Dns>> {
@@ -77,7 +77,7 @@ fn vpn() -> Fake {
         os: "macos",
         ready: true,
         tun: false,
-        physical: Some("en0".into()),
+        physical: Ok(Some("en0".into())),
         traces: HashMap::new(),
     };
     f.route("1.1.1.1", "utun4")
@@ -221,8 +221,21 @@ fn a_vpn_kill_switch_that_blocks_the_physical_request_passes() {
     let blocked = vpn().trace(false, Some("en0"), Err(TraceErr::Net));
     assert!(decide(&blocked).ok);
     let mut no_physical = vpn();
-    no_physical.physical = None;
-    assert!(decide(&no_physical).ok);
+    no_physical.physical = Ok(None);
+    assert!(decide(&no_physical).ok, "every default route is the tunnel");
+    let mut unread = vpn();
+    unread.physical = Err(Fail::Unchecked);
+    assert_eq!(
+        fails(&unread),
+        Some(Fail::Unchecked),
+        "unread routes never pass"
+    );
+    let no_answer = vpn().trace(false, Some("en0"), Err(TraceErr::Answer));
+    assert_eq!(
+        fails(&no_answer),
+        Some(Fail::Unchecked),
+        "a physical request that connected but got no usable answer may have exposed the address"
+    );
     let unbindable = vpn().trace(false, Some("en0"), Err(TraceErr::Bind));
     assert_eq!(
         fails(&unbindable),
@@ -250,7 +263,7 @@ fn parses_macos_route_dns_and_service_output() {
         parse_route_macos("route: writing to routing socket: not in table"),
         None
     );
-    assert_eq!(parse_defaults(NETSTAT), ["en0", "utun19"]);
+    assert_eq!(parse_defaults(NETSTAT, false), ["en0", "utun19"]);
     assert_eq!(parse_scutil_dns(SCUTIL_TAILSCALE), ["10.0.0.1"]);
     assert_eq!(parse_scutil_dns(SCUTIL_VPN), ["10.64.0.1", "fe80::1%utun5"]);
     assert_eq!(
@@ -274,7 +287,10 @@ fn parses_linux_route_and_dns_output() {
     assert_eq!(parse_route_linux(get).as_deref(), Some("wg0"));
     assert_eq!(parse_route_linux(""), None);
     let defaults = "default via 192.168.1.1 dev wlan0 proto dhcp metric 600 \ndefault dev wg0 table 51820 scope link \n";
-    assert_eq!(parse_defaults(defaults), ["wlan0", "wg0"]);
+    assert_eq!(parse_defaults(defaults, true), ["wlan0", "wg0"]);
+    let multipath = "default proto static metric 100 \n\tnexthop via 192.168.1.1 dev eth0 weight 1 \n\tnexthop via 192.168.2.1 dev eth1 weight 1 \n10.0.0.0/8 dev eth2 \n\tnexthop via 10.0.0.1 dev eth3 \n";
+    assert_eq!(parse_defaults(multipath, true), ["eth0", "eth1"]);
+    assert!(parse_defaults("", true).is_empty());
     let conf = "# generated\nnameserver 127.0.0.53\noptions edns0\nsearch lan\n";
     assert_eq!(parse_resolv_conf(conf), ["127.0.0.53"]);
     let stub = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
@@ -442,7 +458,8 @@ fn live_exit() {
     println!("physical {:?}", p.physical());
     println!(
         "bound {:?}",
-        p.physical().map(|i| p.trace(false, Some(&i)).map(mask))
+        p.physical()
+            .map(|i| i.map(|i| p.trace(false, Some(&i)).map(mask)))
     );
     println!("exit {:?}", exit_check(&p).map(mask));
 }

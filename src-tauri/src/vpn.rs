@@ -56,11 +56,16 @@ impl Fail {
     }
 }
 
-/// A trace request that could not run: the socket could not be bound, or the network refused it.
+/// A trace request that failed. Only `Net` means nothing reached the server: the connection was
+/// refused or timed out, as a VPN's kill switch does to the physical link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TraceErr {
+    /// The socket could not be bound to the interface.
     Bind,
+    /// The connection did not open.
     Net,
+    /// The connection opened, but no usable answer came back (TLS, a read, a bad response).
+    Answer,
 }
 
 /// What the gate asks of the system. `ip` strings may carry an IPv6 scope (fe80::1%en0).
@@ -68,7 +73,9 @@ pub trait Probe {
     /// The interface the system routes `ip` through.
     fn route(&self, ip: &str) -> Option<String>;
     /// The first default-route interface that is not a tunnel: where traffic goes without the VPN.
-    fn physical(&self) -> Option<String>;
+    /// Ok(None) when every default route is a tunnel or down; Err(Unchecked) when the routes could
+    /// not be read or held no default route.
+    fn physical(&self) -> Result<Option<String>, Fail>;
     /// The DNS servers general lookups use; None when a local stub's upstreams are unknown.
     fn dns(&self) -> Option<Vec<Dns>>;
     /// Addresses of an interface that is up; empty when it is down or missing.
@@ -146,7 +153,7 @@ pub fn route_check(p: &dyn Probe) -> Result<String, Fail> {
 /// Rule 25 d: the address sites see through the tunnel, when it differs from the physical one.
 /// A physical request the network refuses (a VPN's own kill switch) exposes nothing, so it passes.
 pub fn exit_check(p: &dyn Probe) -> Result<IpAddr, Fail> {
-    let phys = p.physical();
+    let phys = p.physical()?;
     let leaks = |seen: IpAddr, v6: bool| -> Result<bool, Fail> {
         let Some(ph) = phys.as_deref() else {
             return Ok(false);
@@ -157,7 +164,7 @@ pub fn exit_check(p: &dyn Probe) -> Result<IpAddr, Fail> {
         match p.trace(v6, Some(ph)) {
             Ok(ip) => Ok(ip == seen),
             Err(TraceErr::Net) => Ok(false),
-            Err(TraceErr::Bind) => Err(Fail::Unchecked),
+            Err(TraceErr::Bind | TraceErr::Answer) => Err(Fail::Unchecked),
         }
     };
     let v4 = p.trace(false, None).map_err(|_| Fail::Offline)?;
@@ -253,15 +260,29 @@ pub fn parse_route_linux(out: &str) -> Option<String> {
     None
 }
 
-/// Default-route interfaces in order, from `netstat -rn -f inet` (macOS, fourth column) or
-/// `ip route show default` (Linux, after `dev`).
-pub fn parse_defaults(out: &str) -> Vec<String> {
-    let iface =
-        |l: &str| parse_route_linux(l).or_else(|| l.split_whitespace().nth(3).map(String::from));
-    out.lines()
-        .filter(|l| l.starts_with("default"))
-        .filter_map(iface)
-        .collect()
+/// Default-route interfaces in order: the fourth column of `netstat -rn -f inet` (macOS), or
+/// each `dev` of `ip route show default` (Linux), the `nexthop` lines of a multipath route included.
+pub fn parse_defaults(out: &str, linux: bool) -> Vec<String> {
+    let mut found = vec![];
+    let mut in_default = false;
+    for l in out.lines() {
+        let nexthop = l.trim_start().starts_with("nexthop");
+        if !nexthop {
+            in_default = l.starts_with("default");
+        }
+        if !in_default {
+            continue;
+        }
+        let dev = if linux {
+            parse_route_linux(l)
+        } else if nexthop {
+            None
+        } else {
+            l.split_whitespace().nth(3).map(String::from)
+        };
+        found.extend(dev);
+    }
+    found
 }
 
 /// Name servers of `scutil --dns` that answer general lookups: unscoped resolvers with no
@@ -474,18 +495,20 @@ impl Probe for System {
             parse_route_linux(&run(ip_bin()?, &[fam, "route", "get", ip], None)?)
         }
     }
-    fn physical(&self) -> Option<String> {
-        let out = if cfg!(target_os = "macos") {
-            run("/usr/sbin/netstat", &["-rn", "-f", "inet"], None)?
+    fn physical(&self) -> Result<Option<String>, Fail> {
+        let linux = !cfg!(target_os = "macos");
+        let out = if linux {
+            let args = ["-4", "route", "show", "table", "all", "default"];
+            ip_bin().and_then(|ip| run(ip, &args, None))
         } else {
-            run(
-                ip_bin()?,
-                &["-4", "route", "show", "table", "all", "default"],
-                None,
-            )?
+            run("/usr/sbin/netstat", &["-rn", "-f", "inet"], None)
         };
+        let defaults = parse_defaults(&out.ok_or(Fail::Unchecked)?, linux);
+        if defaults.is_empty() {
+            return Err(Fail::Unchecked);
+        }
         let usable = |i: &String| !self.is_tunnel(i) && !self.addrs(i).is_empty();
-        parse_defaults(&out).into_iter().find(usable)
+        Ok(defaults.into_iter().find(usable))
     }
     fn dns(&self) -> Option<Vec<Dns>> {
         if cfg!(target_os = "macos") {
@@ -544,8 +567,8 @@ impl Probe for System {
             .parse()
             .map_err(|_| TraceErr::Net)?;
         let tcp = connect(SocketAddr::new(ip, 443), bind)?;
-        let resp = https_get(tcp, ip).map_err(|_| TraceErr::Net)?;
-        parse_trace(&resp).ok_or(TraceErr::Net)
+        let resp = https_get(tcp, ip).map_err(|_| TraceErr::Answer)?;
+        parse_trace(&resp).ok_or(TraceErr::Answer)
     }
 }
 
@@ -615,7 +638,7 @@ fn https_get(tcp: TcpStream, ip: IpAddr) -> Result<String, Box<dyn std::error::E
     let mut buf = vec![];
     // A server may close without a TLS close_notify; what arrived before that still counts.
     if let Err(e) = tls.read_to_end(&mut buf) {
-        if buf.is_empty() {
+        if buf.is_empty() || e.kind() != std::io::ErrorKind::UnexpectedEof {
             return Err(e.into());
         }
     }
