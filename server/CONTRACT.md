@@ -43,8 +43,10 @@ Access-Control-Allow-Methods: GET, HEAD, OPTIONS
   are not listed.
 - `mtime`: milliseconds since the epoch.
 - `taken` (photos only, when the file has one): EXIF DateTimeOriginal as `YYYY-MM-DDTHH:MM:SS`, the camera's wall
-  clock with no time zone. A rescan reuses it while a photo's size and mtime are unchanged.
-- Hidden files and folders (leading `.`) are skipped; symlinks are not followed. Cap of 200,000 items.
+  clock with no time zone. It is read in the background after the server starts, so a
+  listing right after start can lack it. A rescan reuses it while a photo's size and mtime are unchanged.
+- Hidden files and folders (leading `.`) are skipped; symlinks are not followed. Cap of 200,000 items, plus 200,000
+  photos counted on their own, so photos never push other media out.
 
 `GET|HEAD /media/<id>` (auth): the file's bytes.
 - Without `Range`: `200`, `Accept-Ranges: bytes`, `Content-Length`.
@@ -58,9 +60,10 @@ Access-Control-Allow-Methods: GET, HEAD, OPTIONS
 `GET /thumb/<id>` (auth): a photo's thumbnail, so a photo grid never downloads full-size pictures.
 - JPEG, longest edge 320 px, turned upright from the EXIF orientation. `Cache-Control: private, max-age=31536000,
   immutable`; clients add `&v=<mtime>` so a changed photo gets a new URL.
-- Kept in `<config dir>/thumbs/<id>-<size>-<mtime>.jpg` and served from there next time.
+- Kept in `<config dir>/thumbs/<id>-<size>-<mtime>.jpg` and served from there next time. At most two render at once.
 - `404` for an id that is not a photo. `415` with JSON `{"error":"..."}` when the server cannot decode it (HEIC, AVIF,
-  a damaged file); the client shows a file tile instead.
+  a damaged file), remembered as `<id>-<size>-<mtime>.none`; the client
+  shows a file tile instead. `404` also when the file is gone since the last scan.
 
 Any other `/api/*` or `/thumb/*` path: `401` without the code, `404` with it.
 
