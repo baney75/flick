@@ -39,8 +39,11 @@ Access-Control-Allow-Methods: GET, HEAD, OPTIONS
 - `folder`: label of the shared root (its directory name; a duplicate gets ` 2`, ` 3`).
 - `path`: relative to the root, `/` separators on every OS.
 - `kind`: `video` (mp4 m4v mov mkv webm avi ts m2ts wmv flv mpg mpeg 3gp ogv), `audio` (mp3 m4a m4b aac flac
-  wav ogg oga opus alac aiff wma), `book` (pdf epub). Other files are not listed.
+  wav ogg oga opus alac aiff wma), `book` (pdf epub), `photo` (jpg jpeg png heic heif webp gif avif). Other files
+  are not listed.
 - `mtime`: milliseconds since the epoch.
+- `taken` (photos only, when the file has one): EXIF DateTimeOriginal as `YYYY-MM-DDTHH:MM:SS`, the camera's wall
+  clock with no time zone. A rescan reuses it while a photo's size and mtime are unchanged.
 - Hidden files and folders (leading `.`) are skipped; symlinks are not followed. Cap of 200,000 items.
 
 `GET|HEAD /media/<id>` (auth): the file's bytes.
@@ -48,12 +51,20 @@ Access-Control-Allow-Methods: GET, HEAD, OPTIONS
 - One range (`bytes=a-b`, `bytes=a-`, `bytes=-n`): `206` with `Content-Range: bytes a-b/total`.
 - Unsatisfiable: `416` with `Content-Range: bytes */total`. Multiple ranges: serve the first.
 - `Content-Type` from the extension (video/mp4, video/x-matroska, video/webm, video/quicktime, audio/mpeg,
-  audio/mp4, audio/flac, audio/ogg, audio/wav, application/pdf, application/epub+zip, application/octet-stream otherwise).
+  audio/mp4, audio/flac, audio/ogg, audio/wav, application/pdf, application/epub+zip, image/jpeg, image/png, image/heic,
+  image/heif, image/webp, image/gif, image/avif, application/octet-stream otherwise).
 - Only ids in the index are served. No path ever comes from the URL, so nothing outside a shared root is reachable.
 
-Any other `/api/*` path: `401` without the code, `404` with it.
+`GET /thumb/<id>` (auth): a photo's thumbnail, so a photo grid never downloads full-size pictures.
+- JPEG, longest edge 320 px, turned upright from the EXIF orientation. `Cache-Control: private, max-age=31536000,
+  immutable`; clients add `&v=<mtime>` so a changed photo gets a new URL.
+- Kept in `<config dir>/thumbs/<id>-<size>-<mtime>.jpg` and served from there next time.
+- `404` for an id that is not a photo. `415` with JSON `{"error":"..."}` when the server cannot decode it (HEIC, AVIF,
+  a damaged file); the client shows a file tile instead.
 
-Anything else under `GET` (not `/api/*` or `/media/*`, no auth): the Flick web app, when one is available
+Any other `/api/*` or `/thumb/*` path: `401` without the code, `404` with it.
+
+Anything else under `GET` (not `/api/*`, `/media/*` or `/thumb/*`, no auth): the Flick web app, when one is available
 (`--web <dir>`, else the copy built in with the `embed-web` feature).
 - The file at that path if it exists, else `index.html` (the app routes itself).
 - `Content-Type` from the extension (html, js, css, svg, png, webp, woff2, json, wasm, map, ico, txt, webmanifest).

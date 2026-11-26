@@ -3,6 +3,7 @@
 pub mod index;
 pub mod reach;
 pub mod service;
+pub mod thumb;
 pub mod web;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
@@ -45,13 +46,16 @@ struct State {
     real_roots: Vec<PathBuf>,
     index: RwLock<Arc<Index>>,
     web: web::Web,
+    /// Cached photo thumbnails.
+    thumbs: PathBuf,
     // Set by stop(); a body being streamed ends at its next read.
     stopping: AtomicBool,
 }
 
 impl State {
     fn rescan(&self) {
-        let fresh = Arc::new(index::scan(&self.roots));
+        let prev = self.index();
+        let fresh = Arc::new(index::scan_with(&self.roots, Some(&prev)));
         *self.index.write().unwrap() = fresh;
     }
     fn index(&self) -> Arc<Index> {
@@ -202,6 +206,7 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
     let name = cfg.name.clone();
     let state = Arc::new(State {
         web,
+        thumbs: cfg.config_dir.join("thumbs"),
         name: cfg.name,
         token: token.clone(),
         real_roots: cfg
@@ -297,7 +302,7 @@ fn handle(st: &State, req: Request) {
             serde_json::json!({"app":"flick-server","v":1,"name":st.name,"version":VERSION}),
         );
     }
-    if !path.starts_with("/api/") && !path.starts_with("/media/") {
+    if !path.starts_with("/api/") && !path.starts_with("/media/") && !path.starts_with("/thumb/") {
         return fallback(st, req);
     }
     let bearer = req
@@ -325,6 +330,12 @@ fn handle(st: &State, req: Request) {
             200,
             serde_json::json!({"name":st.name,"folders":idx.folders,"items":idx.items}),
         );
+    }
+    if let Some(id) = path.strip_prefix("/thumb/") {
+        return match st.index().get(id) {
+            Some(item) if item.kind == "photo" => thumbnail(req, item, st),
+            _ => json(req, 404, serde_json::json!({"error":"not found"})),
+        };
     }
     let Some(id) = path.strip_prefix("/media/") else {
         return json(req, 404, serde_json::json!({"error":"not found"}));
@@ -440,6 +451,33 @@ impl<R: Read> Read for Stoppable<'_, R> {
         }
         self.inner.read(buf)
     }
+}
+
+fn thumbnail(req: Request, item: &index::Item, st: &State) {
+    let cached = thumb::cache_path(&st.thumbs, &item.id, item.size, item.mtime);
+    let jpeg = match std::fs::read(&cached) {
+        Ok(b) => Some(b),
+        Err(_) => open_inside(&item.abs, &st.real_roots)
+            .and_then(thumb::render)
+            .inspect(|b| {
+                // A read-only config dir only costs the cache; the thumbnail is still served.
+                let _ = thumb::store(&cached, b);
+            }),
+    };
+    let Some(jpeg) = jpeg else {
+        return json(
+            req,
+            415,
+            serde_json::json!({"error":"no thumbnail for this file"}),
+        );
+    };
+    let res = Response::from_data(jpeg)
+        .with_header(header("Content-Type", "image/jpeg"))
+        .with_header(header(
+            "Cache-Control",
+            "private, max-age=31536000, immutable",
+        ));
+    respond(req, res);
 }
 
 fn media(req: Request, item: &index::Item, roots: &[PathBuf], stopping: &AtomicBool) {
