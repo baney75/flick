@@ -14,6 +14,8 @@ use tauri::{Emitter, Manager};
 
 mod plugins;
 mod share;
+#[cfg(desktop)]
+mod vpn;
 mod ytdlp;
 
 const VIDEO: &[&str] = &[
@@ -1375,7 +1377,9 @@ pub fn run() {
             ytdlp::plugin_tool,
             ytdlp::tool_open,
             ytdlp::tool_download,
-            ytdlp::tool_download_clean
+            ytdlp::tool_download_clean,
+            #[cfg(desktop)]
+            vpn::vpn_gate
         ])
         .setup(|app| {
             // Files passed on the command line: `Flick movie.mkv`.
