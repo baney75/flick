@@ -7,6 +7,7 @@ use index::Index;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, RwLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -31,6 +32,7 @@ pub struct Config {
 }
 
 const WORKERS: usize = 16;
+const STOP_WAIT: Duration = Duration::from_secs(2);
 
 struct State {
     name: String,
@@ -38,6 +40,8 @@ struct State {
     roots: Vec<PathBuf>,
     real_roots: Vec<PathBuf>,
     index: RwLock<Arc<Index>>,
+    // Set by stop(); a body being streamed ends at its next read.
+    stopping: AtomicBool,
 }
 
 impl State {
@@ -56,6 +60,7 @@ pub struct Handle {
     server: Arc<Server>,
     stop_tx: Option<mpsc::Sender<()>>,
     threads: Vec<JoinHandle<()>>,
+    state: Arc<State>,
 }
 
 impl Handle {
@@ -73,11 +78,20 @@ impl Handle {
     }
     fn shutdown(&mut self) {
         self.stop_tx.take();
+        self.state.stopping.store(true, Ordering::SeqCst);
         for _ in 0..WORKERS {
             self.server.unblock();
         }
+        // Streams end at their next read. A client that stopped reading can hold a worker in a
+        // blocked write, so wait at most STOP_WAIT and then let such a worker go on its own.
+        let deadline = std::time::Instant::now() + STOP_WAIT;
         for t in self.threads.drain(..) {
-            let _ = t.join();
+            while !t.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if t.is_finished() {
+                let _ = t.join();
+            }
         }
     }
 }
@@ -141,6 +155,7 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
             .collect(),
         roots: cfg.media,
         index: Default::default(),
+        stopping: AtomicBool::new(false),
     });
     state.rescan();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
@@ -152,6 +167,7 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
     });
     // A fixed set of workers answers requests, so a flood of connections can't spawn threads
     // without bound or crash the server when the OS refuses one.
+    let shared = state.clone();
     let mut threads = vec![rescan];
     for _ in 0..WORKERS {
         let (srv, st) = (server.clone(), state.clone());
@@ -167,6 +183,7 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
         server,
         stop_tx: Some(stop_tx),
         threads,
+        state: shared,
     })
 }
 
@@ -254,7 +271,7 @@ fn handle(st: &State, req: Request) {
     let id = &path["/media/".len()..];
     let idx = st.index();
     match idx.get(id) {
-        Some(item) => media(req, item, &st.real_roots),
+        Some(item) => media(req, item, &st.real_roots, &st.stopping),
         None => json(req, 404, serde_json::json!({"error":"not found"})),
     }
 }
@@ -311,11 +328,52 @@ fn inside_roots(abs: &std::path::Path, roots: &[PathBuf]) -> bool {
     roots.iter().any(|r| real.starts_with(r))
 }
 
-fn media(req: Request, item: &index::Item, roots: &[PathBuf]) {
-    if !inside_roots(&item.abs, roots) {
-        return json(req, 404, serde_json::json!({"error":"not found"}));
+/// Opens the item's file only if what was opened is the file at its resolved path inside a shared
+/// root. Checking after the open, and comparing the file's identity, closes the gap where the path
+/// is swapped between a check and the open.
+fn open_inside(abs: &Path, roots: &[PathBuf]) -> Option<File> {
+    let file = File::open(abs).ok()?;
+    if !inside_roots(abs, roots) {
+        return None;
     }
-    let Ok(mut file) = File::open(&item.abs) else {
+    same_file(&file, &std::fs::canonicalize(abs).ok()?).then_some(file)
+}
+
+#[cfg(unix)]
+pub fn same_file(file: &File, path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (file.metadata(), std::fs::metadata(path)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+pub fn same_file(file: &File, path: &Path) -> bool {
+    // Without a stable file id here, compare size and modified time as a weaker check.
+    match (file.metadata(), std::fs::metadata(path)) {
+        (Ok(a), Ok(b)) => a.len() == b.len() && a.modified().ok() == b.modified().ok(),
+        _ => false,
+    }
+}
+
+/// Ends a streamed body once the server is stopping.
+struct Stoppable<'a, R> {
+    inner: R,
+    stopping: &'a AtomicBool,
+}
+
+impl<R: Read> Read for Stoppable<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.stopping.load(Ordering::Relaxed) {
+            return Err(std::io::Error::other("server stopping"));
+        }
+        self.inner.read(buf)
+    }
+}
+
+fn media(req: Request, item: &index::Item, roots: &[PathBuf], stopping: &AtomicBool) {
+    let Some(mut file) = open_inside(&item.abs, roots) else {
         return json(req, 404, serde_json::json!({"error":"not found"}));
     };
     let total = file.metadata().map(|m| m.len()).unwrap_or(item.size);
@@ -340,7 +398,10 @@ fn media(req: Request, item: &index::Item, roots: &[PathBuf]) {
     let mut res = Response::new(
         status.into(),
         vec![],
-        file.take(len),
+        Stoppable {
+            inner: file.take(len),
+            stopping,
+        },
         Some(len as usize),
         None,
     )
