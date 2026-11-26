@@ -4,12 +4,13 @@ use std::path::PathBuf;
 
 const HELP: &str = "flick-server: share media folders with Flick
 
-Usage: flick-server [--media DIR]... [--port N] [--name NAME] [--lan] [--config DIR] [--new-code]
+Usage: flick-server [--media DIR]... [--port N] [--name NAME] [--lan | --local] [--config DIR] [--new-code]
 
   --media DIR   share DIR (repeat for more folders)
   --port N      port to listen on (default 8740)
   --name NAME   name Flick shows for this server (default: the hostname)
-  --lan         listen on all interfaces, not just this machine
+  --lan         listen on all interfaces, not just this machine (remembered)
+  --local       listen on this machine only again (the default)
   --config DIR  settings folder (default: $FLICK_SERVER_CONFIG, else ~/.config/flick-server)
   --new-code    replace the access code
   --help        show this help
@@ -55,7 +56,7 @@ fn hostname() -> String {
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let (mut media, mut port, mut name, mut lan, mut dir, mut renew) =
-        (vec![], None, None, false, None, false);
+        (vec![], None, None, None, None, false);
     while let Some(a) = args.next() {
         let mut val = || args.next().ok_or(format!("{a} needs a value"));
         match a.as_str() {
@@ -63,7 +64,8 @@ fn run() -> Result<(), String> {
             "--port" => port = Some(val()?.parse::<u16>().map_err(|_| "--port needs a number")?),
             "--name" => name = Some(val()?),
             "--config" => dir = Some(PathBuf::from(val()?)),
-            "--lan" => lan = true,
+            "--lan" => lan = Some(true),
+            "--local" => lan = Some(false),
             "--new-code" => renew = true,
             "--help" | "-h" => {
                 println!("{HELP}");
@@ -86,7 +88,9 @@ fn run() -> Result<(), String> {
     }
     saved.name = name.or(saved.name);
     saved.port = port.or(saved.port);
-    saved.lan |= lan;
+    if let Some(l) = lan {
+        saved.lan = l;
+    }
     if saved.media.is_empty() {
         return Err(format!("no media folders yet: pass --media DIR\n\n{HELP}"));
     }
