@@ -38,7 +38,15 @@ pub struct PluginTools {
     tokens: Mutex<HashMap<String, String>>,
     fetch: Arc<Mutex<Fetch>>,
     /// yt-dlp and ffmpeg for the stream playing now. A new stream or app exit stops them.
-    job: Mutex<Vec<Child>>,
+    job: Mutex<Job>,
+}
+
+/// The processes of one stream. `id` changes with every new stream, so an older call that is
+/// still waiting can tell it was replaced and leave the newer stream's processes alone.
+#[derive(Default)]
+struct Job {
+    id: u64,
+    children: Vec<Child>,
 }
 
 /// The release file for this computer, and the name Flick saves it under.
@@ -385,11 +393,81 @@ pub async fn plugin_tool(
 
 // ---------- playing a flick-tool: stream ----------
 
-pub fn stop_job(state: &PluginTools) {
-    for mut c in std::mem::take(&mut *state.job.lock().unwrap()) {
+fn kill_all(children: Vec<Child>) {
+    for mut c in children {
         let _ = c.kill();
         let _ = c.wait();
     }
+}
+
+pub fn stop_job(state: &PluginTools) {
+    let children = std::mem::take(&mut state.job.lock().unwrap().children);
+    kill_all(children);
+}
+
+/// Stops the job only while it is still stream `id`'s.
+fn stop_job_if(state: &PluginTools, id: u64) {
+    let children = {
+        let mut job = state.job.lock().unwrap();
+        if job.id != id {
+            return;
+        }
+        std::mem::take(&mut job.children)
+    };
+    kill_all(children);
+}
+
+/// Makes `children` the playing job, stops any older one, and returns the new job's id.
+fn start_job(state: &PluginTools, children: Vec<Child>) -> u64 {
+    let old = {
+        let mut job = state.job.lock().unwrap();
+        job.id += 1;
+        std::mem::replace(&mut job.children, children)
+    };
+    kill_all(old);
+    state.job.lock().unwrap().id
+}
+
+/// Waits for the first segment of stream `id`. Gives up when its processes end with nothing
+/// written, after `limit`, or as soon as a newer stream has replaced it.
+fn wait_for_segment(
+    state: &PluginTools,
+    id: u64,
+    playlist: &Path,
+    dir: &Path,
+    limit: Duration,
+) -> Result<PathBuf, String> {
+    let start = Instant::now();
+    while start.elapsed() < limit {
+        if segments(playlist) > 0 {
+            return Ok(playlist.to_path_buf());
+        }
+        let ended = {
+            let mut job = state.job.lock().unwrap();
+            if job.id != id {
+                return Err("Another video started playing.".into());
+            }
+            job.children
+                .iter_mut()
+                .any(|c| !matches!(c.try_wait(), Ok(None)))
+        };
+        if ended && segments(playlist) == 0 {
+            stop_job_if(state, id);
+            let why = [
+                last_line(&dir.join("yt-dlp.log")),
+                last_line(&dir.join("ffmpeg.log")),
+            ]
+            .into_iter()
+            .find(|l| !l.is_empty());
+            return Err(format!(
+                "This video could not stream: {}",
+                why.unwrap_or_else(|| "yt-dlp stopped early".into())
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    stop_job_if(state, id);
+    Err("The video sent nothing within 45 seconds. Try again.".into())
 }
 
 /// The URL Tauri's convertFileSrc gives a path. Segment names need it in full: the
@@ -504,35 +582,8 @@ fn stream(
             return Err(e.to_string());
         }
     };
-    *state.job.lock().unwrap() = vec![yt, ff];
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(45) {
-        if segments(&playlist) > 0 {
-            return Ok(playlist);
-        }
-        let ended = state
-            .job
-            .lock()
-            .unwrap()
-            .iter_mut()
-            .any(|c| !matches!(c.try_wait(), Ok(None)));
-        if ended && segments(&playlist) == 0 {
-            stop_job(state);
-            let why = [
-                last_line(&dir.join("yt-dlp.log")),
-                last_line(&dir.join("ffmpeg.log")),
-            ]
-            .into_iter()
-            .find(|l| !l.is_empty());
-            return Err(format!(
-                "This video could not stream: {}",
-                why.unwrap_or_else(|| "yt-dlp stopped early".into())
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    stop_job(state);
-    Err("The video sent nothing within 45 seconds. Try again.".into())
+    let id = start_job(state, vec![yt, ff]);
+    wait_for_segment(state, id, &playlist, dir, Duration::from_secs(45))
 }
 
 /// Start a `flick-tool:` stream a plugin resolved. Returns the local playlist path for convertFileSrc.
@@ -661,6 +712,42 @@ mod tests {
         // A token only plays what resolve() registered.
         let err = open(&e, &st, Path::new("/nonexistent"), "flick-tool:ytdlp/abc").unwrap_err();
         assert!(err.contains("expired"), "{err}");
+    }
+
+    /// Review first-F1 on #45: open video A, close it while it starts, open video B. A's wait
+    /// must end without touching B's yt-dlp and ffmpeg; only B's own timeout stops them.
+    #[cfg(unix)]
+    #[test]
+    fn an_older_stream_never_stops_the_newer_one() {
+        let st = PluginTools::default();
+        let dir = std::env::temp_dir().join(format!("flick-ytdlp-job-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let playlist = dir.join("index.m3u8");
+        let sleeper = || Command::new("sleep").arg("30").spawn().unwrap();
+        let running = |st: &PluginTools| {
+            let mut job = st.job.lock().unwrap();
+            !job.children.is_empty()
+                && job
+                    .children
+                    .iter_mut()
+                    .all(|c| matches!(c.try_wait(), Ok(None)))
+        };
+        let a = start_job(&st, vec![sleeper()]);
+        let b = start_job(&st, vec![sleeper(), sleeper()]);
+        assert_ne!(a, b);
+        let err =
+            wait_for_segment(&st, a, &playlist, &dir, Duration::from_millis(300)).unwrap_err();
+        assert!(err.contains("Another video"), "{err}");
+        assert!(running(&st), "A's wait stopped B's processes");
+        // A replaced call that reaches its own timeout still leaves B running.
+        stop_job_if(&st, a);
+        assert!(running(&st), "stop_job_if(A) stopped B's processes");
+        let err =
+            wait_for_segment(&st, b, &playlist, &dir, Duration::from_millis(200)).unwrap_err();
+        assert!(err.contains("nothing within"), "{err}");
+        assert!(st.job.lock().unwrap().children.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
