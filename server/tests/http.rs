@@ -38,8 +38,8 @@ fn send(port: u16, method: &str, path: &str, extra: &str) -> Res {
     }
 }
 
-fn setup() -> (flick_server::Handle, String, Vec<u8>, PathBuf) {
-    let base = std::env::temp_dir().join(format!("flick-server-http-{}", std::process::id()));
+fn setup(tag: &str) -> (flick_server::Handle, String, Vec<u8>, PathBuf) {
+    let base = std::env::temp_dir().join(format!("flick-server-http-{tag}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
     let media = base.join("Movies");
     fs::create_dir_all(&media).unwrap();
@@ -60,7 +60,7 @@ fn setup() -> (flick_server::Handle, String, Vec<u8>, PathBuf) {
 
 #[test]
 fn serves_the_contract() {
-    let (h, id, bytes, base) = setup();
+    let (h, id, bytes, base) = setup("contract");
     let (p, t) = (h.port(), h.token().to_string());
     assert_eq!(t.len(), 43);
     assert_eq!(fs::read_to_string(base.join("cfg/token")).unwrap(), t);
@@ -202,6 +202,7 @@ fn serves_the_contract() {
     assert!(String::from_utf8_lossy(&r.body).contains("Flick server Test box is running"));
 
     h.stop();
+    std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(TcpStream::connect(("127.0.0.1", p)).is_err());
     let _ = fs::remove_dir_all(base);
 }
@@ -226,4 +227,44 @@ fn setup_link_matches_contract() {
         v,
         serde_json::json!({"v":1,"servers":[{"type":"flick","name":"NAS","url":"http://10.0.0.2:8740","token":"abc"}]})
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_swapped_for_a_link_after_the_scan_is_not_served() {
+    let (h, id, _, base) = setup("swap");
+    let auth = format!("Authorization: Bearer {}\r\n", h.token());
+    assert_eq!(
+        send(h.port(), "GET", &format!("/media/{id}"), &auth).status,
+        200
+    );
+    // After the scan, the indexed file becomes a link to a file outside every shared root.
+    fs::write(base.join("secret.txt"), b"outside the share").unwrap();
+    let clip = base.join("Movies/clip.mp4");
+    fs::remove_file(&clip).unwrap();
+    std::os::unix::fs::symlink(base.join("secret.txt"), &clip).unwrap();
+    let r = send(h.port(), "GET", &format!("/media/{id}"), &auth);
+    assert_eq!(r.status, 404);
+    assert!(!String::from_utf8_lossy(&r.body).contains("outside the share"));
+    // The same holds when a folder on the path is swapped for a link.
+    fs::remove_dir_all(base.join("Movies")).unwrap();
+    fs::create_dir_all(base.join("elsewhere")).unwrap();
+    fs::write(base.join("elsewhere/clip.mp4"), b"outside the share").unwrap();
+    std::os::unix::fs::symlink(base.join("elsewhere"), base.join("Movies")).unwrap();
+    assert_eq!(
+        send(h.port(), "GET", &format!("/media/{id}"), &auth).status,
+        404
+    );
+    h.stop();
+}
+
+#[test]
+fn many_requests_at_once_are_all_answered_by_the_worker_pool() {
+    let (h, _, _, _) = setup("pool");
+    let port = h.port();
+    let clients: Vec<_> = (0..200)
+        .map(|_| std::thread::spawn(move || send(port, "GET", "/api/info", "").status))
+        .collect();
+    assert!(clients.into_iter().all(|c| c.join().unwrap() == 200));
+    h.stop();
 }

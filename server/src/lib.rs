@@ -30,10 +30,13 @@ pub struct Config {
     // The next PR adds `web_dir` here and serves it from `fallback`.
 }
 
+const WORKERS: usize = 16;
+
 struct State {
     name: String,
     token: String,
     roots: Vec<PathBuf>,
+    real_roots: Vec<PathBuf>,
     index: RwLock<Arc<Index>>,
 }
 
@@ -70,7 +73,9 @@ impl Handle {
     }
     fn shutdown(&mut self) {
         self.stop_tx.take();
-        self.server.unblock();
+        for _ in 0..WORKERS {
+            self.server.unblock();
+        }
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
@@ -129,6 +134,11 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
     let state = Arc::new(State {
         name: cfg.name,
         token: token.clone(),
+        real_roots: cfg
+            .media
+            .iter()
+            .filter_map(|r| std::fs::canonicalize(r).ok())
+            .collect(),
         roots: cfg.media,
         index: Default::default(),
     });
@@ -140,19 +150,23 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
             st.rescan();
         }
     });
-    let srv = server.clone();
-    let accept = std::thread::spawn(move || {
-        for req in srv.incoming_requests() {
-            let st = state.clone();
-            std::thread::spawn(move || handle(&st, req));
-        }
-    });
+    // A fixed set of workers answers requests, so a flood of connections can't spawn threads
+    // without bound or crash the server when the OS refuses one.
+    let mut threads = vec![rescan];
+    for _ in 0..WORKERS {
+        let (srv, st) = (server.clone(), state.clone());
+        threads.push(std::thread::spawn(move || {
+            while let Ok(req) = srv.recv() {
+                handle(&st, req);
+            }
+        }));
+    }
     Ok(Handle {
         port,
         token,
         server,
         stop_tx: Some(stop_tx),
-        threads: vec![rescan, accept],
+        threads,
     })
 }
 
@@ -240,7 +254,7 @@ fn handle(st: &State, req: Request) {
     let id = &path["/media/".len()..];
     let idx = st.index();
     match idx.get(id) {
-        Some(item) => media(req, item),
+        Some(item) => media(req, item, &st.real_roots),
         None => json(req, 404, serde_json::json!({"error":"not found"})),
     }
 }
@@ -287,7 +301,20 @@ pub fn parse_range(h: &str, total: u64) -> Range {
     }
 }
 
-fn media(req: Request, item: &index::Item) {
+/// True when `abs`, with every symlink resolved, is still inside one of the shared roots (resolved
+/// once at start, so a root swapped for a link later does not count either). The index
+/// was built without following links, but a file or folder can be swapped for a link after a scan.
+fn inside_roots(abs: &std::path::Path, roots: &[PathBuf]) -> bool {
+    let Ok(real) = std::fs::canonicalize(abs) else {
+        return false;
+    };
+    roots.iter().any(|r| real.starts_with(r))
+}
+
+fn media(req: Request, item: &index::Item, roots: &[PathBuf]) {
+    if !inside_roots(&item.abs, roots) {
+        return json(req, 404, serde_json::json!({"error":"not found"}));
+    }
     let Ok(mut file) = File::open(&item.abs) else {
         return json(req, 404, serde_json::json!({"error":"not found"}));
     };
