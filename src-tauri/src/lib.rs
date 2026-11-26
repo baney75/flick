@@ -1383,7 +1383,11 @@ pub fn run() {
             ytdlp::tool_download,
             ytdlp::tool_download_clean,
             #[cfg(desktop)]
-            vpn::vpn_gate
+            vpn::watch::vpn_gate,
+            #[cfg(desktop)]
+            vpn::watch::vpn_gate_hold,
+            #[cfg(desktop)]
+            vpn::watch::vpn_gate_release
         ])
         .setup(|app| {
             // Files passed on the command line: `Flick movie.mkv`.
@@ -1397,6 +1401,8 @@ pub fn run() {
             if let Ok(cache) = app.path().app_cache_dir() {
                 std::thread::spawn(move || ytdlp::clean_cache(&cache));
             }
+            #[cfg(desktop)]
+            vpn::watch::install(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())

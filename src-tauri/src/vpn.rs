@@ -13,6 +13,8 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub mod watch;
+
 // Addresses whose routes stand for "all traffic": Cloudflare's resolver, which the exit check also
 // fetches, and documentation ranges nobody routes on purpose, so a split tunnel that carries only
 // some destinations fails.
@@ -221,23 +223,6 @@ impl GateState {
             reason,
             message,
         }
-    }
-}
-
-/// Every check of rule 25, in order. Only macOS and Linux have detection; elsewhere (Windows) it
-/// never passes.
-pub fn check(p: &dyn Probe) -> GateState {
-    if !cfg!(any(target_os = "macos", target_os = "linux")) {
-        return GateState::fail(Fail::Unchecked);
-    }
-    decide(p)
-}
-
-/// The checks themselves, on any system (tests run them everywhere).
-pub fn decide(p: &dyn Probe) -> GateState {
-    match route_check(p).and_then(|i| exit_check(p).map(|ip| (i, ip))) {
-        Ok((iface, ip)) => GateState::pass(iface, ip),
-        Err(f) => GateState::fail(f),
     }
 }
 
@@ -703,14 +688,6 @@ pub fn parse_trace(resp: &str) -> Option<IpAddr> {
     }
     resp.lines()
         .find_map(|l| l.trim().strip_prefix("ip=")?.parse().ok())
-}
-
-/// The gate right now: it passes, or says what failed. The torrent engine and the debrid player
-/// both gate on it.
-#[tauri::command]
-pub async fn vpn_gate() -> Result<GateState, String> {
-    let run = tauri::async_runtime::spawn_blocking(|| check(&System));
-    run.await.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
