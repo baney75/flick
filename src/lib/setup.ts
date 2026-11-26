@@ -6,14 +6,16 @@ import { CINEMETA, OPENSUBS, fetchManifest, normalizeAddonUrl } from './stremio'
 import { getServers, saveServer, syncServer, plexManual, flickConnect, type Server } from './servers'
 import { isDesktop } from './platform'
 import { addFolderPath } from './actions'
+import { installed, install, portable, type Candidate } from './plugins/registry'
 
 export const SETUP_BASE = 'https://flick-player.pages.dev/#/setup?c='
 const MAX_ADDONS = 50
 const MAX_SERVERS = 20
 const MAX_FOLDERS = 50
+const MAX_PLUGINS = 20
 
 export interface SetupServer { type: 'jellyfin' | 'plex' | 'flick'; name?: string; url: string; token: string; userId?: string }
-export interface Setup { v: 1; stremioAddons?: string[]; servers?: SetupServer[]; folders?: string[]; settings?: Partial<Settings> }
+export interface Setup { v: 1; stremioAddons?: string[]; plugins?: string[]; servers?: SetupServer[]; folders?: string[]; settings?: Partial<Settings> }
 export interface SetupResult { label: string; ok: boolean; detail?: string }
 
 function bytesToB64url(bytes: Uint8Array): string {
@@ -69,6 +71,15 @@ export function validateSetup(obj: unknown): Setup {
       const u = normalizeAddonUrl(a)
       if (!isHttp(u)) throw new Error(`Addon address must start with http or https: ${a}`)
       return u
+    })
+  }
+
+  const plugins = strList(obj.plugins, 'Plugins', MAX_PLUGINS)
+  if (plugins) {
+    out.plugins = plugins.map((u) => {
+      const url = u.trim()
+      if (!/^https:\/\//i.test(url) && !/^\/plugins\/[\w.-]+$/.test(url)) throw new Error(`Plugin address must start with https: ${u}`)
+      return url
     })
   }
 
@@ -130,9 +141,19 @@ async function toServer(s: SetupServer): Promise<Server> {
   return { id: `jf-${info.Id}`, type: 'jellyfin', name: s.name ?? info.ServerName ?? 'Jellyfin', url: s.url, token: s.token, userId: s.userId }
 }
 
-/** Apply a validated setup. Each item succeeds or fails on its own. */
-export async function applySetup(p: Setup): Promise<SetupResult[]> {
+/** Apply a validated setup. Each item succeeds or fails on its own. A plugin installs only as the review showed it. */
+export async function applySetup(p: Setup, reviewed: Record<string, Candidate> = {}): Promise<SetupResult[]> {
   const out: SetupResult[] = []
+  for (const u of p.plugins ?? []) {
+    const c = reviewed[u]
+    if (!c) { out.push({ label: `Plugin at ${u}`, ok: false, detail: 'It could not be read for the review, so it was not installed.' }); continue }
+    try {
+      const rec = await install(c)
+      out.push({ label: `Plugin: ${rec.manifest.name} ${rec.manifest.version}`, ok: true })
+    } catch (e) {
+      out.push({ label: `Plugin at ${u}`, ok: false, detail: (e as Error).message })
+    }
+  }
   if (p.stremioAddons?.length) {
     const added: string[] = []
     for (const u of p.stremioAddons) {
@@ -187,6 +208,8 @@ export async function currentSetup(addonUrls: string[]): Promise<Setup> {
   const servers = (await getServers()).filter((s): s is Server & { type: SetupServer['type'] } => s.type !== 'kodi').slice(0, MAX_SERVERS).map(({ type, name, url, token, userId }) => (userId ? { type, name, url, token, userId } : { type, name, url, token }))
   const out: Setup = { v: 1, settings: { ...settings.value } }
   if (urls.length) out.stremioAddons = urls
+  const plugins = installed.value.flatMap((x) => (x.url ? [portable(x.url)] : [])).filter((u): u is string => !!u).slice(0, MAX_PLUGINS)
+  if (plugins.length) out.plugins = plugins
   if (servers.length) out.servers = servers
   return out
 }

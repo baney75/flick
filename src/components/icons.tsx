@@ -34,6 +34,7 @@ const paths: Record<string, string> = {
   download: 'M12 4v11M7 10l5 5 5-5M5 20h14',
   external: 'M14 4h6v6M20 4l-9 9M18 14v6H4V6h6',
   keyboard: 'M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M7 14h10',
+  plug: 'M9 3v5M15 3v5M6 8h12v4a6 6 0 0 1-12 0zM12 18v3',
   star: 'M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z',
 }
 

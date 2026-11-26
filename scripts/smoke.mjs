@@ -61,6 +61,36 @@ const flickFiles = {
   f6: { folder: 'Audiobooks', name: 'John Roe - Server Audiobook.m4b', kind: 'audio', ext: 'm4b', type: 'audio/mp4', body: readFileSync('test-media/audiobook/book.m4b') },
   c3: { folder: 'Books', name: 'John Roe - Server Epub (2022).epub', kind: 'book', ext: 'epub', type: 'application/epub+zip', body: serverEpub },
 }
+const SMOKE_PLUGIN = `
+const r = {}
+const t = async (k, f) => { try { await f(); r[k] = 1 } catch { /* blocked */ } }
+export default {
+  api: 1, id: 'org.smoke.films', name: 'Smoke Films', version: '1.0.0', author: 'Smoke',
+  hosts: ['127.0.0.1'],
+  catalogs: [{ id: 'all', name: 'Smoke catalog', type: 'movie' }, { id: 'sandbox', name: 'Sandbox report', type: 'movie' }, { id: 'find', name: 'Find', type: 'movie', search: true }],
+  async catalog(ctx, { id, search }) {
+    if (id === 'sandbox') {
+      await t('indexedDB', () => new Promise((ok, no) => { const q = indexedDB.open('flick'); q.onsuccess = ok; q.onerror = () => no(q.error) }))
+      await t('localStorage', () => localStorage.length)
+      await t('parent', () => parent.document.title)
+      const open = Object.keys(r)
+      return { items: [{ id: 'probe', type: 'movie', name: open.length ? 'sandbox open: ' + open.join(' ') : 'sandbox: sealed' }] }
+    }
+    const info = await (await ctx.fetch('$BASE/api/info')).json()
+    if (search && !'smoke clip'.includes(search.toLowerCase())) return { items: [] }
+    return { items: [{ id: 'clip', type: 'movie', name: 'Smoke Clip', year: '2024', description: 'From ' + info.name }] }
+  },
+  async meta(ctx, { id }) { return { id, type: 'movie', name: 'Smoke Clip', year: '2024', description: 'A test clip.' } },
+  async streams(ctx, { id }) {
+    await ctx.store.set('last', id)
+    return [{ url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream', quality: '720p' }]
+  },
+}`
+const SMOKE_THEME = {
+  flick: 'theme', api: 1, id: 'org.smoke.theme', name: 'Smoke Green', version: '1.0.0', author: 'Smoke',
+  light: { bg: '#f4f1ea', surface: '#ffffff', fg: '#1d2420', dim: '#5c675f', line: '#dcd6c8', accent: '#2f7a4f' },
+  dark: { bg: '#101512', surface: '#18201b', fg: '#eef2ec', dim: '#9aa79d', line: '#26302a', accent: '#2f7a4f' },
+}
 const flick = createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Headers', 'Authorization, Range')
@@ -70,6 +100,9 @@ const flick = createServer((req, res) => {
   const u = new URL(req.url, 'http://x')
   const json = (code, o) => res.writeHead(code, { 'content-type': 'application/json' }).end(JSON.stringify(o))
   if (u.pathname === '/api/info') return json(200, { app: 'flick-server', v: 1, name: 'Smoke NAS', version: '0.0.0' })
+  // A test source plugin and theme, installed through Settings > Plugins.
+  if (u.pathname === '/plugin.js') return res.writeHead(200, { 'content-type': 'text/javascript' }).end(SMOKE_PLUGIN.replaceAll('$BASE', `http://127.0.0.1:${flick.address().port}`))
+  if (u.pathname === '/theme.json') return json(200, SMOKE_THEME)
   if (req.headers.authorization !== `Bearer ${FLICK_CODE}` && u.searchParams.get('t') !== FLICK_CODE) return json(401, { error: 'wrong code' })
   if (u.pathname === '/api/library') {
     return json(200, { name: 'Smoke NAS', folders: ['Movies', 'Books'], items: Object.entries(flickFiles).map(([id, f]) => ({ id, folder: f.folder, path: f.path ?? f.name, name: f.name, kind: f.kind, ext: f.ext, size: f.body.length, mtime: 1732550400000 })) })
@@ -436,6 +469,50 @@ try {
   const webNet = await ownFetch('/plugin-host.html')
   const appNet = await ownFetch('/plugin-host-app.html')
   check(webNet === 'reached' && appNet === 'blocked', `in the apps a plugin's own fetch is refused (app page ${appNet}, website page ${webNet})`)
+
+  // A source plugin from a URL: review first, then its page, a title page, a stream that plays.
+  await page.goto(`${BASE}/#/settings`)
+  const addForm = page.locator('form', { has: page.getByLabel('Plugin address') })
+  await page.getByLabel('Plugin address').fill(`${FLICK_URL}/plugin.js`)
+  await addForm.getByRole('button', { name: 'Add' }).click()
+  const sheet = page.getByRole('dialog')
+  await sheet.waitFor({ timeout: 15000 })
+  check(await sheet.getByText('Not from Flick').isVisible() && await sheet.getByText('127.0.0.1').first().isVisible(), 'review sheet shows the hosts and "Not from Flick"')
+  check(await sheet.locator('.web-hosts').isVisible(), 'on the website the review sheet says the host list is not enforced')
+  const count = () => page.evaluate(() => new Promise((res) => { const r = indexedDB.open('flick'); r.onsuccess = () => { const q = r.result.transaction('plugins').objectStore('plugins').count(); q.onsuccess = () => res(q.result) } }))
+  check(await count() === 0, 'nothing installs before the tap')
+  await sheet.getByRole('button', { name: 'Install' }).click()
+  await sheet.waitFor({ state: 'detached' })
+  check(await count() === 1, 'Install saves the plugin')
+  await page.locator('.nav-item', { hasText: 'Smoke Films' }).click()
+  check(await page.getByText('Smoke Clip').first().waitFor({ timeout: 15000 }).then(() => true, () => false), 'plugin page shows its catalog')
+  check(await page.getByText('sandbox: sealed').waitFor({ timeout: 15000 }).then(() => true, () => false), 'a plugin in the real runtime cannot reach Flick storage or the page')
+  await page.screenshot({ path: 'test-media/shots/plugin-page.png' })
+  await page.getByText('Smoke Clip').first().click()
+  await page.locator('.stream').first().waitFor({ timeout: 15000 })
+  check((await page.locator('.stream').first().innerText()).includes('Smoke stream'), 'plugin title page lists a stream')
+  await page.locator('.stream').first().click()
+  await page.locator('.player').waitFor()
+  check(await page.waitForFunction(() => { const v = document.querySelector('.player video'); return v && v.currentTime > 0.5 }, null, { timeout: 8000 }).then(() => true, () => false), 'a plugin stream plays in the player')
+  await page.keyboard.press('Escape')
+  await page.locator('.player').waitFor({ state: 'detached' })
+  await page.goto(`${BASE}/#/`)
+  await page.getByLabel('Search your plugins').fill('smoke')
+  await page.keyboard.press('Enter')
+  check(await page.locator('.row-section', { hasText: 'Smoke Films · Find' }).getByText('Smoke Clip').waitFor({ timeout: 15000 }).then(() => true, () => false), 'Home search finds titles in plugin catalogs')
+
+  // A theme changes Flick's colors.
+  await page.goto(`${BASE}/#/settings`)
+  const accent = () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())
+  const accent0 = await accent()
+  await page.getByLabel('Plugin address').fill(`${FLICK_URL}/theme.json`)
+  await addForm.getByRole('button', { name: 'Add' }).click()
+  await sheet.getByRole('button', { name: 'Install' }).click()
+  await page.getByLabel('Colors').selectOption('org.smoke.theme')
+  await page.waitForFunction(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() === '#2f7a4f', null, { timeout: 5000 }).catch(() => {})
+  check(accent0 !== "#2f7a4f" && await accent() === "#2f7a4f", `a theme sets --accent (${accent0} -> ${await accent()})`)
+  await page.screenshot({ path: 'test-media/shots/plugin-theme.png' })
+  await page.getByLabel('Colors').selectOption('')
 
   // Phone layout.
   await page.setViewportSize({ width: 390, height: 844 })
