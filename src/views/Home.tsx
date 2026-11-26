@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'preact/hooks'
-import { items, continueList, playItem, go, stremio, shows, type Progress, openStremioRef } from '../lib/store'
+import { items, continueList, playItem, go, shows, type Progress } from '../lib/store'
 import { Card, ItemCard, Row, useThumb } from '../components/Card'
 import { Icon } from '../components/icons'
 import { addFolder, openFiles, openUrl, playPaths } from '../lib/actions'
-import { continueWatching } from '../lib/stremio'
 import { isDesktop } from '../lib/platform'
 import { online } from '../lib/offline'
 import { downloads } from '../lib/downloads'
@@ -16,7 +15,6 @@ function ResumeCard({ k, p }: { k: string; p: Progress }) {
   const thumb = useThumb(it)
   const click = () => {
     if (p.ref.t === 'item') { if (it) playItem(it) }
-    else if (p.ref.t === 'stremio') openStremioRef(p.ref)
     else if (p.ref.t === 'plugin') openPluginRef(p.ref)
     else if (p.ref.t === 'url' && p.ref.url) {
       if (p.ref.url.startsWith('/')) playPaths([p.ref.url])
@@ -32,12 +30,10 @@ export function Home() {
   const cont = continueList.value.filter(([, p]) => p.ref.t !== 'url' || p.ref.url)
   const recent = [...all].filter((i) => i.kind === 'video').sort((a, b) => b.addedAt - a.addedAt).slice(0, 24)
   const music = all.filter((i) => i.kind === 'audio').slice(0, 24)
-  const st = stremio.value
-  const stCont = continueWatching(st.library).slice(0, 20)
   const showList = [...shows.value.values()].slice(0, 20)
   const srcs = sources.value
   const plCont = srcs.map((rec) => ({ rec, list: continueOf(libraries.value[rec.id] ?? []).slice(0, 20) })).filter((x) => x.list.length)
-  const empty = !all.length && !cont.length && !stCont.length && !plCont.length
+  const empty = !all.length && !cont.length && !plCont.length
   useEffect(() => { for (const rec of srcs) loadLibrary(rec) }, [srcs.map((r) => r.id).join()])
 
   const saved = [...downloads.value.values()].filter((d) => d.state === 'done').length
@@ -64,7 +60,7 @@ export function Home() {
           <div class="welcome-actions">
             <button class="btn primary lg" onClick={openFiles}><Icon name="file" size={18} /> Open a file</button>
             <button class="btn lg" onClick={addFolder}><Icon name="folder" size={18} /> Add a folder</button>
-            <button class="btn lg" onClick={() => go('/stremio')}><Icon name="stremio" size={18} /> Link Stremio</button>
+            <button class="btn lg" onClick={() => go('/settings')}><Icon name="plug" size={18} /> Add plugins</button>
             <button class="btn lg" onClick={() => go('/servers')}><Icon name="server" size={18} /> Connect Plex or Jellyfin</button>
           </div>
           <form class="url-form" onSubmit={(e) => { e.preventDefault(); openUrl(url) }}>
@@ -85,15 +81,6 @@ export function Home() {
           </header>
           {cont.length > 0 && (
             <Row title="Continue watching">{cont.map(([k, p]) => <ResumeCard k={k} p={p} />)}</Row>
-          )}
-          {stCont.length > 0 && (
-            <Row title="Continue on Stremio" action={<a class="link" href="#/stremio">Stremio</a>}>
-              {stCont.map((li) => (
-                <Card image={li.poster} title={li.name} shape="poster" pct={li.state?.duration ? (li.state.timeOffset ?? 0) / li.state.duration : 0}
-                  sub={li.type === 'series' && li.state?.video_id ? epFromVideoId(li.state.video_id) : undefined}
-                  onClick={() => go(`/stremio/${li.type}/${encodeURIComponent(li._id)}${li.state?.video_id && li.type === 'series' ? `?v=${encodeURIComponent(li.state.video_id)}` : ''}`)} />
-              ))}
-            </Row>
           )}
           {plCont.map(({ rec, list }) => (
             <Row title={`Continue on ${rec.manifest.name}`} action={<a class="link" href={`#/p/${encodeURIComponent(rec.id)}`}>{rec.manifest.name}</a>}>
@@ -157,9 +144,4 @@ function PluginSearch() {
         )))}
     </div>
   )
-}
-
-function epFromVideoId(v: string) {
-  const m = v.match(/:(\d+):(\d+)$/)
-  return m ? `S${m[1]} E${m[2]}` : undefined
 }

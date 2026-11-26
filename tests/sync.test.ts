@@ -133,8 +133,7 @@ describe('sync keys', () => {
     const k = progressDocKey('m1', { ref: { t: 'item', id: 'm1' } }, byId)!
     expect(k).toBe('p:i:ep:the chosen:1:1')
     expect(localProgressKeys(k, contentIndex([phone]))).toEqual(['p9'])
-    expect(progressDocKey('st:tt1', { ref: { t: 'stremio', type: 'movie', id: 'tt1', videoId: 'tt1' } }, byId)).toBe('p:k:st:tt1')
-    expect(localProgressKeys('p:k:st:tt1', new Map())).toEqual(['st:tt1'])
+    expect(localProgressKeys('p:k:pl:org.x.y:tt1', new Map())).toEqual(['pl:org.x.y:tt1'])
     expect(progressDocKey('gone', { ref: { t: 'item', id: 'gone' } }, byId)).toBeNull()
     expect(progressDocKey('pl:org.x.y:tt1:1:2', { ref: { t: 'plugin', p: 'org.x.y', type: 'series', id: 'tt1', videoId: 'tt1:1:2' } }, byId)).toBe('p:k:pl:org.x.y:tt1:1:2')
   })

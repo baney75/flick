@@ -40,6 +40,13 @@ export function PluginPage({ id }: { id: string }) {
   const [results, setResults] = useState<Found[] | null>(null)
   const [searching, setSearching] = useState(false)
   useEffect(() => { if (rec) loadLibrary(rec) }, [rec?.id])
+  const [rows, setRows] = useState<CatalogDef[] | null>(null)
+  useEffect(() => {
+    if (!rec) return
+    const fixed = rec.manifest.catalogs.filter((c) => !c.search)
+    if (!rec.manifest.has.userCatalogs) { setRows(fixed); return }
+    callPlugin(rec, 'userCatalogs', []).then((l) => setRows([...fixed, ...l.filter((c) => !c.search)])).catch(() => setRows(fixed))
+  }, [rec?.sha256, JSON.stringify(rec?.settings)])
   if (!rec) return <Missing id={id} />
   const name = rec.manifest.name
   const canSearch = rec.manifest.catalogs.some((c) => c.search)
@@ -75,7 +82,8 @@ export function PluginPage({ id }: { id: string }) {
         <>
           {cont.length > 0 && <Row title="Continue watching">{cont.slice(0, 30).map((m) => <MetaCard rec={rec} m={m} />)}</Row>}
           {lib.length > 0 && <Row title="Library">{lib.slice(0, 60).map((m) => <MetaCard rec={rec} m={m} />)}</Row>}
-          {rec.manifest.catalogs.filter((c) => !c.search).map((c) => <CatalogRow key={`${rec.sha256}|${c.type}|${c.id}`} rec={rec} c={c} />)}
+          {rows === null && <div class="status inline"><span class="spinner" /> Loading</div>}
+          {(rows ?? []).map((c) => <CatalogRow key={`${rec.sha256}|${c.type}|${c.id}`} rec={rec} c={c} />)}
         </>
       )}
     </div>

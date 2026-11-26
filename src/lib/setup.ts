@@ -1,12 +1,12 @@
 // Setup links: one payload that adds addons, servers, folders and settings after the user taps Connect.
 // Link form: https://flick-player.pages.dev/#/setup?c=<base64url(JSON)>
 
-import { settings, setSettings, stremioExtra, saveStremio, loadStremio, reloadItems, type Settings } from './store'
-import { CINEMETA, OPENSUBS, fetchManifest, normalizeAddonUrl } from './stremio'
+import { settings, setSettings, reloadItems, type Settings } from './store'
 import { getServers, saveServer, syncServer, plexManual, flickConnect, type Server } from './servers'
 import { isDesktop } from './platform'
 import { addFolderPath } from './actions'
-import { installed, prepare, install, absolute, type Candidate } from './plugins/registry'
+import { installed, prepare, install, setPluginSettings, absolute, type Candidate } from './plugins/registry'
+import { STREMIO_ID, STREMIO_URL } from './plugins/migrate'
 
 export const SETUP_BASE = 'https://flick-player.pages.dev/#/setup?c='
 const MAX_ADDONS = 50
@@ -40,6 +40,13 @@ export function decodeSetup(str: string): Setup {
   let obj: unknown
   try { obj = JSON.parse(json) } catch { throw new Error('This setup link is damaged: it is not valid JSON.') }
   return validateSetup(obj)
+}
+
+export function normalizeAddonUrl(input: string): string {
+  let u = input.trim()
+  if (u.startsWith('stremio://')) u = 'https://' + u.slice('stremio://'.length)
+  if (!/\/manifest\.json(\?.*)?$/.test(u)) u = u.replace(/\/$/, '') + '/manifest.json'
+  return u
 }
 
 function isHttp(u: string): boolean {
@@ -152,21 +159,17 @@ export async function applySetup(p: Setup, reviewed: Record<string, Candidate> =
       out.push({ label: `Plugin at ${u}`, ok: false, detail: (e as Error).message })
     }
   }
+  // Older links carry Stremio addons; they now go into the Stremio plugin's addon list.
   if (p.stremioAddons?.length) {
-    const added: string[] = []
-    for (const u of p.stremioAddons) {
-      try {
-        const a = await fetchManifest(u)
-        added.push(u)
-        out.push({ label: `Stremio addon: ${a.manifest.name}`, ok: true })
-      } catch (e) {
-        out.push({ label: `Stremio addon at ${u}`, ok: false, detail: (e as Error).message })
-      }
+    const label = `Stremio plugin with ${p.stremioAddons.length} addon${p.stremioAddons.length > 1 ? 's' : ''}`
+    try {
+      const rec = installed.value.find((x) => x.id === STREMIO_ID) ?? (await install(reviewed[STREMIO_URL] ?? (await prepare({ url: STREMIO_URL }))))
+      const have = Array.isArray(rec.settings.addons) ? (rec.settings.addons as string[]) : []
+      await setPluginSettings(rec.id, { addons: [...new Set([...have, ...p.stremioAddons])] })
+      out.push({ label, ok: true })
+    } catch (e) {
+      out.push({ label, ok: false, detail: (e as Error).message })
     }
-    const extra = await stremioExtra()
-    const next = [...extra, ...added.filter((u) => !extra.includes(u))]
-    if (next.length !== extra.length) await saveStremio({ extra: next })
-    await loadStremio()
   }
   for (const s of p.servers ?? []) {
     const label = `${s.type === 'plex' ? 'Plex' : s.type === 'flick' ? 'Flick' : 'Jellyfin'} server at ${s.url}`
@@ -197,11 +200,10 @@ export async function applySetup(p: Setup, reviewed: Record<string, Candidate> =
   return out
 }
 
-/** A setup from this device: added addons, servers and settings. Folders stay local. */
-export async function currentSetup(addonUrls: string[]): Promise<Setup> {
-  const defaults = [CINEMETA, OPENSUBS]
-  const extra = await stremioExtra()
-  const urls = [...new Set([...addonUrls, ...extra])].filter((u) => !defaults.includes(u) && isHttp(u)).slice(0, MAX_ADDONS)
+/** A setup from this device: plugins, Stremio addons, servers and settings. Folders stay local. */
+export async function currentSetup(): Promise<Setup> {
+  const st = installed.value.find((x) => x.id === STREMIO_ID)?.settings.addons
+  const urls = (Array.isArray(st) ? (st as string[]) : []).filter(isHttp).slice(0, MAX_ADDONS)
   // Setup files do not carry Kodi yet.
   const servers = (await getServers()).filter((s): s is Server & { type: SetupServer['type'] } => s.type !== 'kodi').slice(0, MAX_SERVERS).map(({ type, name, url, token, userId }) => (userId ? { type, name, url, token, userId } : { type, name, url, token }))
   const out: Setup = { v: 1, settings: { ...settings.value } }

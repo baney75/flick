@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'preact/hooks'
-import { route, go, toast, nowPlaying, settings, reloadItems, loadProgress, loadStremio, notify } from './lib/store'
+import { route, go, toast, nowPlaying, settings, reloadItems, loadProgress, notify } from './lib/store'
 import { Home } from './views/Home'
 import { Library, ShowPage } from './views/Library'
-import { Stremio, StremioDetail } from './views/Stremio'
 import { Servers } from './views/Servers'
 import { Settings } from './views/Settings'
 import { PairPage } from './views/Sync'
@@ -20,6 +19,7 @@ import { startOffline } from './lib/offline'
 import { PluginPage, PluginTitle, PluginIcon } from './views/Plugin'
 import { sources, themes, startPlugins } from './lib/plugins/use'
 import { applyTheme } from './lib/plugins/themes'
+import { migrateStremio } from './lib/plugins/migrate'
 import type { BookLink } from './views/Reader'
 
 function bookLink(qs: URLSearchParams): BookLink | undefined {
@@ -34,7 +34,6 @@ function bookLink(qs: URLSearchParams): BookLink | undefined {
 const NAV = [
   { path: '/', label: 'Home', icon: 'home' },
   { path: '/library', label: 'Library', icon: 'library' },
-  { path: '/stremio', label: 'Stremio', icon: 'stremio' },
   { path: '/servers', label: 'Servers', icon: 'server' },
   { path: '/settings', label: 'Settings', icon: 'settings' },
 ]
@@ -50,8 +49,6 @@ function View() {
   if (parts[0] === 'p' && parts[1] && parts[3]) return <PluginTitle key={r} p={decodeURIComponent(parts[1])} type={parts[2]} id={decodeURIComponent(parts[3])} videoId={qs.get('v') ?? undefined} />
   if (parts[0] === 'p' && parts[1]) return <PluginPage key={parts[1]} id={decodeURIComponent(parts[1])} />
   if (parts[0] === 'show' && parts[1]) return <ShowPage name={decodeURIComponent(parts[1])} />
-  if (parts[0] === 'stremio' && parts[2]) return <StremioDetail key={r} type={parts[1]} id={decodeURIComponent(parts[2])} videoId={qs.get('v') ?? undefined} />
-  if (parts[0] === 'stremio') return <Stremio />
   if (parts[0] === 'servers') return <Servers />
   if (parts[0] === 'settings') return <Settings />
   if (parts[0] === 'pair') return <PairPage k={qs.get('k')} />
@@ -76,9 +73,9 @@ export function App() {
 
   useEffect(() => {
     installSpatialNav(() => !!nowPlaying.value)
-    Promise.all([reloadItems(), loadProgress()]).then(startSyncBinding).catch(() => {})
-    loadStremio()
-    startPlugins().catch(() => {})
+    // Plugins load first so the one-time Stremio move can see them, then progress loads already moved.
+    startPlugins().then(() => migrateStremio()).catch(() => {})
+      .finally(() => { Promise.all([reloadItems(), loadProgress()]).then(startSyncBinding).catch(() => {}) })
     resumeDownloads().catch(() => {})
     startOffline()
     addEventListener('flick:db-stale', () => notify('Flick was updated in another tab. Reload this tab to keep going.', 15000))

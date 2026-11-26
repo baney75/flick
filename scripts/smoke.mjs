@@ -1,5 +1,5 @@
 // Headless smoke test: serves the built site, plays a real file, checks the keys,
-// subtitles, saved progress and the Stremio pages. Screenshots land in test-media/shots.
+// subtitles, saved progress, plugins (the Stremio plugin among them) and themes. Screenshots land in test-media/shots.
 import { chromium } from 'playwright'
 import { spawn, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
@@ -162,26 +162,6 @@ try {
   }))
   check(saved.length === 1 && saved[0].pos > 10, `progress saved (${saved[0]?.pos?.toFixed(1)}s)`)
 
-  // Stremio without an account: Cinemeta catalogs and a title page.
-  await page.goto(`${BASE}/#/stremio`)
-  const firstCard = page.locator('.row-section .card:not(.skeleton)').first()
-  await firstCard.waitFor({ timeout: 15000 })
-  check(await page.locator('.row-section').count() > 1, `Cinemeta catalogs load (${await page.locator('.row-section').count()} rows)`)
-  await page.screenshot({ path: 'test-media/shots/stremio.png' })
-  await firstCard.click()
-  await page.locator('.detail-info').waitFor({ timeout: 15000 })
-  await page.locator('.streams').waitFor()
-  check(true, 'title page opens with details and a streams section')
-  await page.waitForTimeout(1200)
-  await page.screenshot({ path: 'test-media/shots/detail.png' })
-
-  // Search.
-  await page.goto(`${BASE}/#/stremio`)
-  await page.getByLabel('Search Stremio').fill('interstellar')
-  await page.keyboard.press('Enter')
-  await page.getByText(/Interstellar/).first().waitFor({ timeout: 15000 })
-  check(true, 'Stremio search finds Interstellar')
-
   // Setup link: review first, apply only on Connect all.
   const setupCode = Buffer.from(JSON.stringify({ v: 1, settings: { skipSeconds: 30 } })).toString('base64url')
   await page.goto(`${BASE}/#/setup?c=${setupCode}`)
@@ -191,6 +171,13 @@ try {
   await page.getByText('Done').waitFor()
   check(await page.evaluate(() => JSON.parse(localStorage.getItem('flick.settings')).skipSeconds === 30), 'Connect all applies the setup')
   await page.screenshot({ path: 'test-media/shots/setup.png' })
+
+  // An older setup link with Stremio addons offers the Stremio plugin in the review, and installs nothing before the tap.
+  const oldCode = Buffer.from(JSON.stringify({ v: 1, stremioAddons: ['stremio://v3-cinemeta.strem.io/manifest.json'] })).toString('base64url')
+  await page.goto(`${BASE}/#/setup?c=${oldCode}`)
+  check(await page.getByText(/Plugin: Stremio .*reaches any public website, 127\.0\.0\.1$/).waitFor({ timeout: 15000 }).then(() => true, () => false)
+    && await page.getByText('Stremio addon in the Stremio plugin: https://v3-cinemeta.strem.io/manifest.json').isVisible(), 'old setup link with Stremio addons offers the Stremio plugin')
+  check(await page.evaluate(() => new Promise((res) => { const r = indexedDB.open('flick'); r.onsuccess = () => { const q = r.result.transaction('plugins').objectStore('plugins').count(); q.onsuccess = () => res(q.result === 0) } })), 'and installs nothing before the tap')
 
   // Books: store a PDF, read it, and reopen it in a fresh tab where the library loads after the reader mounts.
   await page.goto(`${BASE}/#/library`)
@@ -325,6 +312,28 @@ try {
   await page.screenshot({ path: 'test-media/shots/plugin-theme.png' })
   await page.getByLabel('Colors').selectOption('')
 
+  // The Stremio plugin from Flick's list, without an account: Cinemeta rows, a title page, search.
+  await page.locator('.list-row', { hasText: 'Stremio' }).getByRole('button', { name: 'Install' }).click()
+  await sheet.waitFor({ timeout: 15000 })
+  check(!(await sheet.getByText('Not from Flick').isVisible()), 'the Stremio plugin reviews as from Flick')
+  await sheet.getByRole('button', { name: 'Install' }).click()
+  await sheet.waitFor({ state: 'detached' })
+  await page.locator('.nav-item', { hasText: 'Stremio' }).click()
+  const firstCard = page.locator('.row-section .card:not(.skeleton)').first()
+  await firstCard.waitFor({ timeout: 20000 })
+  check(await page.locator('.row-section').count() > 1, `Stremio plugin shows Cinemeta rows (${await page.locator('.row-section').count()} rows)`)
+  await page.screenshot({ path: 'test-media/shots/stremio.png' })
+  await firstCard.click()
+  await page.locator('.detail-info').waitFor({ timeout: 20000 })
+  check(true, 'Stremio plugin title page opens with details')
+  await page.waitForTimeout(1200)
+  await page.screenshot({ path: 'test-media/shots/detail.png' })
+  await page.goBack()
+  await page.getByLabel('Search Stremio').fill('interstellar')
+  await page.keyboard.press('Enter')
+  check(await page.getByText(/Interstellar/).first().waitFor({ timeout: 20000 }).then(() => true, () => false), 'Stremio plugin search finds Interstellar')
+  const stremioPage = page.url()
+
   // Phone layout.
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(`${BASE}/#/library`)
@@ -332,8 +341,8 @@ try {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)
   check(!overflow, 'no sideways scroll at 390px')
   await page.screenshot({ path: 'test-media/shots/phone-library.png' })
-  await page.goto(`${BASE}/#/stremio`)
-  await page.locator('.row-section .card:not(.skeleton)').first().waitFor({ timeout: 15000 })
+  await page.goto(stremioPage)
+  await page.locator('.row-section .card:not(.skeleton)').first().waitFor({ timeout: 20000 })
   await page.screenshot({ path: 'test-media/shots/phone-stremio.png' })
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.join(' | ') : ''}`)

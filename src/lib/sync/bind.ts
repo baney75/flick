@@ -1,15 +1,16 @@
 // Connects app state to the sync doc in both directions.
-// Out: progress and settings changes (signals), servers and addons (bus events) become doc writes.
+// Out: progress and settings changes (signals), servers and plugins (bus events) become doc writes.
 // In: changed doc keys are applied to local state with echo suppressed, so a value from a
 // peer is never re-sent with a new timestamp.
 
 import { effect } from '@preact/signals'
 import * as db from '../db'
-import { items, progress, settings, setSettings, reloadItems, saveStremio, stremioExtra, loadStremio, type Progress, type Settings } from '../store'
+import { items, progress, settings, setSettings, reloadItems, type Progress, type Settings } from '../store'
 import { getServers, saveServer, removeServer, syncServer, type Server } from '../servers'
 import type { Item } from '../library'
 import { contentIndex, localProgressKeys, progressDocKey, pluginSnapshot } from './keys'
 import { installed, prepare, install, remove, setEnabled, setPluginSettings, isSecret, absolute } from '../plugins/registry'
+import { legacyProgress } from '../plugins/migrate'
 import { startSync, publish, docValue, docKeys } from './engine'
 import { bus } from './bus'
 
@@ -19,7 +20,6 @@ const SHARED: (keyof Settings)[] = ['autoplayNext', 'skipSeconds', 'theme', 'spe
 let applying = false
 let prevProgress: Record<string, Progress> = {}
 let prevServers = new Map<string, string>()
-let prevAddons = new Set<string>()
 let prevPlugins = new Map<string, string>()
 
 const byId = () => new Map(items.value.map((i) => [i.id, i] as [string, Item]))
@@ -47,7 +47,6 @@ async function serverSnapshot() {
 export async function startSyncBinding() {
   prevProgress = progress.value
   prevServers = await serverSnapshot()
-  prevAddons = new Set(await stremioExtra())
   prevPlugins = pluginSnapshot(installed.value)
 
   // Offer what this device has, without overwriting what the group already holds. The engine
@@ -56,7 +55,6 @@ export async function startSyncBinding() {
     ...progressChanges({}, progress.value),
     ...SHARED.map((k) => [`s:${k}`, settings.value[k]] as [string, unknown]),
     ...[...prevServers].map(([id, s]) => [`v:${id}`, JSON.parse(s)] as [string, unknown]),
-    ...[...prevAddons].map((u) => [`a:${u}`, true] as [string, unknown]),
     ...[...prevPlugins].map(([k, v]) => [k, JSON.parse(v)] as [string, unknown]),
   ]
   await startSync((keys) => { applyRemote(keys).catch(() => {}) }, offer)
@@ -86,18 +84,6 @@ export async function startSyncBinding() {
     prevServers = next
   })
 
-  bus.addEventListener('addons', async () => {
-    const echo = applying
-    const next = new Set(await stremioExtra())
-    if (!echo) {
-      publish([
-        ...[...next].filter((u) => !prevAddons.has(u)).map((u) => [`a:${u}`, true] as [string, unknown]),
-        ...[...prevAddons].filter((u) => !next.has(u)).map((u) => [`a:${u}`, null] as [string, unknown]),
-      ])
-    }
-    prevAddons = next
-  })
-
   bus.addEventListener('plugins', () => {
     const next = pluginSnapshot(installed.value)
     if (!applying) {
@@ -122,11 +108,18 @@ async function applyRemote(keys: string[]) {
   const prog = { ...progress.value }
   let progChanged = false
   const settingsPatch: Partial<Settings> = {}
-  let servers = false, addons = false, plugins = false
+  let servers = false, plugins = false
 
   for (const k of keys) {
     const v = docValue(k)
     if (k.startsWith('p:')) {
+      // A device that still has the built-in Stremio section writes p:k:st:<video>; keep it as a plugin row.
+      const legacy = v != null && k.startsWith('p:k:st:') ? legacyProgress(k.slice(4), v as Progress) : null
+      if (legacy) {
+        const [local, row] = legacy
+        if (!prog[local] || prog[local].at < row.at) { prog[local] = row; progChanged = true; await db.put('progress', local, row) }
+        continue
+      }
       for (const local of localProgressKeys(k, index)) {
         if (v == null) {
           if (local in prog) { delete prog[local]; progChanged = true; await db.del('progress', local) }
@@ -143,7 +136,6 @@ async function applyRemote(keys: string[]) {
       const f = k.slice(2) as keyof Settings
       if (SHARED.includes(f) && v != null) (settingsPatch as Record<string, unknown>)[f] = v
     } else if (k.startsWith('v:')) servers = true
-    else if (k.startsWith('a:')) addons = true
     else if (k.startsWith('x:')) plugins = true
   }
 
@@ -156,7 +148,6 @@ async function applyRemote(keys: string[]) {
   }
 
   if (servers) await applyServers()
-  if (addons) await applyAddons()
   if (plugins) await applyPlugins()
 }
 
@@ -197,20 +188,6 @@ async function applyServers() {
     }
     prevServers = await serverSnapshot()
     await reloadItems()
-  } finally {
-    applying = false
-  }
-}
-
-async function applyAddons() {
-  applying = true
-  try {
-    const extra = docKeys('a:').filter((k) => docValue(k) === true).map((k) => k.slice(2))
-    const before = new Set(await stremioExtra())
-    if (extra.length === before.size && extra.every((u) => before.has(u))) return
-    await saveStremio({ extra })
-    prevAddons = new Set(extra)
-    await loadStremio()
   } finally {
     applying = false
   }

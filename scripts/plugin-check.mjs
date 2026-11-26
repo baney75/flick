@@ -108,7 +108,7 @@ async function call(fn, args, validate, what) {
   try {
     const raw = plain(await withTimeout(Promise.resolve(plugin[fn](ctx, ...args)), `${fn}()`))
     const out = validate(raw)
-    const rawItems = fn === 'catalog' ? (Array.isArray(raw) ? raw : raw?.items) : fn === 'streams' || fn === 'library' ? raw : null
+    const rawItems = fn === 'catalog' ? (Array.isArray(raw) ? raw : raw?.items) : fn === 'streams' || fn === 'library' || fn === 'userCatalogs' ? raw : null
     const kept = fn === 'catalog' ? out.items : out
     if (Array.isArray(rawItems) && rawItems.length > kept.length) {
       check(false, `${what}: Flick dropped ${rawItems.length - kept.length} of ${rawItems.length} entries that do not match the shapes`)
@@ -120,8 +120,16 @@ async function call(fn, args, validate, what) {
   }
 }
 
+let rows = m.catalogs.filter((c) => !c.search)
+if (m.has.userCatalogs) {
+  const dyn = await call('userCatalogs', [], V.validateCatalogDefs, 'userCatalogs()')
+  if (dyn) {
+    check(dyn.length > 0, `userCatalogs(): ${dyn.length} rows`)
+    rows = [...rows, ...dyn.filter((c) => !c.search)]
+  }
+}
 let sample = null
-for (const c of m.catalogs.filter((c) => !c.search)) {
+for (const c of rows) {
   const r = await call('catalog', [{ id: c.id, type: c.type, skip: 0 }], V.validateCatalog, `catalog "${c.name}"`)
   if (!r) continue
   check(r.items.length > 0, `catalog "${c.name}": ${r.items.length} items${r.more ? ', more' : ''}`)

@@ -157,7 +157,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     setError(msg)
   }
 
-  // ---- remote subtitles (Stremio, servers): fetch and convert to VTT ----
+  // ---- remote subtitles (plugins, servers): fetch and convert to VTT ----
   useEffect(() => {
     if (!req.subs?.length) return
     let cancelled = false

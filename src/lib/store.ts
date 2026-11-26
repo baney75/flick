@@ -2,11 +2,8 @@
 
 import { signal, computed } from '@preact/signals'
 import * as db from './db'
-import { announce } from './sync/bus'
 import type { Item, Source } from './library'
 import { allItems, makeThumb, hasThumb, saveItems, KODI_IMG } from './library'
-import type { Addon, LibraryItem } from './stremio'
-import { CINEMETA, OPENSUBS, accountAddons, accountLibrary, fetchManifest } from './stremio'
 
 // ---------- routing ----------
 export const route = signal(location.hash.slice(1) || '/')
@@ -96,7 +93,6 @@ function pump() {
 // ---------- watch progress ----------
 export type Ref =
   | { t: 'item'; id: string }
-  | { t: 'stremio'; type: string; id: string; videoId: string }
   | { t: 'plugin'; p: string; type: string; id: string; videoId: string }
   | { t: 'url'; url: string }
 
@@ -188,45 +184,4 @@ export function itemRequest(i: Item): PlayRequest {
 export function playItem(i: Item) {
   if (i.kind === 'book') return go(`/read/${encodeURIComponent(i.id)}`)
   play(itemRequest(i))
-}
-
-// ---------- Stremio ----------
-export interface StremioState { authKey: string | null; email: string | null; addons: Addon[]; library: LibraryItem[]; ready: boolean }
-export const stremio = signal<StremioState>({ authKey: null, email: null, addons: [], library: [], ready: false })
-
-export async function loadStremio() {
-  const saved = await db.get<{ authKey: string | null; email: string | null; extra: string[] }>('kv', 'stremio')
-  const authKey = saved?.authKey ?? null
-  let addons: Addon[] = []
-  let library: LibraryItem[] = []
-  try {
-    addons = authKey ? await accountAddons(authKey) : []
-    if (authKey) library = await accountLibrary(authKey)
-  } catch (e) {
-    notify(`Stremio: ${(e as Error).message}`)
-  }
-  if (!addons.length) {
-    addons = await Promise.all([CINEMETA, OPENSUBS].map((u) => fetchManifest(u).catch(() => null))).then((a) => a.filter(Boolean) as Addon[])
-  }
-  for (const url of saved?.extra ?? []) {
-    if (addons.some((a) => a.transportUrl === url)) continue
-    const a = await fetchManifest(url).catch(() => null)
-    if (a) addons.push(a)
-  }
-  stremio.value = { authKey, email: saved?.email ?? null, addons, library, ready: true }
-}
-
-export async function saveStremio(patch: { authKey?: string | null; email?: string | null; extra?: string[] }) {
-  const saved = (await db.get<{ authKey: string | null; email: string | null; extra: string[] }>('kv', 'stremio')) ?? { authKey: null, email: null, extra: [] }
-  await db.put('kv', 'stremio', { ...saved, ...patch })
-  if (patch.extra) announce('addons')
-}
-
-export async function stremioExtra(): Promise<string[]> {
-  return ((await db.get<{ extra: string[] }>('kv', 'stremio'))?.extra) ?? []
-}
-
-export function openStremioRef(r: { type: string; id: string; videoId: string }) {
-  const v = r.videoId && r.videoId !== r.id ? `?v=${encodeURIComponent(r.videoId)}` : ''
-  go(`/stremio/${r.type}/${encodeURIComponent(r.id)}${v}`)
 }
