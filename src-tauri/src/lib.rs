@@ -25,6 +25,7 @@ const AUDIO: &[&str] = &[
 ];
 const SUBS: &[&str] = &["srt", "vtt", "ass", "ssa"];
 const BOOKS: &[&str] = &["pdf", "epub"];
+const PHOTOS: &[&str] = &["jpg", "jpeg", "png", "heic", "heif", "webp", "gif", "avif"];
 // What WKWebView plays without help.
 const NATIVE_EXT: &[&str] = &[
     "mp4", "m4v", "mov", "webm", "mp3", "m4a", "m4b", "aac", "wav", "flac", "aiff", "aif", "3gp",
@@ -42,7 +43,9 @@ fn ext_of(p: &Path) -> String {
 
 fn is_media(p: &Path) -> bool {
     let e = ext_of(p);
-    VIDEO.contains(&e.as_str()) || AUDIO.contains(&e.as_str()) || BOOKS.contains(&e.as_str())
+    [VIDEO, AUDIO, BOOKS, PHOTOS]
+        .iter()
+        .any(|list| list.contains(&e.as_str()))
 }
 
 fn find_tool(name: &str) -> Option<PathBuf> {
@@ -2072,6 +2075,13 @@ mod tests {
         assert!(is_media(Path::new("/b/Jane Doe - Dune.epub")));
         assert!(is_media(Path::new("/b/Dune.PDF")));
         assert!(!is_media(Path::new("/b/notes.txt")));
+    }
+
+    #[test]
+    fn photos_count_as_media() {
+        for p in ["/p/IMG_1234.JPG", "/p/IMG_1235.heic", "/p/a.webp", "/p/b.avif"] {
+            assert!(is_media(Path::new(p)), "{p}");
+        }
     }
 
     #[test]

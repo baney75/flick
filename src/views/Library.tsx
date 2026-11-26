@@ -48,7 +48,8 @@ export function Library() {
     return () => removeEventListener('keydown', k)
   }, [])
 
-  const all = items.value
+  // Photos have their own tab and are in no other (All, Movies, Shows, Music).
+  const all = useMemo(() => items.value.filter((i) => i.kind !== 'photo'), [items.value])
   const dl = downloads.value
   const libs = useMemo(() => sources.value.filter((r) => r.manifest.has.library)
     .map((r) => ({ p: r.id, pname: r.manifest.name, list: libraries.value[r.id] ?? [] })), [sources.value, libraries.value])

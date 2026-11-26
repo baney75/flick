@@ -1,12 +1,13 @@
 // The library: folders, stored media, remote servers, all as one fast list of items.
 
 import * as db from './db'
-import { itemKindOf, parseName, parseBook, type Kind, SUB_EXT, ext } from './parse'
+import { itemKindOf, parseName, parseBook, isCameraName, type Kind, SUB_EXT, ext } from './parse'
 import { isDesktop, invoke, fileUrl, onDesktopEvent, type ScanEntry, type Probe } from './platform'
 import { kodiResolve } from './servers'
 import { localFor } from './downloads'
 import { groupAudiobooks } from './audiobook'
 import { openEpub, coverBlob } from './epub'
+import { exifTaken } from './exif'
 
 export type Source =
   | { t: 'path'; path: string }
@@ -41,6 +42,10 @@ export interface Item {
   folder?: string
   poster?: string
   server?: string
+  /** Photos: when it was taken (EXIF, as this device's wall clock), set once the thumbnail is made. */
+  taken?: number
+  /** The folder the file sits in, where the source does not say (browser folders, servers). */
+  dir?: string
   /** An audiobook made of several files, in order. Each part is a chapter; dur is filled in once measured. */
   parts?: { src: Source; title: string; dur?: number }[]
 }
@@ -75,12 +80,15 @@ export function itemFromFile(file: File, src: Source, origin: Origin, folder?: s
   const kind = itemKindOf(file.name)
   if (!kind) return null
   const key = src.t === 'handle' ? `${src.root}/${src.rel}` : src.t === 'opfs' ? `opfs:${src.name}` : `s:${file.name}:${file.size}`
-  return { id: hash(key), kind, src, origin, folder, ...named(file.name, kind), size: file.size, mtime: file.lastModified, addedAt: Date.now() }
+  const rel = src.t === 'session' ? file.webkitRelativePath : ''
+  const dir = rel ? `s:${rel.replace(/\/[^/]*$/, '')}` : undefined
+  return { id: hash(key), kind, src, origin, folder, dir, ...named(file.name, kind), size: file.size, mtime: file.lastModified, addedAt: Date.now() }
 }
 
 /** Title fields for a file: release-name parsing for media, "Author - Title" for books. */
 export function named(name: string, kind: Kind): Pick<Item, 'title' | 'show' | 'season' | 'episode' | 'year' | 'author'> {
   if (kind === 'book' || kind === 'audiobook') return parseBook(name)
+  if (kind === 'photo' || (kind === 'video' && isCameraName(name))) return { title: name.replace(/\.[^.]+$/, '') }
   const p = parseName(name)
   return { title: p.title, show: p.show, season: p.season, episode: p.episode, year: p.year }
 }
@@ -144,7 +152,9 @@ export async function mergeScan(folderName: string, scanned: Item[], persist = t
   const keepIds = new Set(scanned.map((i) => i.id))
   const merged = scanned.map((s) => {
     const p = prev.get(s.id)
-    return p ? { ...s, addedAt: p.addedAt, duration: p.duration } : s
+    if (!p) return s
+    const same = p.size === s.size && p.mtime === s.mtime
+    return { ...s, addedAt: p.addedAt, duration: p.duration, taken: same ? p.taken : undefined }
   })
   if (persist) {
     const gone = existing.filter((i) => i.folder === folderName && i.origin === 'local' && !keepIds.has(i.id)).map((i) => i.id)
@@ -357,9 +367,34 @@ async function makeCover(it: Item) {
   if (c) await db.put('thumbs', it.id, c)
 }
 
+/** The longest edge of a photo thumbnail. Cards are at most about 240 px wide, so this is sharp at 2x. */
+const PHOTO_EDGE = 480
+
+/**
+ * A small JPEG of a photo and its capture date, which lands in it.taken (the mtime when it has none,
+ * which also marks it done). A picture this web view cannot decode (HEIC outside Safari) gets no
+ * thumbnail and shows as a file tile.
+ */
+async function makePhotoThumb(it: Item) {
+  const blob = it.src.t === 'path' ? await (await fetch(await fileUrl(it.src.path))).blob() : await sourceFile(it.src)
+  if (!blob) return
+  it.taken = exifTaken(await blob.slice(0, 128 * 1024).arrayBuffer()) ?? it.mtime
+  const bmp = await createImageBitmap(blob).catch(() => null)
+  if (!bmp) return
+  const k = Math.min(1, PHOTO_EDGE / Math.max(bmp.width, bmp.height))
+  const c = document.createElement('canvas')
+  c.width = Math.max(1, Math.round(bmp.width * k))
+  c.height = Math.max(1, Math.round(bmp.height * k))
+  c.getContext('2d')!.drawImage(bmp, 0, 0, c.width, c.height)
+  bmp.close()
+  const jpeg = await new Promise<Blob | null>((ok) => c.toBlob(ok, 'image/jpeg', 0.8))
+  if (jpeg) await db.put('thumbs', it.id, jpeg)
+}
+
 /** Make a thumbnail (or an EPUB's cover) and read the duration. Returns the duration it found. */
 export async function makeThumb(it: Item): Promise<number | undefined> {
   if (localEpub(it)) return void (await makeCover(it).catch(() => {}))
+  if (it.kind === 'photo') return void (await makePhotoThumb(it))
   if (it.kind !== 'video' || it.poster) return
   if (it.src.t === 'path') {
     const r = await invoke<{ duration: number; jpeg: number[] | null }>('thumbnail', { path: it.src.path }).catch(() => null)

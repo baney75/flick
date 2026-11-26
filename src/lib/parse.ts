@@ -5,10 +5,11 @@ export const AUDIO_EXT = ['mp3', 'm4a', 'aac', 'flac', 'wav', 'ogg', 'opus', 'al
 export const SUB_EXT = ['srt', 'vtt', 'ass', 'ssa']
 export const BOOK_EXT = ['pdf', 'epub']
 export const AUDIOBOOK_EXT = ['m4b']
+export const PHOTO_EXT = ['jpg', 'jpeg', 'png', 'heic', 'heif', 'webp', 'gif', 'avif']
 
-/** What the player plays. Library items can also be books, which open in the reader, and audiobooks. */
+/** What the player plays. Library items can also be books, which open in the reader, audiobooks and photos. */
 export type Playable = 'video' | 'audio'
-export type Kind = Playable | 'book' | 'audiobook'
+export type Kind = Playable | 'book' | 'audiobook' | 'photo'
 
 export function ext(name: string): string {
   const i = name.lastIndexOf('.')
@@ -22,9 +23,20 @@ export function kindOf(name: string): Playable | null {
   return null
 }
 
-/** The library kind of a file: playable media, a book or an audiobook. */
+// Pictures that media folders hold for players (Kodi, Plex and Jellyfin posters, fan art, album covers),
+// named alone ("poster.jpg", "backdrop2.jpg") or after the media ("Heat (1995)-fanart.jpg").
+const ARTWORK = /^(?:.+-)?(?:poster|fanart|folder|cover|default|movie|show|cdart|banner|clearlogo|clearart|landscape|logo|thumb|backdrop|background|art|disc|discart|keyart|season\d*(?:-poster|-fanart|-banner|-landscape)?|season-all(?:-poster|-fanart|-banner)?)\d*$|^(?:front|back|albumart\w*)$/i
+
+/** A file a phone or camera named (IMG_2005.MOV, PXL_20240601_1020.mp4, DSC_0042.JPG): its digits are a counter, not a year. */
+export const isCameraName = (name: string) => /^(?:img|dsc[fn]?|pxl|vid|mvi|gopr|gh\d\d|dji|cimg|sam|wp)[_-]?\d/i.test(name.replace(/^.*[\\/]/, ''))
+
+/** True for a poster, fan art or album cover file that players read next to media. */
+export const isArtwork = (name: string) => ARTWORK.test(name.replace(/\.[^.]+$/, ''))
+
+/** The library kind of a file: playable media, a book, an audiobook or a photo. */
 export function itemKindOf(name: string): Kind | null {
   const e = ext(name)
+  if (PHOTO_EXT.includes(e)) return isArtwork(name) ? null : 'photo'
   return AUDIOBOOK_EXT.includes(e) ? 'audiobook' : kindOf(name) ?? (BOOK_EXT.includes(e) ? 'book' : null)
 }
 
