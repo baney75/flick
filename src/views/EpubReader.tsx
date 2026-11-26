@@ -104,7 +104,7 @@ export function EpubReader({ it }: { it: Item }) {
     <div class={`reader epub ${color}`}>
       <header class="reader-bar">
         <button class="btn ghost sm" onClick={leave} aria-label="Back"><Icon name="left" size={18} /></button>
-        <div class="reader-title"><div class="t1">{it.title}</div><div class="t2">{chapterName ?? it.author}{book && <span class="chapter-left">{` · ${chapterLeft(pos.page, pos.pages)}`}</span>}</div></div>
+        <div class="reader-title"><div class="t1">{it.title}</div><div class="t2">{chapterName ?? it.author}</div></div>
         {book && <span class="reader-page small dim" aria-live="polite">{`Page ${pos.page + 1} of ${pos.pages}`}</span>}
         {book && book.toc.length > 0 && <button class="btn ghost sm" onClick={() => setToc(!toc)} aria-expanded={toc}>Contents</button>}
         <button class="btn ghost sm" onClick={() => resize(-10)} aria-label="Smaller text">A-</button>
@@ -127,6 +127,7 @@ export function EpubReader({ it }: { it: Item }) {
           </nav>
         )}
       </div>
+      {book && <footer class="chapter-left">{chapterLeft(pos.page, pos.pages)}</footer>}
     </div>
   )
 }

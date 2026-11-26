@@ -358,6 +358,15 @@ try {
   })
   check(paper.warm > 15 && paper.frame, `Paper gives the page and toolbar a warm sepia (red minus blue ${paper.warm})`)
   await page.screenshot({ path: 'test-media/shots/epub-paper.png' })
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await page.getByRole('radio', { name: 'Day', exact: true }).click()
+  const dayBg = await page.evaluate(() => getComputedStyle(document.querySelector('.reader')).backgroundColor.match(/\d+/g).slice(0, 3).reduce((a, n) => a + Number(n), 0) / 3)
+  check(dayBg > 200, `Day keeps the toolbar light when the system is dark (bg ${Math.round(dayBg)})`)
+  await page.setViewportSize({ width: 390, height: 844 })
+  const left = await page.evaluate(() => { const e = document.querySelector('.chapter-left'); const r = e?.getBoundingClientRect(); return e ? { text: e.textContent, fits: r.height > 0 && r.right <= innerWidth && r.bottom <= innerHeight && [r.left + 2, r.right - 2].every((x) => document.elementFromPoint(x, r.top + r.height / 2)?.closest('.chapter-left') === e) } : null })
+  check(!!left?.fits && /left in this chapter|Last page/.test(left.text), `pages left in the chapter show whole on a phone (${left?.text})`)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.emulateMedia({ colorScheme: 'light' })
   await page.getByRole('radio', { name: 'Night', exact: true }).click()
   const chrome = await page.evaluate(() => {
     const lum = (c) => { const [r, g, b] = c.match(/\d+/g).map(Number); return (r * 299 + g * 587 + b * 114) / 1000 }
