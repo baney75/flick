@@ -3,16 +3,14 @@
 import { useEffect, useRef, useState } from 'preact/hooks'
 import { items, loaded, saveProgress, go, thumbTick, settings, type Progress } from '../lib/store'
 import * as db from '../lib/db'
-import { resolve, saveItems, thumbUrl, type Item, type Source } from '../lib/library'
-import { ext, formatTime } from '../lib/parse'
+import { resolve, saveItems, thumbUrl, type Item } from '../lib/library'
+import { formatTime } from '../lib/parse'
 import { isDesktop, invoke } from '../lib/platform'
-import { mp4Info, id3Cover, blobRead, urlRead, chapterAt, startSleep, sleepDue, bookSpeed, setBookSpeed, type Chapter, type Sleep } from '../lib/audiobook'
+import { mp4Info, id3Cover, sniff, bookChapters, blobRead, urlRead, chapterAt, startSleep, sleepDue, bookSpeed, setBookSpeed, type Chapter, type Sleep } from '../lib/audiobook'
 import { Icon } from '../components/icons'
 
 const SPEEDS = [0.75, 1, 1.1, 1.2, 1.3, 1.5, 1.75, 2, 2.5, 3]
 const SLEEPS: (number | 'chapter')[] = [15, 30, 45, 60, 'chapter']
-
-const nameOf = (s: Source) => (s.t === 'path' ? s.path : s.t === 'handle' ? s.rel : s.t === 'opfs' ? s.name : s.t === 'url' || s.t === 'kodi' ? s.url.split('?')[0] : '')
 
 const measure = (url: string) => new Promise<number>((done) => {
   const a = new Audio()
@@ -62,21 +60,22 @@ function Book({ it }: { it: Item }) {
         if (!live) return
         // Keep measured part lengths, so the next open needs no measuring.
         if (it.parts && it.parts.some((p, i) => p.dur !== urls[i].dur)) saveItems([{ ...it, parts: it.parts.map((p, i) => ({ ...p, dur: urls[i].dur })) }]).catch(() => {})
-        let ch: Chapter[] = []
+        // Chapters inside each file: ffprobe on desktop (M4B, MP3 with ID3 chapters, MKA, Ogg), and the MP4
+        // boxes of a one-file book anywhere. Files without any become one chapter each.
+        const inner: Chapter[][] = list.map(() => [])
+        if (isDesktop) await Promise.all(list.map(async (p, i) => {
+          if (p.src.t === 'path') inner[i] = await invoke<Chapter[]>('chapters', { path: p.src.path }).catch(() => [])
+        }))
+        // Cover art (and web chapters) come from the first file's bytes, recognized by content, not by name.
         let art: Uint8Array | undefined
-        if (it.parts) {
-          ch = it.parts.map((p, i) => ({ title: p.title, start: urls.slice(0, i).reduce((n, u) => n + u.dur, 0) }))
-        } else if (isDesktop && it.src.t === 'path') {
-          ch = await invoke<Chapter[]>('chapters', { path: it.src.path }).catch(() => [])
-        }
-        // Chapters (on the website) and cover art come from the file itself: MP4 boxes or an MP3's ID3 tag.
-        const first = it.parts ? it.parts[0].src : it.src
         const [read, size] = urls[0].file ? [blobRead(urls[0].file), urls[0].file.size] as const : await urlRead(urls[0].url).catch(() => [null, 0] as const)
-        if (read && ['m4b', 'm4a', 'mp4'].includes(ext(nameOf(first)))) {
+        const kind = read ? sniff(await read(0, 12).catch(() => new Uint8Array())) : null
+        if (read && kind === 'mp4') {
           const info = await mp4Info(read, size).catch(() => ({ chapters: [], cover: undefined }))
-          if (!ch.length && !it.parts) ch = info.chapters
+          if (list.length === 1 && !inner[0].length) inner[0] = info.chapters
           art = info.cover
-        } else if (read && ext(nameOf(first)) === 'mp3') art = await id3Cover(read).catch(() => undefined)
+        } else if (read && kind === 'id3') art = await id3Cover(read).catch(() => undefined)
+        const ch = bookChapters(list.map((p, i) => ({ title: p.title, dur: urls[i].dur })), inner)
         if (art && !(await thumbUrl(it.id))) { await db.put('thumbs', it.id, new Blob([art as BlobPart], { type: art[0] === 0x89 ? 'image/png' : 'image/jpeg' })); thumbTick.value++ }
         const [saved, sp, img] = await Promise.all([db.get<Progress>('progress', it.id).catch(() => undefined), bookSpeed(it.id, settings.value.speed), thumbUrl(it.id)])
         if (!live) return

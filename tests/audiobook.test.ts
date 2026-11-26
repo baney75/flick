@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto'
 import { describe, expect, it, inject } from 'vitest'
-import { mp4Info, id3Cover, blobRead, bookOf, groupAudiobooks, chapterAt, startSleep, sleepDue, bookSpeed, setBookSpeed, type Read } from '../src/lib/audiobook'
+import { mp4Info, id3Cover, blobRead, bookOf, sniff, bookChapters, groupAudiobooks, chapterAt, startSleep, sleepDue, bookSpeed, setBookSpeed, type Read } from '../src/lib/audiobook'
 import { itemKindOf } from '../src/lib/parse'
 import { flickMap, type Server } from '../src/lib/servers'
 import type { Item } from '../src/lib/library'
@@ -99,3 +99,24 @@ describe('finding audiobooks', () => {
 })
 
 export type { Item }
+
+describe('audiobooks from any source', () => {
+  it('groups Windows paths into one book', () => {
+    expect(bookOf('C:\\Users\\me\\Audiobooks\\Frank Herbert\\Dune\\01.mp3')).toEqual({ dir: 'C:/Users/me/Audiobooks/Frank Herbert/Dune', title: 'Dune', author: 'Frank Herbert' })
+    const it = (n: string) => ({ id: n, kind: 'audio', title: n, src: { t: 'path', path: n }, size: 1, mtime: 1 }) as unknown as Item
+    const out = groupAudiobooks([it('C:\\A\\Audiobooks\\Dune\\02.mp3'), it('C:\\A\\Audiobooks\\Dune\\01.mp3')], (x) => (x.src as { path: string }).path)
+    expect(out).toHaveLength(1)
+    expect(out[0].parts!.map((p) => p.title)).toEqual(['01', '02'])
+  })
+  it('knows a file by its bytes, not its name', () => {
+    expect(sniff(bytes('book.m4b'))).toBe('mp4')
+    expect(sniff(bytes('01 Part.mp3'))).toBe('id3')
+    expect(sniff(new TextEncoder().encode('<html>hello</html>'))).toBe(null)
+  })
+  it('puts chapters inside a part where that part starts', () => {
+    const parts = [{ title: 'one', dur: 100 }, { title: 'two', dur: 50 }, { title: 'three', dur: 10 }]
+    expect(bookChapters(parts, [[], [{ title: 'A', start: 0 }, { title: 'B', start: 20 }], []])).toEqual([
+      { title: 'one', start: 0 }, { title: 'A', start: 100 }, { title: 'B', start: 120 }, { title: 'three', start: 150 },
+    ])
+  })
+})

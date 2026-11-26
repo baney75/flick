@@ -52,6 +52,7 @@ const flickFiles = {
   b2: { folder: 'Books', name: 'John Roe - Server Book (2021).pdf', kind: 'book', ext: 'pdf', type: 'application/pdf', body: readFileSync(book) },
   d4: { folder: 'Audiobooks', path: 'John Roe/Part Book/01 Part.mp3', name: '01 Part.mp3', kind: 'audio', ext: 'mp3', type: 'audio/mpeg', body: readFileSync('test-media/audiobook/01 Part.mp3') },
   e5: { folder: 'Audiobooks', path: 'John Roe/Part Book/02 Part.mp3', name: '02 Part.mp3', kind: 'audio', ext: 'mp3', type: 'audio/mpeg', body: readFileSync('test-media/audiobook/02 Part.mp3') },
+  f6: { folder: 'Audiobooks', name: 'John Roe - Server Audiobook.m4b', kind: 'audio', ext: 'm4b', type: 'audio/mp4', body: readFileSync('test-media/audiobook/book.m4b') },
 }
 const flick = createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -229,7 +230,7 @@ try {
   check(await flickForm.getByText('access code is wrong').waitFor({ timeout: 5000 }).then(() => true, () => false), 'Flick server form says when the code is wrong')
   await flickForm.getByLabel('Access code').fill(FLICK_CODE)
   await flickForm.getByRole('button', { name: 'Connect' }).click()
-  check(await page.getByText('Smoke NAS: 3 items in your library.').waitFor({ timeout: 8000 }).then(() => true, () => false), 'Flick server connects through the Servers form')
+  check(await page.getByText('Smoke NAS: 4 items in your library.').waitFor({ timeout: 8000 }).then(() => true, () => false), 'Flick server connects through the Servers form')
   await page.goto(`${BASE}/#/library`)
   await page.getByRole('tab', { name: /Movies/ }).click()
   await page.getByText('Server Movie').first().waitFor({ timeout: 5000 })
@@ -247,6 +248,10 @@ try {
   await page.getByRole('tab', { name: /Audiobooks/ }).click()
   await page.getByText('Part Book').first().click()
   check(await page.getByRole('button', { name: 'Chapters (2)' }).waitFor({ timeout: 8000 }).then(() => true, () => false), 'a folder of MP3 parts on a Flick server is one audiobook, a chapter per file')
+  await page.goto(`${BASE}/#/library`)
+  await page.getByRole('tab', { name: /Audiobooks/ }).click()
+  await page.getByText('Server Audiobook').first().click()
+  check(await page.getByRole('button', { name: 'Chapters (3)' }).waitFor({ timeout: 8000 }).then(() => true, () => false), 'an M4B on a Flick server shows its chapters')
 
   // The same server again, from a setup link after removing it.
   await page.goto(`${BASE}/#/servers`)
@@ -256,7 +261,7 @@ try {
   await page.goto(`${BASE}/#/setup?c=${flickSetup}`)
   await page.getByRole('button', { name: 'Connect all' }).click()
   await page.getByText('Done').waitFor()
-  check(await page.locator('.list-row', { hasText: `Flick server at ${FLICK_URL}` }).getByText('3 items').isVisible(), 'setup link with a Flick server connects it')
+  check(await page.locator('.list-row', { hasText: `Flick server at ${FLICK_URL}` }).getByText('4 items').isVisible(), 'setup link with a Flick server connects it')
 
   // Phone layout.
   await page.setViewportSize({ width: 390, height: 844 })

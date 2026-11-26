@@ -12,7 +12,7 @@ const DISC = /^(cd|dis[ck]|part)\s*\d+$/i
 /** For a file under an "Audiobooks" folder: the book's folder, title and author. "Audiobooks/Author/Title/01.mp3",
  *  "Audiobooks/Author - Title/01.mp3" and disc folders ("Title/CD 2/01.mp3") all name one book. */
 export function bookOf(path: string): { dir: string; title: string; author?: string } | null {
-  const segs = path.split('/').slice(0, -1)
+  const segs = path.split(/[\\/]/).slice(0, -1)
   const at = segs.findIndex((s) => SHELF.test(s.trim()))
   let end = segs.length
   if (end - 1 > at + 1 && DISC.test(segs[end - 1].trim())) end--
@@ -43,7 +43,7 @@ export function groupAudiobooks(list: Item[], pathOf: (it: Item) => string): Ite
       ...first, id: hash(`audiobook:${first.server ?? ''}:${dir}`), kind: 'audiobook', title: b.title, author: b.author,
       show: undefined, season: undefined, episode: undefined, year: undefined, duration: undefined,
       size: parts.reduce((n, [, x]) => n + x.size, 0), mtime: Math.max(...parts.map(([, x]) => x.mtime)),
-      parts: parts.map(([p, x]) => ({ src: x.src, title: p.split('/').pop()!.replace(/\.[^.]+$/, '') })),
+      parts: parts.map(([p, x]) => ({ src: x.src, title: p.split(/[\\/]/).pop()!.replace(/\.[^.]+$/, '') })),
     })
   }
   return out
@@ -52,6 +52,26 @@ export function groupAudiobooks(list: Item[], pathOf: (it: Item) => string): Ite
 // ---- chapters and cover inside an MP4 / M4B ----
 
 export interface Chapter { title: string; start: number }
+
+/** What a file is from its first bytes, since a server or session source often has no usable name. */
+export function sniff(head: Uint8Array): 'mp4' | 'id3' | null {
+  const s = String.fromCharCode(...head.subarray(0, 12))
+  return s.slice(4, 8) === 'ftyp' ? 'mp4' : s.startsWith('ID3') ? 'id3' : null
+}
+
+/** The book's chapter list: each part's own chapters (from the file) moved to where the part starts, or
+ *  one chapter named for the part when the file has none. */
+export function bookChapters(parts: { title: string; dur: number }[], inner: Chapter[][]): Chapter[] {
+  const out: Chapter[] = []
+  let at = 0
+  parts.forEach((p, i) => {
+    const c = inner[i] ?? []
+    if (c.length) out.push(...c.map((x) => ({ title: x.title, start: at + x.start })))
+    else out.push({ title: p.title, start: at })
+    at += p.dur
+  })
+  return out
+}
 /** Reads `len` bytes at `off` from the file. */
 export type Read = (off: number, len: number) => Promise<Uint8Array>
 
