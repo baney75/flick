@@ -14,7 +14,7 @@ import { installed } from '../lib/plugins/registry'
 import { sources, sourceById, searchAll, titlePath, progressKey, libraries, loadLibrary, continueOf, type Source, type Found } from '../lib/plugins/use'
 import type { CatalogDef, Meta, Stream, Video } from '../lib/plugins/validate'
 import { sections, qualityOf, hdrOf, sizeOf, downloadable } from '../lib/plugins/streams'
-import { rank, pickLine, type Ranked } from '../lib/pick'
+import { rank, pickLine, subLangFor, type Ranked } from '../lib/pick'
 import { streamCandidates } from '../lib/candidates'
 import { ctxNow, deviceFor, prefsNow } from '../lib/picking'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
@@ -273,7 +273,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     const subs = [...(s.subs ?? [])]
     if (rec.manifest.has.subtitles) subs.push(...(await callPlugin(rec, 'subtitles', [{ type: meta.type, id: meta.id, videoId }]).catch(() => [])))
     // The subtitle the pick turns on comes first, then the device's languages.
-    const subLang = rowOf.get(s)?.sub
+    const subLang = subLangFor(rowOf.get(s), prefsNow(), subs.flatMap((x) => langCode(x.lang) ?? []))
     const langs = navigator.languages.map((l) => l.slice(0, 2))
     const want = (x: { lang: string }) => (subLang && langCode(x.lang) === subLang ? 2 : 0) + Number(langs.some((l) => x.lang.startsWith(l)))
     subs.sort((a, b) => want(b) - want(a))

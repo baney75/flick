@@ -192,6 +192,17 @@ function stickyOf(list: Ranked[], ctx: PickCtx): Ranked | undefined {
   return ok.find((r) => r.c.place === 'download')
 }
 
+/**
+ * Rule 9 once the player has every track: the subtitle the ranker chose, or, when the audio is not
+ * one of the user's languages, the first subtitle language of theirs among the tracks fetched later.
+ */
+export function subLangFor(r: Ranked | undefined, prefs: Prefs, have: string[]): string | undefined {
+  if (!r) return undefined
+  if (r.sub) return r.sub
+  if (r.lang === 'multi' || (r.lang && prefs.audio.includes(r.lang))) return undefined
+  return prefs.subs.find((p) => have.includes(p))
+}
+
 /** Every candidate, best first: the ones that play in score order, then the blocked ones in score order. */
 export function rank(cands: Candidate[], prefs: Prefs, dev: Device, ctx: PickCtx): Ranked[] {
   const rows = cands.map((c) => {

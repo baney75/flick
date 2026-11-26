@@ -98,8 +98,9 @@ export function SourceSheet() {
         <h3>{t.name}{t.year ? ` (${t.year})` : ''}</h3>
         <p class="small dim">Choose where to play it from.</p>
         {rows.map(({ s, r }, i) => (
-          // A row the ranker filtered is listed greyed with its reason, and never plays (rule 4).
-          <button class={`list-row source-row${r.blocked ? ' blocked' : ''}`} ref={i === 0 ? firstRow : undefined} aria-disabled={r.blocked ? 'true' : undefined} onClick={() => !r.blocked && pick(s)}>
+          // A row the ranker filtered is listed greyed with its reason and never auto-picked (rule 4);
+          // a tap still tries it, as the plugin page does.
+          <button class={`list-row source-row${r.blocked ? ' blocked' : ''}`} ref={i === 0 ? firstRow : undefined} onClick={() => pick(s)}>
             <Icon name={s.t === 'plugin' ? 'plug' : s.t === 'item' && s.dl ? 'download' : 'play'} size={16} />
             <div class="grow"><div>{srcName(s)}</div><div class="small dim">{r.blocked ?? detail(s)}</div></div>
           </button>
