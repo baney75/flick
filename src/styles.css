@@ -442,6 +442,9 @@ html.tv .hrow { grid-auto-columns: 300px; padding: 10px 6px 14px; }
 .warn-box { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--warn); }
 .sheet-back { position: fixed; inset: 0; z-index: 60; background: rgb(0 0 0 / .55); display: grid; place-items: center; padding: 16px; }
 .sheet { width: min(520px, 100%); max-height: 90vh; overflow: auto; margin: 0; box-shadow: var(--shadow); }
+.source-row { width: 100%; text-align: left; min-height: 48px; background: none; border: 0; color: inherit; cursor: pointer; border-radius: 8px; padding: 10px 8px; }
+.source-row:hover, .source-row:focus-visible { background: var(--line); }
+.row.end { justify-content: flex-end; margin-top: 8px; }
 .facts-list { display: grid; gap: 6px; margin: 10px 0; }
 .facts-list .dim { display: inline-block; min-width: 110px; }
 /* Audiobook player */
