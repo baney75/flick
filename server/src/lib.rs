@@ -48,14 +48,16 @@ struct State {
     web: web::Web,
     /// Cached photo thumbnails.
     thumbs: PathBuf,
+    renders: thumb::Gate,
     // Set by stop(); a body being streamed ends at its next read.
     stopping: AtomicBool,
 }
 
 impl State {
-    fn rescan(&self) {
+    /// `dates` reads the capture date of each new or changed photo.
+    fn rescan(&self, dates: bool) {
         let prev = self.index();
-        let fresh = Arc::new(index::scan_with(&self.roots, Some(&prev)));
+        let fresh = Arc::new(index::scan_with(&self.roots, Some(&prev), dates));
         *self.index.write().unwrap() = fresh;
     }
     fn index(&self) -> Arc<Index> {
@@ -207,6 +209,7 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
     let state = Arc::new(State {
         web,
         thumbs: cfg.config_dir.join("thumbs"),
+        renders: thumb::Gate::new(thumb::RENDERS),
         name: cfg.name,
         token: token.clone(),
         real_roots: cfg
@@ -218,12 +221,14 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
         index: Default::default(),
         stopping: AtomicBool::new(false),
     });
-    state.rescan();
+    // Start answering after a quick scan; photo dates fill in on the first background pass.
+    state.rescan(false);
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let st = state.clone();
     let rescan = std::thread::spawn(move || {
+        st.rescan(true);
         while let Err(mpsc::RecvTimeoutError::Timeout) = stop_rx.recv_timeout(RESCAN_EVERY) {
-            st.rescan();
+            st.rescan(true);
         }
     });
     // A fixed set of workers answers requests, so a flood of connections can't spawn threads
@@ -322,7 +327,7 @@ fn handle(st: &State, req: Request) {
     }
     if path == "/api/library" {
         if param("rescan") == Some("1") {
-            st.rescan();
+            st.rescan(true);
         }
         let idx = st.index();
         return json(
@@ -455,21 +460,35 @@ impl<R: Read> Read for Stoppable<'_, R> {
 
 fn thumbnail(req: Request, item: &index::Item, st: &State) {
     let cached = thumb::cache_path(&st.thumbs, &item.id, item.size, item.mtime);
-    let jpeg = match std::fs::read(&cached) {
-        Ok(b) => Some(b),
-        Err(_) => open_inside(&item.abs, &st.real_roots)
-            .and_then(thumb::render)
-            .inspect(|b| {
-                // A read-only config dir only costs the cache; the thumbnail is still served.
-                let _ = thumb::store(&cached, b);
-            }),
-    };
-    let Some(jpeg) = jpeg else {
-        return json(
+    let failed = cached.with_extension("none");
+    let no_thumb = |req| {
+        json(
             req,
             415,
             serde_json::json!({"error":"no thumbnail for this file"}),
-        );
+        )
+    };
+    if failed.exists() {
+        return no_thumb(req);
+    }
+    let jpeg = match std::fs::read(&cached) {
+        Ok(b) => b,
+        Err(_) => {
+            let Some(file) = open_inside(&item.abs, &st.real_roots) else {
+                return json(req, 404, serde_json::json!({"error":"not found"}));
+            };
+            let made = {
+                let _turn = st.renders.enter();
+                thumb::render(file)
+            };
+            // A read-only config dir only costs the cache; the answer is the same.
+            let Some(jpeg) = made else {
+                let _ = thumb::store(&failed, b"");
+                return no_thumb(req);
+            };
+            let _ = thumb::store(&cached, &jpeg);
+            jpeg
+        }
     };
     let res = Response::from_data(jpeg)
         .with_header(header("Content-Type", "image/jpeg"))

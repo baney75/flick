@@ -1,5 +1,5 @@
 //! Photos: listed with their capture date, and served as small upright thumbnails.
-use flick_server::index::{content_type, item_id, kind, scan, scan_with, taken};
+use flick_server::index::{content_type, item_id, kind, scan, scan_capped, scan_with, taken, Caps};
 use flick_server::{start, Config};
 use std::fs;
 use std::io::{Read, Write};
@@ -135,7 +135,7 @@ fn rescan_reuses_dates_of_unchanged_photos() {
         .set_modified(stamp)
         .unwrap();
     assert_eq!(taken(&p), None);
-    let again = scan_with(std::slice::from_ref(&root), Some(&first));
+    let again = scan_with(std::slice::from_ref(&root), Some(&first), true);
     assert_eq!(again.items[0].taken.as_deref(), Some("2023-01-02T03:04:05"));
     // A changed file is read again.
     fs::File::options()
@@ -144,7 +144,82 @@ fn rescan_reuses_dates_of_unchanged_photos() {
         .unwrap()
         .set_modified(stamp + Duration::from_secs(5))
         .unwrap();
-    assert_eq!(scan_with(&[root], Some(&first)).items[0].taken, None);
+    assert_eq!(
+        scan_with(std::slice::from_ref(&root), Some(&first), true).items[0].taken,
+        None
+    );
+    // A quick scan (server start) opens no photo and leaves new ones undated for the next pass.
+    fs::write(&p, &with).unwrap();
+    let quick = scan_with(std::slice::from_ref(&root), None, false);
+    assert_eq!(quick.items[0].taken, None);
+    let full = scan_with(&[root], Some(&quick), true);
+    assert_eq!(full.items[0].taken.as_deref(), Some("2023-01-02T03:04:05"));
+}
+
+#[test]
+fn photos_have_their_own_cap() {
+    let root = temp("caps").join("Media");
+    fs::create_dir_all(root.join("Photos")).unwrap();
+    fs::create_dir_all(root.join("TV")).unwrap();
+    for i in 0..5 {
+        fs::write(root.join(format!("Photos/IMG_{i}.jpg")), b"x").unwrap();
+    }
+    fs::write(root.join("TV/Show.S01E01.mkv"), b"x").unwrap();
+    fs::write(root.join("TV/Show.S01E02.mkv"), b"x").unwrap();
+    let caps = Caps {
+        media: 2,
+        photos: 3,
+    };
+    let idx = scan_capped(&[root], None, false, caps);
+    let photos = idx.items.iter().filter(|i| i.kind == "photo").count();
+    let videos = idx.items.iter().filter(|i| i.kind == "video").count();
+    // The photos sort first and fill their cap; the episodes after them are still listed.
+    assert_eq!((photos, videos), (3, 2));
+}
+
+#[test]
+fn bad_clock_values_are_no_date() {
+    let p = temp("clock").join("a.jpg");
+    fs::write(&p, jpeg(8, 8, Some(("2024:06:01 24:99:99", 1)))).unwrap();
+    assert_eq!(taken(&p), None);
+}
+
+#[test]
+fn transparent_pixels_turn_white() {
+    let img = image::RgbaImage::from_pixel(10, 10, image::Rgba([0, 0, 0, 0]));
+    let p = temp("alpha").join("sticker.png");
+    img.save(&p).unwrap();
+    let jpeg = flick_server::thumb::render(fs::File::open(&p).unwrap()).unwrap();
+    let back = image::load_from_memory(&jpeg).unwrap().to_rgb8();
+    assert!(
+        back.get_pixel(5, 5).0.iter().all(|&c| c > 245),
+        "{:?}",
+        back.get_pixel(5, 5)
+    );
+}
+
+#[test]
+fn gate_holds_renders_to_its_limit() {
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    use std::sync::Arc;
+    let gate = Arc::new(flick_server::thumb::Gate::new(2));
+    let (now, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let threads: Vec<_> = (0..8)
+        .map(|_| {
+            let (gate, now, most) = (gate.clone(), now.clone(), most.clone());
+            std::thread::spawn(move || {
+                let _turn = gate.enter();
+                let n = now.fetch_add(1, SeqCst) + 1;
+                most.fetch_max(n, SeqCst);
+                std::thread::sleep(Duration::from_millis(20));
+                now.fetch_sub(1, SeqCst);
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    assert_eq!(most.load(SeqCst), 2);
 }
 
 fn get(port: u16, path: &str) -> (u16, String, Vec<u8>) {
@@ -183,6 +258,7 @@ fn serves_small_upright_thumbnails() {
     .unwrap();
     fs::write(media.join("plain.jpg"), jpeg(800, 600, None)).unwrap();
     fs::write(media.join("phone.heic"), b"\0\0\0\x18ftypheic").unwrap();
+    fs::write(media.join("gone.jpg"), jpeg(20, 20, None)).unwrap();
     fs::write(media.join("clip.mp4"), b"x").unwrap();
     let h = start(Config {
         media: vec![media],
@@ -216,6 +292,29 @@ fn serves_small_upright_thumbnails() {
         (320, 240)
     );
     assert_eq!(get(p, &format!("/thumb/{}?t={t}", id("phone.heic"))).0, 415);
+    // The failure is remembered, so the next grid view does not decode it again.
+    assert_eq!(
+        fs::read_dir(&dir)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().extension().unwrap() == "none")
+            .count(),
+        1
+    );
+    assert_eq!(get(p, &format!("/thumb/{}?t={t}", id("phone.heic"))).0, 415);
+    // A photo removed since the last scan is not found, not "can't decode".
+    fs::remove_file(base.join("Photos/gone.jpg")).unwrap();
+    assert_eq!(get(p, &format!("/thumb/{}?t={t}", id("gone.jpg"))).0, 404);
+    // The background pass dates the photos the quick start scan left undated.
+    let (_, _, lib) = get(p, &format!("/api/library?rescan=1&t={t}"));
+    let lib: serde_json::Value = serde_json::from_slice(&lib).unwrap();
+    let wide = lib["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == "wide.jpg")
+        .unwrap()
+        .clone();
+    assert_eq!(wide["taken"], "2024-06-01T10:20:30");
     assert_eq!(get(p, &format!("/thumb/{}?t={t}", id("clip.mp4"))).0, 404);
     assert_eq!(get(p, &format!("/thumb/nope?t={t}")).0, 404);
     // Full size stays at /media with its image type.

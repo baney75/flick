@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 pub const MAX_ITEMS: usize = 200_000;
+/// Photos have a cap of their own, so a big camera roll never pushes videos, music or books out.
+pub const MAX_PHOTOS: usize = 200_000;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Item {
@@ -20,6 +22,9 @@ pub struct Item {
     /// Photos only: when the picture was taken, from EXIF DateTimeOriginal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub taken: Option<String>,
+    /// Whether `taken` was looked for, so a quick scan's empty date is not reused as "no date".
+    #[serde(skip)]
+    pub dated: bool,
     #[serde(skip)]
     pub abs: PathBuf,
 }
@@ -102,12 +107,34 @@ fn hidden(name: &std::ffi::OsStr) -> bool {
     name.to_string_lossy().starts_with('.')
 }
 
+/// How many items a scan keeps: `media` for video, audio and books, `photos` for photos.
+#[derive(Clone, Copy, Debug)]
+pub struct Caps {
+    pub media: usize,
+    pub photos: usize,
+}
+
+impl Default for Caps {
+    fn default() -> Self {
+        Caps {
+            media: MAX_ITEMS,
+            photos: MAX_PHOTOS,
+        }
+    }
+}
+
 pub fn scan(roots: &[PathBuf]) -> Index {
-    scan_with(roots, None)
+    scan_with(roots, None, true)
 }
 
 /// Scans, reusing `prev`'s capture dates for photos whose size and mtime have not changed.
-pub fn scan_with(roots: &[PathBuf], prev: Option<&Index>) -> Index {
+/// With `dates` off, photos it has no date for are left undated and nothing is opened.
+pub fn scan_with(roots: &[PathBuf], prev: Option<&Index>, dates: bool) -> Index {
+    scan_capped(roots, prev, dates, Caps::default())
+}
+
+pub fn scan_capped(roots: &[PathBuf], prev: Option<&Index>, dates: bool, caps: Caps) -> Index {
+    let (mut media, mut photos) = (0, 0);
     let mut idx = Index {
         folders: labels(roots),
         ..Default::default()
@@ -120,7 +147,7 @@ pub fn scan_with(roots: &[PathBuf], prev: Option<&Index>) -> Index {
             .into_iter()
             .filter_entry(|e| e.depth() == 0 || !hidden(e.file_name()))
         {
-            if idx.items.len() >= MAX_ITEMS {
+            if media >= caps.media && photos >= caps.photos {
                 return idx;
             }
             let Ok(e) = e else { continue };
@@ -128,13 +155,31 @@ pub fn scan_with(roots: &[PathBuf], prev: Option<&Index>) -> Index {
                 continue;
             }
             if let Some(mut item) = make_item(root, &folder, e.path()) {
+                let count = if item.kind == "photo" {
+                    (&mut photos, caps.photos)
+                } else {
+                    (&mut media, caps.media)
+                };
+                if *count.0 >= count.1 {
+                    continue;
+                }
+                *count.0 += 1;
                 if item.kind == "photo" {
-                    item.taken = match prev.and_then(|p| p.get(&item.id)) {
-                        Some(old) if old.size == item.size && old.mtime == item.mtime => {
-                            old.taken.clone()
+                    match prev.and_then(|p| p.get(&item.id)) {
+                        Some(old)
+                            if old.size == item.size
+                                && old.mtime == item.mtime
+                                && (old.dated || !dates) =>
+                        {
+                            item.taken = old.taken.clone();
+                            item.dated = old.dated;
                         }
-                        _ => taken(&item.abs),
-                    };
+                        _ if dates => {
+                            item.taken = taken(&item.abs);
+                            item.dated = true;
+                        }
+                        _ => {}
+                    }
                 }
                 idx.by_id.insert(item.id.clone(), idx.items.len());
                 idx.items.push(item);
@@ -168,6 +213,7 @@ fn make_item(root: &Path, folder: &str, abs: &Path) -> Option<Item> {
         size: meta.len(),
         mtime: mtime.map_or(0, |d| d.as_millis() as u64),
         taken: None,
+        dated: false,
         abs: abs.to_path_buf(),
     })
 }
@@ -185,7 +231,8 @@ pub fn taken(abs: &Path) -> Option<String> {
     };
     let d = exif::DateTime::from_ascii(v.first()?).ok()?;
     // Cameras with no clock set write zeros.
-    if d.year < 1900 || !(1..=12).contains(&d.month) || !(1..=31).contains(&d.day) {
+    let date_ok = d.year >= 1900 && (1..=12).contains(&d.month) && (1..=31).contains(&d.day);
+    if !date_ok || d.hour > 23 || d.minute > 59 || d.second > 60 {
         return None;
     }
     Some(format!(
