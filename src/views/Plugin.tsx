@@ -13,9 +13,13 @@ import { callPlugin } from '../lib/plugins/runtime'
 import { installed } from '../lib/plugins/registry'
 import { sources, sourceById, searchAll, titlePath, progressKey, libraries, loadLibrary, continueOf, type Source, type Found } from '../lib/plugins/use'
 import type { CatalogDef, Meta, Stream, Video } from '../lib/plugins/validate'
-import { sections, best, qualityOf, hdrOf, sizeOf, downloadable } from '../lib/plugins/streams'
+import { sections, qualityOf, hdrOf, sizeOf, downloadable } from '../lib/plugins/streams'
+import { rank, pickLine, subLangFor, type Ranked } from '../lib/pick'
+import { streamCandidates } from '../lib/candidates'
+import { ctxNow, deviceFor, prefsNow } from '../lib/picking'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
+import { langCode } from '../lib/release'
 
 const shape = (m: Meta) => (m.posterShape === 'landscape' ? 'wide' : m.posterShape === 'square' ? 'square' : 'poster')
 
@@ -253,6 +257,13 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
 
   const last = progress.value[key]
   const resumeAt = unfinished(last) ? last.pos : 0
+  // Rank this video's streams by the user's languages, quality and this device (SPEC-best-stream).
+  const rows = rank(streamCandidates(key, shown, { audiobook: meta.type === 'audiobook', episode: meta.type === 'series' }), prefsNow(), deviceFor(), ctxNow())
+  const streamOf = (r: Ranked) => shown[Number(r.c.id.slice(r.c.id.lastIndexOf('#') + 1))]
+  const rowOf = new Map(rows.map((r) => [streamOf(r), r]))
+  const best = rows[0] && !rows[0].blocked ? rows[0] : null
+  const top = best ? streamOf(best) : null
+
   const start = async (s: Stream, startAt?: number) => {
     if (s.external) { window.open(s.url, '_blank', 'noopener'); return }
     if (s.kind === 'book') {
@@ -261,8 +272,11 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     }
     const subs = [...(s.subs ?? [])]
     if (rec.manifest.has.subtitles) subs.push(...(await callPlugin(rec, 'subtitles', [{ type: meta.type, id: meta.id, videoId }]).catch(() => [])))
+    // The subtitle the pick turns on comes first, then the device's languages.
+    const subLang = subLangFor(rowOf.get(s), prefsNow(), subs.flatMap((x) => langCode(x.lang) ?? []))
     const langs = navigator.languages.map((l) => l.slice(0, 2))
-    subs.sort((a, b) => Number(langs.some((l) => b.lang.startsWith(l))) - Number(langs.some((l) => a.lang.startsWith(l))))
+    const want = (x: { lang: string }) => (subLang && langCode(x.lang) === subLang ? 2 : 0) + Number(langs.some((l) => x.lang.startsWith(l)))
+    subs.sort((a, b) => want(b) - want(a))
     play({
       key,
       title: meta.name,
@@ -274,11 +288,11 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       ref,
       startAt,
       onSave,
+      ...(subLang ? { subLang } : {}),
     })
   }
 
-  const secs = sections(shown)
-  const top = best(shown)
+  const secs = sections(rows.map(streamOf))
   // One download per title: rows offer Download until one is queued, running or saved.
   const free = !dl || dl.state === 'failed'
   const row = (s: Stream) => {
@@ -287,8 +301,9 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     // On the website no stream host is contacted before a tap (a debrid link acts on the account);
     // a host that refuses the browser fails the download with the message to use the Flick app.
     const canSave = free && how !== null
+    const why = rowOf.get(s)?.blocked
     return (
-      <div class="stream-item">
+      <div class={`stream-item${why ? ' blocked' : ''}`}>
         <button class="stream" onClick={() => start(s)}>
           <div class="stream-name">{s.group ?? rec.manifest.name}</div>
           <div class="stream-detail">{s.title ?? ''}</div>
@@ -298,7 +313,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
             {size && <span>{size}</span>}
             {s.kind === 'book' && <span>Book</span>}
             {s.external && <span>Opens in your browser</span>}
-            {s.needsDesktop && !isDesktop && <span class="warn">May need the desktop app</span>}
+            {why && !s.external && <span class="warn">{why}</span>}
             </div>
           <Icon name={s.external ? 'external' : 'play'} size={18} class="stream-go" />
         </button>
@@ -314,7 +329,8 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
         {list === null && <span class="spinner sm" />}
         {dl?.state === 'done'
           ? <button class="btn primary play-best" onClick={() => playSaved(dl, { onSave })}><Icon name="play" size={16} /> {resumeAt ? `Resume downloaded ${formatTime(resumeAt)}` : 'Play downloaded'}</button>
-          : top && <button class="btn primary play-best" onClick={() => start(top)}><Icon name="play" size={16} /> {resumeAt ? `Resume ${formatTime(resumeAt)}` : `Play${qualityOf(top) !== 'Other' ? ` ${qualityOf(top)}` : ''}`}</button>}
+          : top ? <><button class="btn primary play-best" onClick={() => start(top)}><Icon name="play" size={16} /> {resumeAt ? `Resume ${formatTime(resumeAt)}` : 'Play'}</button><span class="pick-line small dim">{pickLine(best!)}</span></>
+            : rows[0] && <p class="pick-why small">{rows[0].blocked}</p>}
         {(dl?.state === 'done' || top) && resumeAt > 0 && <button class="btn ghost start-over" onClick={() => (dl?.state === 'done' ? playSaved(dl, { onSave, startAt: 0 }) : start(top!, 0))}>Start over</button>}
       </div>
       {dl && !(dl.state === 'failed' && dl.error === 'Canceled' && !dl.part) && (

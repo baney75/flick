@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { pick, pickLine, rank, VPN_DEBRID, VPN_P2P, type Candidate, type Device, type PickCtx, type Prefs } from '../src/lib/pick'
+import { pick, pickLine, rank, subLangFor, VPN_DEBRID, VPN_P2P, type Candidate, type Device, type PickCtx, type Prefs, type Ranked } from '../src/lib/pick'
+import { parseRelease } from '../src/lib/release'
 
 let n = 0
 const c = (text: string, more: Partial<Candidate> = {}): Candidate =>
@@ -174,4 +175,18 @@ describe('pick line', () => {
     [c('1080p', { via: 'debrid-fetch', service: 'app.torbox' }), '1080p · TorBox fetches it first'],
     [c('Movie 4K', { place: 'device' }), '4K · This device'],
   ])('%#: %s', (x, want) => expect(line(x)).toBe(want))
+})
+
+describe('subtitles the plugin fetches later (rule 9)', () => {
+  const prefs = { audio: ['en'], subs: ['fr', 'en'], maxQuality: '4K' as const }
+  const row = (more: Partial<Ranked>): Ranked => ({ c: { id: 'k#0', media: 'video', place: 'plugin', via: 'direct', text: '', order: 0 }, rel: parseRelease(''), ...more })
+  it('Japanese audio, tracks only from subtitles(): the first of the user\'s subtitle languages there', () =>
+    expect(subLangFor(row({ lang: 'ja' }), prefs, ['de', 'en'])).toBe('en'))
+  it('unknown audio counts as not theirs', () => expect(subLangFor(row({}), prefs, ['fr'])).toBe('fr'))
+  it('the ranker\'s choice wins', () => expect(subLangFor(row({ lang: 'ja', sub: 'fr' }), prefs, ['en'])).toBe('fr'))
+  it('their own audio or MULTI turns none on', () => {
+    expect(subLangFor(row({ lang: 'en' }), prefs, ['fr'])).toBeUndefined()
+    expect(subLangFor(row({ lang: 'multi' }), prefs, ['fr'])).toBeUndefined()
+  })
+  it('no row, no subtitle', () => expect(subLangFor(undefined, prefs, ['fr'])).toBeUndefined())
 })

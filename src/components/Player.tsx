@@ -1,6 +1,7 @@
 // The player. Full-window, keyboard-first, controls that get out of the way.
 
 import { useEffect, useRef, useState, useCallback } from 'preact/hooks'
+import { langCode } from '../lib/release'
 import { nowPlaying, saveProgress, settings, setSettings, notify, type PlayRequest, type SubTrack, play } from '../lib/store'
 import { resolve, storeFile, type Resolved } from '../lib/library'
 import { formatTime } from '../lib/parse'
@@ -179,7 +180,14 @@ function PlayerInner({ req }: { req: PlayRequest }) {
           out.push({ label: s.label, lang: s.lang, url: vttUrl(s.url.split('?')[0], text) })
         } catch { /* skip blocked subtitle hosts */ }
       }
-      if (!cancelled && out.length) setSubs((s) => [...s, ...out])
+      if (!cancelled && out.length) {
+        setSubs((s) => {
+          // The audio is not one the user listed: turn on the subtitle the pick chose (SPEC-best-stream rule 9).
+          const at = req.subLang ? out.findIndex((x) => langCode(x.lang) === req.subLang) : -1
+          if (at >= 0) setSubOn(s.length + at)
+          return [...s, ...out]
+        })
+      }
     })()
     return () => { cancelled = true }
   }, [])

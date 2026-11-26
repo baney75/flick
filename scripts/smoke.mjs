@@ -85,6 +85,14 @@ export default {
   async library() { return [{ id: 'lib-sm', type: 'movie', name: 'Server Movie', year: '2024' }, { id: 'lib-only', type: 'movie', name: 'Plugin Only Film', year: '2023' }] },
   async streams(ctx, { id }) {
     await ctx.store.set('last', id)
+    // Play picks the best: by language, then quality for the screen; a CAM copy never.
+    if (id === 'pick') return [
+      { url: '$BASE/media/a1?t=${FLICK_CODE}&s=fr', title: 'Smoke stream 1080p 🇫🇷', quality: '1080p' },
+      { url: '$BASE/media/a1?t=${FLICK_CODE}&s=en', title: 'Smoke stream 720p 🇬🇧', quality: '720p' },
+      { url: '$BASE/media/a1?t=${FLICK_CODE}&s=cam', title: 'Smoke stream 4K CAM 🇬🇧', quality: '4K' },
+    ]
+    // Japanese audio with English subtitles: the subtitles come on for an English speaker.
+    if (id === 'subs') return [{ url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream 720p 🇯🇵', subs: [{ url: '$BASE/subs/en.vtt', lang: 'eng' }] }]
     return [
       { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream SD 480p', quality: '480p' },
       { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream 1080p HDR 1.2 GB', quality: '1080p' },
@@ -108,6 +116,7 @@ const flick = createServer((req, res) => {
   const u = new URL(req.url, 'http://x')
   const json = (code, o) => res.writeHead(code, { 'content-type': 'application/json' }).end(JSON.stringify(o))
   if (u.pathname === '/api/info') return json(200, { app: 'flick-server', v: 1, name: 'Smoke NAS', version: '0.0.0' })
+  if (u.pathname === '/subs/en.vtt') return res.writeHead(200, { 'content-type': 'text/vtt' }).end('WEBVTT\n\n00:00:00.000 --> 00:00:30.000\nEnglish line\n')
   // A test source plugin and theme, installed through Settings > Plugins.
   if (u.pathname === '/plugin.js') {
     let code = SMOKE_PLUGIN.replaceAll('$BASE', `http://127.0.0.1:${flick.address().port}`)
@@ -579,7 +588,9 @@ try {
   check((await page.locator('.stream').first().innerText()).includes('Smoke stream'), 'plugin title page lists a stream')
   const qs = await page.locator('.stream-q').allInnerTexts()
   check(qs.length === 3 && /1080p/.test(qs[0]) && /SD/.test(qs[2]), `streams are grouped by quality, best first (${qs.join(' / ') || 'no groups'})`)
-  check(/Play 1080p/.test(await page.locator('.play-best').innerText().catch(() => '')), 'title page offers one Play for the best stream')
+  // The smoke screen is 1280 px wide, a 720p device, so Play takes the 720p stream over 1080p HDR.
+  const playLine = await page.locator('.pick-line').innerText().catch(() => '')
+  check(/Play/.test(await page.locator('.play-best').innerText().catch(() => '')) && playLine === '720p', `title page offers one Play for the best stream for this screen (${playLine})`)
   check(/HDR/.test(await page.locator('.stream').first().innerText()) && /1\.2 GB/.test(await page.locator('.stream').first().innerText()), 'a stream shows its HDR and size as tags')
   await page.screenshot({ path: 'test-media/shots/plugin-title.png' })
   await page.locator('.stream').first().click()
@@ -622,7 +633,26 @@ try {
   await page.locator('.player').waitFor({ state: 'detached' })
   await page.context().setOffline(false)
   await page.getByRole('button', { name: 'Remove download' }).click()
-  check(await page.locator('.play-best', { hasText: /Play 1080p|Resume \d/ }).waitFor({ timeout: 5000 }).then(() => true, () => false) && await dlOn('Smoke stream 720p').count() === 1, 'removing the download brings back streaming and Download')
+  check(await page.locator('.play-best', { hasText: /Play$|Resume \d/ }).waitFor({ timeout: 5000 }).then(() => true, () => false) && await dlOn('Smoke stream 720p').count() === 1, 'removing the download brings back streaming and Download')
+
+  // On a 1080p screen Play picks English 720p over French 1080p and an English 4K CAM, and says why.
+  await page.setViewportSize({ width: 1920, height: 1080 })
+  await page.goto(`${BASE}/#/p/org.smoke.films/movie/pick`)
+  await page.reload()
+  const pickLine = await page.locator('.pick-line').innerText({ timeout: 15000 }).catch(() => '')
+  check(pickLine === '720p · English', `Play picks English 720p on a 1080p screen, and the line reads "720p · English" (${pickLine})`)
+  await page.setViewportSize({ width: 1280, height: 800 })
+
+  // Subtitles follow language: English listed for subtitles, Japanese audio, so English subtitles come on.
+  await page.evaluate(() => { const s = JSON.parse(localStorage.getItem('flick.settings') || '{}'); localStorage.setItem('flick.settings', JSON.stringify({ ...s, subs: ['en'] })) })
+  await page.goto(`${BASE}/#/p/org.smoke.films/movie/subs`)
+  await page.reload()
+  await page.locator('.play-best').click({ timeout: 15000 })
+  await page.locator('.player').waitFor()
+  check(await page.waitForFunction(() => [...document.querySelector('.player video').textTracks].some((t) => t.language === 'eng' && t.mode !== 'disabled'), null, { timeout: 8000 }).then(() => true, () => false), 'English subtitles come on for Japanese audio')
+  await page.keyboard.press('Escape')
+  await page.locator('.player').waitFor({ state: 'detached' })
+  await page.evaluate(() => { const s = JSON.parse(localStorage.getItem('flick.settings')); localStorage.setItem('flick.settings', JSON.stringify({ ...s, subs: [] })) })
 
   await page.goto(`${BASE}/#/`)
   await page.getByLabel('Search your plugins').fill('smoke')

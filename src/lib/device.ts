@@ -63,19 +63,26 @@ export function deviceLine(d: Device): string {
   return [`This device: ${d.maxQuality}`, d.hdr ? 'HDR' : 'SDR', ...(plays.length ? [`plays ${plays.join(' and ')}`] : [])].join(', ')
 }
 
-/** This device now, read from the browser and, in the desktop app, the displays the shell reports. */
-export async function readDevice(): Promise<Device> {
+/** What the browser says now, without the shell's display list. */
+function browserEnv(): DeviceEnv {
   const video = document.createElement('video')
   const ms = (globalThis as { MediaSource?: { isTypeSupported?: (t: string) => boolean } }).MediaSource
-  const desktop = isDesktop && !isMobileApp
-  return detect({
+  return {
     screen: { width: screen.width, height: screen.height },
     dpr: devicePixelRatio || 1,
-    displays: desktop ? await displaySizes() : undefined,
     hdr: matchMedia('(dynamic-range: high)').matches,
     mse: ms?.isTypeSupported ? (t) => ms.isTypeSupported!(t) : undefined,
     canPlay: (t) => video.canPlayType(t),
-    desktop,
+    desktop: isDesktop && !isMobileApp,
     phone: isPhone,
-  })
+  }
+}
+
+/** This device from the browser alone, for the first render. */
+export const deviceNow = (): Device => detect(browserEnv())
+
+/** This device now, read from the browser and, in the desktop app, the displays the shell reports. */
+export async function readDevice(): Promise<Device> {
+  const env = browserEnv()
+  return detect({ ...env, displays: env.desktop ? await displaySizes() : undefined })
 }
