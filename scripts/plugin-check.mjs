@@ -83,7 +83,7 @@ for (let i = 0; i < argv.length; i++) {
 }
 const store = new Map()
 const ctx = {
-  platform: 'web',
+  platform: m.platforms.includes('web') ? 'web' : m.platforms[0],
   settings: Object.freeze(settings),
   async fetch(url, init = {}) {
     if (!allowed(String(url))) check(false, `ctx.fetch to ${new URL(url).host} is not in hosts; the desktop app would refuse it`)
@@ -101,7 +101,26 @@ const ctx = {
     },
   },
   log: (...a) => console.log('     log:', ...a),
-  tools: new Proxy({}, { get: (_, n) => new Proxy({}, { get: () => async () => { throw new Error(`plugin:check has no desktop tool ${String(n)}`) } }) }),
+  tools: new Proxy({}, { get: (_, n) => new Proxy({}, { get: (_, op) => async (...a) => stubTool(String(n), String(op), a) }) }),
+}
+
+// Desktop tools run in the app, not in Node. This stub keeps the same rules (the manifest must list the
+// tool; resolve() plays only https pages on the plugin's hosts) and answers search() with recorded output
+// of the real tool (tests/fixtures/ytdlp-search.json, which src-tauri/src/ytdlp.rs checks it still makes).
+let stubNoted = false
+async function stubTool(name, op, a) {
+  if (!m.tools.includes(name)) throw new Error(`the manifest does not list the ${name} tool`)
+  if (!stubNoted) { stubNoted = true; console.log(`     note: ${name} is a stub here; the desktop app runs the real tool`) }
+  if (op === 'search') {
+    if (!String(a[0] ?? '').trim()) throw new Error('search needs a term')
+    return JSON.parse(readFileSync(new URL('../tests/fixtures/ytdlp-search.json', import.meta.url), 'utf8')).slice(0, Number(a[1]) || 20)
+  }
+  if (op === 'resolve') {
+    const u = String(a[0] ?? '')
+    if (!/^https:\/\//i.test(u) || !allowed(u)) throw new Error(`resolve(${u}): not an https page on this plugin's hosts`)
+    return 'flick-tool:ytdlp/stub'
+  }
+  throw new Error(`the ${name} tool has no ${op}() in this version`)
 }
 
 async function call(fn, args, validate, what) {
