@@ -42,4 +42,18 @@ describe('the Continue tab', () => {
     const l = continueEntries({}, [{ p: 's', list: [meta('done', { pos: 95, dur: 100, at: 1 }), meta('new'), meta('zero', { pos: 0, dur: 100, at: 1 })] }])
     expect(l).toEqual([])
   })
+  it('leaves out a series whose newest episode is finished, even with an older one partway', () => {
+    const l = continueEntries({ e1: plug('s', 'tt9', 'tt9:1:1', 500, 5), e2: plug('s', 'tt9', 'tt9:1:2', 1000, 9) }, [])
+    expect(l).toEqual([])
+  })
+  it("leaves out a plugin title Flick saw finished, whatever the plugin's record says", () => {
+    const l = continueEntries({ e1: plug('s', 'tt9', 'tt9:1:1', 1000, 5) }, [{ p: 's', list: [meta('tt9', { pos: 10, dur: 100, at: 99 })] }])
+    expect(l).toEqual([])
+  })
+  it('shows a show from a folder or server once, from its newest episode', () => {
+    const show = (id: string) => (id === 'ep1' || id === 'ep2' ? 'The Office' : undefined)
+    const l = continueEntries({ ep1: item('ep1', 400, 1000, 5), ep2: item('ep2', 200, 1000, 9), m: item('m', 100, 1000, 7) }, [], show)
+    expect(keys(l)).toEqual(['ep2', 'm'])
+  })
 })
+

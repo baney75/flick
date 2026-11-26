@@ -14,21 +14,24 @@ export type ContinueEntry =
 export const inProgress = (p: Progress) => p.book ? p.pos > 1 && p.pos < p.dur : p.pos >= 10 && (!p.dur || p.pos < p.dur * 0.93)
 
 /**
- * One entry per title. A plugin title watched in Flick shows once, from its latest episode, and the
- * plugin's own record of it (a Stremio account's progress) is dropped in favor of Flick's.
+ * One entry per title: a plugin title, a show from a folder or server (`showOf` names an item's
+ * show), or anything else on its own. A title's newest record decides: in progress, it shows from
+ * that record; finished, the title is left out, even if an older episode was left partway. A plugin's
+ * own record of a title (a Stremio account's progress) counts only when Flick has none.
  */
-export function continueEntries(prog: Record<string, Progress>, libs: { p: string; list: Meta[] }[]): ContinueEntry[] {
-  const local = new Map<string, ContinueEntry>()
+export function continueEntries(prog: Record<string, Progress>, libs: { p: string; list: Meta[] }[], showOf: (id: string) => string | undefined = () => undefined): ContinueEntry[] {
+  const newest = new Map<string, { k: string; p: Progress }>()
   for (const [k, p] of Object.entries(prog)) {
-    if (!inProgress(p) || (p.ref.t === 'url' && !p.ref.url)) continue
-    const key = p.ref.t === 'plugin' ? `pl|${p.ref.p}|${p.ref.id}` : `k|${k}`
-    const had = local.get(key)
-    if (!had || had.at < p.at) local.set(key, { t: 'local', k, p, at: p.at })
+    if (p.ref.t === 'url' && !p.ref.url) continue
+    const show = p.ref.t === 'item' ? showOf(p.ref.id) : undefined
+    const key = p.ref.t === 'plugin' ? `pl|${p.ref.p}|${p.ref.id}` : show ? `show|${show.toLowerCase()}` : `k|${k}`
+    const had = newest.get(key)
+    if (!had || had.p.at < p.at) newest.set(key, { k, p })
   }
-  const out = [...local.values()]
+  const out: ContinueEntry[] = [...newest.values()].filter(({ p }) => inProgress(p)).map(({ k, p }) => ({ t: 'local', k, p, at: p.at }))
   for (const { p, list } of libs) for (const m of list) {
     const g = m.progress
-    if (!g || !(g.pos > 0) || (g.dur && g.pos >= g.dur * 0.93) || local.has(`pl|${p}|${m.id}`)) continue
+    if (!g || !(g.pos > 0) || (g.dur && g.pos >= g.dur * 0.93) || newest.has(`pl|${p}|${m.id}`)) continue
     out.push({ t: 'plugin', p, m, at: g.at ?? 0 })
   }
   return out.sort((a, b) => b.at - a.at)
