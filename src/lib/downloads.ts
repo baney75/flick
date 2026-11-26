@@ -1,10 +1,11 @@
-// Offline downloads: a server file saved on the device, played from there online or offline.
-// The apps stream it in the shell; the website streams it into OPFS downloads/<id>.<ext>.
+// Offline downloads: a server file or a plugin stream saved on the device, played from there online
+// or offline. The apps stream it in the shell (a flick-tool: stream through yt-dlp); the website
+// streams a file into OPFS downloads/<id>.<ext>.
 
 import { signal } from '@preact/signals'
 import * as db from './db'
 import type { Item, Source } from './library'
-import { isDesktop, invoke, onDesktopEvent } from './platform'
+import { isDesktop, isMobileApp, invoke, onDesktopEvent } from './platform'
 import { kodiAuth } from './servers'
 import { ext as extOf, VIDEO_EXT, AUDIO_EXT } from './parse'
 
@@ -18,7 +19,24 @@ export interface Download {
   error?: string
   /** The unfinished file, so a removed download deletes it too. */
   part?: Source
+  /** A plugin stream: what the title is and how it plays again. Server downloads have none. */
+  saved?: Saved
 }
+
+/** A plugin stream the viewer chose to save. `key` is the title's progress key. */
+export interface Saved {
+  key: string
+  plugin: string
+  title: string
+  subtitle?: string
+  poster?: string
+  kind: 'video' | 'audio'
+  /** An http(s) file, or a flick-tool:ytdlp/ stream the desktop app saves with yt-dlp. */
+  url: string
+  ref: { t: 'plugin'; p: string; type: string; id: string; videoId: string }
+}
+
+const isTool = (url: string) => url.startsWith('flick-tool:')
 
 export const BROWSER_BLOCKED = 'This server does not allow downloads in the browser. Use the Flick app.'
 const DIR = 'downloads'
@@ -76,18 +94,45 @@ export async function allDownloads(): Promise<Download[]> {
 
 // ---- the queue: one download at a time, the rest wait in order ----
 
-const queue: Item[] = []
+/** One thing to fetch: a library item's file, or a plugin stream. */
+interface Job { id: string; src: Extract<Source, { t: 'url' | 'kodi' }>; saved?: Saved }
+
+const queue: Job[] = []
 const active = new Set<string>()
 let running: { id: string; stop: AbortController; finished: Promise<void> } | null = null
 let idle: (() => void)[] = []
 
 export async function download(it: Item): Promise<void> {
   if (it.src.t !== 'url' && it.src.t !== 'kodi') throw new Error('Only files from a media server can be downloaded.')
-  const cur = await getDownload(it.id)
-  if (active.has(it.id) || cur?.state === 'done') return
-  active.add(it.id)
-  await set({ id: it.id, state: 'queued', done: cur?.done ?? 0, total: cur?.total ?? 0, at: Date.now(), part: cur?.part }, true)
-  queue.push(it)
+  await enqueue({ id: it.id, src: it.src })
+}
+
+/** The download id of a plugin title: a hash of its progress key, short and safe as a file name. */
+export async function savedId(key: string): Promise<string> {
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(key)))
+  return `pl-${[...d.slice(0, 16)].map((b) => b.toString(16).padStart(2, '0')).join('')}`
+}
+
+/** Saves a plugin stream the viewer picked. One download per title; the stream picked last wins. */
+export async function downloadStream(saved: Saved): Promise<string> {
+  const id = await savedId(saved.key)
+  await enqueue({ id, src: { t: 'url', url: saved.url }, saved })
+  return id
+}
+
+async function enqueue(job: Job) {
+  let cur = await getDownload(job.id)
+  if (active.has(job.id) || cur?.state === 'done') return
+  active.add(job.id)
+  // Another stream of the same title: its unfinished bytes are a different file, so they go, never resume.
+  if (cur?.saved && cur.saved.url !== job.saved?.url) {
+    const part = cur.part ?? (isDesktop ? undefined : { t: 'opfs' as const, dir: DIR, name: `${job.id}.${pickExt(cur.saved.url)}` })
+    if (part) await deleteLocal(part).catch(() => {})
+    if (isDesktop && isTool(cur.saved.url)) await invoke('tool_download_clean', { id: job.id }).catch(() => {})
+    cur = undefined
+  }
+  await set({ id: job.id, state: 'queued', done: cur?.done ?? 0, total: cur?.total ?? 0, at: Date.now(), part: cur?.part, ...(job.saved && { saved: job.saved }) }, true)
+  queue.push(job)
   pump()
 }
 
@@ -108,7 +153,7 @@ function pump() {
   running = { id: it.id, stop, finished }
 }
 
-async function run(it: Item, signal: AbortSignal) {
+async function run(it: Job, signal: AbortSignal) {
   const row = () => rows.get(it.id)!
   const progress = (done: number, total: number, part?: Source) => {
     // A late shell event must not touch a row that already finished.
@@ -146,6 +191,8 @@ export async function removeDownload(id: string): Promise<void> {
   await cancelDownload(id)
   const r = await getDownload(id)
   for (const src of [r?.local, r?.part]) if (src) await deleteLocal(src).catch(() => {})
+  // yt-dlp keeps an unfinished download's parts in the app's cache.
+  if (isDesktop && r?.saved && isTool(r.saved.url)) await invoke('tool_download_clean', { id }).catch(() => {})
   await forget(id)
 }
 
@@ -155,6 +202,7 @@ export async function resumeDownloads(): Promise<void> {
   for (const r of saved) if (!rows.has(r.id)) rows.set(r.id, r)
   downloads.value = new Map(rows)
   for (const r of saved.filter((x) => x.state === 'queued' || x.state === 'downloading').sort((a, b) => a.at - b.at)) {
+    if (r.saved) { await downloadStream(r.saved); continue }
     const it = await db.get<Item>('items', r.id)
     if (it) await download(it)
     else await set({ ...r, state: 'failed', error: 'This item is no longer in the library.' }, true)
@@ -197,8 +245,9 @@ async function deleteLocal(src: Source) {
 
 type Progress = (done: number, total: number, part?: Source) => void
 
-async function viaShell(it: Item, progress: Progress): Promise<Source> {
-  const src = it.src as Extract<Source, { t: 'url' | 'kodi' }>
+async function viaShell(it: Job, progress: Progress): Promise<Source> {
+  const src = it.src
+  if (isTool(src.url)) return viaTool(it, progress)
   // The Kodi login goes to the shell as arguments; the URL never carries it.
   const [user, pass] = src.t === 'kodi' ? await kodiAuth(src.server) : ['', '']
   const off = await onDesktopEvent<{ id: string; done: number; total: number; part: string }>('download-progress', (p) => {
@@ -214,9 +263,24 @@ async function viaShell(it: Item, progress: Progress): Promise<Source> {
   }
 }
 
-async function viaBrowser(it: Item, signal: AbortSignal, progress: Progress): Promise<Source> {
-  // Kodi needs Basic auth, which only the shell can send for a file this size.
-  if (it.src.t !== 'url') throw new Error(BROWSER_BLOCKED)
+/** A flick-tool: stream, saved by the desktop app's yt-dlp as one mp4. */
+async function viaTool(it: Job, progress: Progress): Promise<Source> {
+  if (isMobileApp || !it.saved) throw new Error('Saving this needs the Flick desktop app.')
+  const off = await onDesktopEvent<{ id: string; done: number; total: number }>('download-progress', (p) => {
+    if (p.id === it.id) progress(p.done, p.total)
+  })
+  try {
+    return { t: 'path', path: await invoke<string>('tool_download', { id: it.id, plugin: it.saved.plugin, url: it.src.url }) }
+  } catch (e) {
+    throw new Error(String(e))
+  } finally {
+    off()
+  }
+}
+
+async function viaBrowser(it: Job, signal: AbortSignal, progress: Progress): Promise<Source> {
+  // Kodi needs Basic auth, which only the shell can send for a file this size; yt-dlp runs only there.
+  if (it.src.t !== 'url' || isTool(it.src.url)) throw new Error(BROWSER_BLOCKED)
   navigator.storage.persist?.().catch(() => {})
   const name = `${it.id}.${pickExt(it.src.url)}`
   const fh = await (await opfsDir()).getFileHandle(name, { create: true })

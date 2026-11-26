@@ -47,3 +47,16 @@ export function best(list: Stream[]): Stream | null {
   for (const x of sections(list)) { const s = x.streams.find((s) => !s.external); if (s) return s }
   return null
 }
+
+/** How a stream can be saved for offline: one http(s) file, a yt-dlp stream in the desktop app, or not at all.
+ *  HLS and DASH playlists are many files, a book opens in the reader, and an external link is not Flick's. */
+export function downloadable(s: Stream, app: { desktop: boolean; mobile: boolean }): 'file' | 'tool' | null {
+  if (s.external || s.kind === 'book') return null
+  // MKV, AVI and the like play only where the desktop app converts them.
+  if (s.needsDesktop && !app.desktop) return null
+  if (s.url.startsWith('flick-tool:ytdlp/')) return app.desktop && !app.mobile ? 'tool' : null
+  let u: URL
+  try { u = new URL(s.url) } catch { return null }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null
+  return /\.(m3u8|mpd)$/i.test(u.pathname) ? null : 'file'
+}

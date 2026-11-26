@@ -81,12 +81,15 @@ export default {
     return { items: [{ id: 'clip', type: 'movie', name: 'Smoke Clip', year: '2024', description: 'From ' + info.name }] }
   },
   async meta(ctx, { id }) { return { id, type: 'movie', name: 'Smoke Clip', year: '2024', description: 'A test clip.' } },
+  // One title the Flick server also has, and one only this plugin has.
+  async library() { return [{ id: 'lib-sm', type: 'movie', name: 'Server Movie', year: '2024' }, { id: 'lib-only', type: 'movie', name: 'Plugin Only Film', year: '2023' }] },
   async streams(ctx, { id }) {
     await ctx.store.set('last', id)
     return [
       { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream SD 480p', quality: '480p' },
       { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream 1080p HDR 1.2 GB', quality: '1080p' },
       { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream 720p', quality: '720p' },
+      { url: '$BASE/media/a1/index.m3u8?t=${FLICK_CODE}', title: 'Smoke stream HLS 480p', quality: '480p' },
     ]
   },
 }`
@@ -494,7 +497,8 @@ try {
   await sheet.getByRole('button', { name: 'Install' }).click()
   await sheet.waitFor({ state: 'detached' })
   check(await count() === 1, 'Install saves the plugin')
-  await page.locator('.nav-item', { hasText: 'Smoke Films' }).click()
+  check(!(await page.locator('.nav-item', { hasText: 'Smoke Films' }).count()), 'a plugin gets no bar item')
+  await page.getByRole('link', { name: 'Open Smoke Films' }).click()
   check(await page.getByText('Smoke Clip').first().waitFor({ timeout: 15000 }).then(() => true, () => false), 'plugin page shows its catalog')
   check(await page.getByText('sandbox: sealed').waitFor({ timeout: 15000 }).then(() => true, () => false), 'a plugin in the real runtime cannot reach Flick storage or the page')
   await page.screenshot({ path: 'test-media/shots/plugin-page.png' })
@@ -509,12 +513,73 @@ try {
   await page.locator('.stream').first().click()
   await page.locator('.player').waitFor()
   check(await page.waitForFunction(() => { const v = document.querySelector('.player video'); return v && v.currentTime > 0.5 }, null, { timeout: 8000 }).then(() => true, () => false), 'a plugin stream plays in the player')
+  await page.evaluate(() => { const v = document.querySelector('.player video'); v.pause(); v.currentTime = 12 })
+  await page.waitForFunction(() => Math.abs(document.querySelector('.player video').currentTime - 12) < 0.5)
   await page.keyboard.press('Escape')
   await page.locator('.player').waitFor({ state: 'detached' })
+  await page.locator('.play-best', { hasText: 'Resume' }).waitFor({ timeout: 5000 }).catch(() => {})
+  const resumeLabel = await page.locator('.play-best').innerText().catch(() => '')
+  check(/^Resume 0:1\d$/.test(resumeLabel.trim()) && await page.getByRole('button', { name: 'Start over' }).isVisible(), `the title page offers Resume where it was left, and Start over (${resumeLabel.trim()})`)
+  await page.getByRole('button', { name: 'Start over' }).click()
+  await page.locator('.player').waitFor()
+  await page.waitForFunction(() => document.querySelector('.player video')?.currentTime > 0.3, null, { timeout: 8000 }).catch(() => {})
+  const restarted = await page.evaluate(() => document.querySelector('.player video')?.currentTime ?? -1)
+  check(restarted > 0 && restarted < 5, `Start over plays from the beginning (${restarted.toFixed(1)}s)`)
+  await page.keyboard.press('Escape')
+  await page.locator('.player').waitFor({ state: 'detached' })
+
+  // SPEC P4: Download on a direct file stream, none on an HLS playlist; the saved title plays offline.
+  const dlOn = (t) => page.locator('.stream-item', { hasText: t }).locator('.stream-dl')
+  check(await dlOn('Smoke stream 720p').waitFor({ timeout: 10000 }).then(() => true, () => false), 'Download shows on a direct file stream')
+  check(await dlOn('Smoke stream HLS').count() === 0 && await page.locator('.stream-item', { hasText: 'Smoke stream HLS' }).count() === 1, 'no Download on an .m3u8 stream')
+  await dlOn('Smoke stream 720p').click()
+  check(await page.getByText('Downloaded. Plays offline.').waitFor({ timeout: 15000 }).then(() => true, () => false), 'a plugin stream downloads in the browser')
+  await page.screenshot({ path: 'test-media/shots/plugin-download.png' })
+  await page.context().setOffline(true)
+  await page.locator('.play-best', { hasText: /downloaded/ }).click()
+  await page.locator('.player').waitFor()
+  check(await page.waitForFunction(() => { const v = document.querySelector('.player video'); return v && v.currentTime > 0.5 && v.src.startsWith('blob:') }, null, { timeout: 8000 }).then(() => true, () => false), 'the downloaded plugin title plays offline from the file')
+  await page.keyboard.press('Escape')
+  await page.locator('.player').waitFor({ state: 'detached' })
+  await page.context().setOffline(false)
+  await page.getByRole('button', { name: 'Remove download' }).click()
+  check(await page.locator('.play-best', { hasText: /Play 1080p|Resume \d/ }).waitFor({ timeout: 5000 }).then(() => true, () => false) && await dlOn('Smoke stream 720p').count() === 1, 'removing the download brings back streaming and Download')
+
   await page.goto(`${BASE}/#/`)
   await page.getByLabel('Search your plugins').fill('smoke')
   await page.keyboard.press('Enter')
   check(await page.locator('.row-section', { hasText: 'Smoke Films · Find' }).getByText('Smoke Clip').waitFor({ timeout: 15000 }).then(() => true, () => false), 'Home search finds titles in plugin catalogs')
+
+  // One library: a plugin's library sits beside the server, and the same title is one card with a source choice.
+  await page.goto(`${BASE}/#/library`)
+  await page.getByRole('tab', { name: /Movies/ }).click()
+  const merged = page.locator('.card', { hasText: 'Server Movie' })
+  check(await merged.locator('.badge', { hasText: 'Flick server · Smoke Films' }).waitFor({ timeout: 15000 }).then(() => true, () => false), 'a title on a server and in a plugin library shows both sources')
+  check(await merged.count() === 1, `the same title is one card (${await merged.count()})`)
+  check(await page.locator('.card', { hasText: 'Plugin Only Film' }).count() === 1, 'plugin library items are in Movies')
+  await merged.click({ button: 'right' })
+  check(await page.locator('.ctx').getByRole('button', { name: 'Remove from library' }).isVisible(), 'a merged card keeps the item menu')
+  await page.keyboard.press('Escape')
+  await page.mouse.click(5, 400)
+  await page.goto(`${BASE}/#/library`)
+  await page.getByRole('tab', { name: /Movies/ }).click()
+  await merged.click()
+  const srcSheet = page.getByRole("dialog", { name: "Play Server Movie from" })
+  const rowsText = await srcSheet.locator(".source-row").allInnerTexts()
+  check(rowsText.length === 2 && rowsText[0].startsWith('Flick server') && rowsText[1].startsWith('Smoke Films'), `source sheet lists the server, then the plugin (${rowsText.map((t) => t.split('\n')[0]).join(', ')})`)
+  check(await page.evaluate(() => document.activeElement?.classList.contains('source-row') && document.activeElement.textContent.startsWith('Flick server')), 'the first source is focused')
+  await page.screenshot({ path: 'test-media/shots/source-sheet.png' })
+  await srcSheet.locator('.source-row', { hasText: 'Smoke Films' }).click()
+  check(await page.waitForURL(/#\/p\/org\.smoke\.films\/movie\/lib-sm/, { timeout: 5000 }).then(() => true, () => false), 'choosing the plugin opens its title page')
+  await page.goto(`${BASE}/#/library`)
+  await page.getByRole('tab', { name: /Movies/ }).click()
+  await page.locator('.card', { hasText: 'Server Movie' }).click()
+  check((await page.getByRole('dialog').locator('.source-row').first().innerText()).startsWith('Smoke Films'), 'the source picked last time comes first')
+  await page.keyboard.press('Escape')
+  await page.getByRole('dialog').waitFor({ state: 'detached' })
+  check(/#\/library$/.test(page.url()), 'Escape closes the source sheet and stays in the Library')
+  await page.locator('.card', { hasText: 'Plugin Only Film' }).click()
+  check(await page.waitForURL(/#\/p\/org\.smoke\.films\/movie\/lib-only/, { timeout: 5000 }).then(() => true, () => false), 'a title only in a plugin opens its title page with no sheet')
 
   // A theme changes Flick's colors.
   await page.goto(`${BASE}/#/settings`)
@@ -535,7 +600,7 @@ try {
   check(!(await sheet.getByText('Not from Flick').isVisible()), 'the Stremio plugin reviews as from Flick')
   await sheet.getByRole('button', { name: 'Install' }).click()
   await sheet.waitFor({ state: 'detached' })
-  await page.locator('.nav-item', { hasText: 'Stremio' }).click()
+  await page.getByRole('link', { name: 'Open Stremio' }).click()
   const firstCard = page.locator('.row-section .card:not(.skeleton)').first()
   await firstCard.waitFor({ timeout: 20000 })
   check(await page.locator('.row-section').count() > 1, `Stremio plugin shows Cinemeta rows (${await page.locator('.row-section').count()} rows)`)
@@ -551,7 +616,9 @@ try {
   await page.keyboard.press('Enter')
   check(await page.getByText(/Interstellar/).first().waitFor({ timeout: 20000 }).then(() => true, () => false), 'Stremio plugin search finds Interstellar')
   check(await page.locator('.result-grid .card').count() > 2, `plugin search shows results as a poster grid (${await page.locator('.result-grid .card').count()} in grids)`)
-  check(!(await page.locator('.nav-item', { hasText: 'Sources' }).isVisible()) && await page.locator('.nav-item', { hasText: 'Stremio' }).isVisible(), 'desktop sidebar lists each source, no Sources item')
+  const side = await page.locator('.sidebar .nav-item:visible').allInnerTexts()
+  check(side.join(',') === 'Home,Library,Settings', `desktop sidebar is Home, Library, Settings (${side.join(', ')})`)
+  check(await page.locator('.nav-item.on').innerText() === 'Home', 'a plugin page sits under Home in the bar')
   const stremioPage = page.url()
 
   // Phone layout.
@@ -572,11 +639,17 @@ try {
   await page.locator('.row-section .card:not(.skeleton)').first().waitFor({ timeout: 20000 })
   await page.screenshot({ path: 'test-media/shots/phone-stremio.png' })
   const bar = await page.locator('.sidebar .nav-item:visible').allInnerTexts()
-  check(bar.length <= 5 && bar.includes('Sources'), `phone bar holds at most 5 items, with Sources for 2 sources (${bar.join(', ')})`)
-  await page.locator('.nav-item', { hasText: 'Sources' }).click()
-  await page.locator('.source-tile').first().waitFor({ timeout: 5000 }).catch(() => {})
-  check(await page.locator('.source-tile').count() === 2, `Sources page shows a tile for each source (${await page.locator('.source-tile').count()})`)
-  await page.screenshot({ path: 'test-media/shots/phone-sources.png' })
+  check(bar.join(',') === 'Home,Library,Settings', `phone bar is Home, Library, Settings (${bar.join(', ')})`)
+  const tall = await page.locator('.sidebar .nav-item:visible').evaluateAll((l) => l.every((e) => e.getBoundingClientRect().height >= 44))
+  check(tall, 'phone bar items are at least 44px tall')
+  await page.locator('.nav-item', { hasText: 'Home' }).click()
+  const stremioRow = page.locator('.row-section', { hasText: 'Stremio · ' }).first()
+  check(await stremioRow.waitFor({ timeout: 20000 }).then(() => true, () => false), 'Home shows Stremio catalog rows titled "Stremio · <catalog>"')
+  check(await stremioRow.getByRole('link', { name: 'See all' }).isVisible(), 'a Home plugin row links to See all')
+  await page.screenshot({ path: 'test-media/shots/phone-home.png' })
+  await page.goto(`${BASE}/#/servers`)
+  await page.waitForTimeout(400)
+  check(await page.locator('h1', { hasText: 'Settings' }).isVisible() && await page.evaluate(() => { const r = document.getElementById('servers')?.getBoundingClientRect(); return !!r && r.top < innerHeight && r.bottom > 0 }), '#/servers opens Settings at the Servers panel')
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.join(' | ') : ''}`)
   await browser.close()

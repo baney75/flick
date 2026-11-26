@@ -62,7 +62,9 @@ let thumbRunning = 0
 const queued = new Set<string>()
 export function queueThumbs(list: Item[]) {
   for (const i of list) {
-    if ((i.kind === 'video' || localEpub(i)) && !i.poster && !queued.has(i.id)) {
+    // A photo is done once it has a date, with or without a thumbnail (HEIC in Chrome has none).
+    const photo = i.kind === 'photo' && i.taken === undefined
+    if ((i.kind === 'video' || photo || localEpub(i)) && !i.poster && !queued.has(i.id)) {
       queued.add(i.id)
       thumbQueue.push(i)
     }
@@ -75,7 +77,14 @@ function pump() {
     thumbRunning++
     ;(async () => {
       try {
-        if (!(await hasThumb(it.id)) || (it.kind === 'video' && !it.duration)) {
+        if (it.kind === 'photo') {
+          await makeThumb(it)
+          // A file from a folder this browser keeps only for the visit stays out of storage. Only the date is
+          // written, onto the record as it is now, so a rescan or removal while the thumbnail was made wins.
+          const now = it.src.t === 'session' ? undefined : await db.get<Item>('items', it.id)
+          if (now) await saveItems([{ ...now, taken: it.taken }])
+          thumbTick.value++
+        } else if (!(await hasThumb(it.id)) || (it.kind === 'video' && !it.duration)) {
           const dur = await makeThumb(it)
           if (dur && !it.duration) {
             it.duration = dur
@@ -149,6 +158,8 @@ export interface PlayRequest {
   next?: () => PlayRequest | null
   /** Called with the position each time the player saves it (a plugin syncs it back). */
   onSave?: (pos: number, dur: number) => void
+  /** Stream from the source even when a downloaded copy exists (the user chose the server). */
+  stream?: boolean
 }
 
 export const nowPlaying = signal<PlayRequest | null>(null)
@@ -182,6 +193,8 @@ export function itemRequest(i: Item): PlayRequest {
 
 /** Plays media, or opens a book in the reader. */
 export function playItem(i: Item) {
+  // Photos open in the Photos viewer, never the player.
+  if (i.kind === 'photo') return
   if (i.kind === 'book') return go(`/read/${encodeURIComponent(i.id)}`)
   if (i.kind === 'audiobook') return go(`/listen/${encodeURIComponent(i.id)}`)
   play(itemRequest(i))
