@@ -452,6 +452,8 @@ fn linux_tunnels_by_device_type() {
     // Parish1's tailscale0: tun_flags 0x5001 (IFF_TUN, IFF_NO_PI, multi-queue).
     assert!(linux_tun("INTERFACE=tailscale0\n", Some("0x5001\n")));
     assert!(linux_tun("DEVTYPE=wireguard\nINTERFACE=wg0\n", None));
+    // The kernel's OpenVPN driver names its device type OVPN_FAMILY_NAME ("ovpn").
+    assert!(linux_tun("DEVTYPE=ovpn\nINTERFACE=tun0\n", None));
     assert!(
         !linux_tun("INTERFACE=tap0\n", Some("0x1002")),
         "a TAP device"
@@ -508,4 +510,17 @@ fn live_exit() {
             .map(|i| i.map(|i| p.trace(false, Some(&i)).map(mask)))
     );
     println!("exit {:?}", exit_check(&p).map(mask));
+}
+
+#[test]
+fn a_hung_tool_fails_the_check_instead_of_stalling_it() {
+    let start = std::time::Instant::now();
+    let slow = run_within("/bin/sleep", &["5"], None, Duration::from_millis(200));
+    assert_eq!(slow, None);
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "killed at the limit"
+    );
+    let quick = run_within("/bin/echo", &["hi"], None, Duration::from_secs(5));
+    assert_eq!(quick.as_deref(), Some("hi\n"));
 }

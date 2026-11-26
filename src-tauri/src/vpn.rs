@@ -11,7 +11,7 @@ use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // Addresses whose routes stand for "all traffic": Cloudflare's resolver, which the exit check also
 // fetches, and documentation ranges nobody routes on purpose, so a split tunnel that carries only
@@ -252,12 +252,9 @@ pub fn parse_route_macos(out: &str) -> Option<String> {
 /// The `dev` of `ip route get <ip>` on Linux ("1.1.1.1 via 10.0.0.1 dev wg0 src ...").
 pub fn parse_route_linux(out: &str) -> Option<String> {
     let mut w = out.split_whitespace();
-    // A route that drops traffic (Proton's IPv6 leak protection, `unreachable ::/0`) goes nowhere.
+    // A route that drops traffic (an IPv6 block such as `unreachable ::/0`) goes nowhere.
     let first = w.clone().next();
-    if matches!(
-        first,
-        Some("unreachable" | "blackhole" | "prohibit" | "throw")
-    ) {
+    if matches!(first, Some("unreachable" | "blackhole" | "prohibit")) {
         return None;
     }
     while let Some(t) = w.next() {
@@ -444,12 +441,14 @@ pub fn parse_interface_name(out: &str) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-/// Linux: a WireGuard device, or a TUN device (IFF_TUN set, IFF_TAP clear in `tun_flags`); a
-/// bridged TAP (qemu's vnet0) or a device merely named wg0 is not one.
+/// Linux: a WireGuard or kernel OpenVPN (`ovpn`, Linux 6.16) device, or a TUN device (IFF_TUN
+/// set, IFF_TAP clear in `tun_flags`); a bridged TAP (qemu's vnet0) or a device merely named wg0
+/// is not one.
 pub fn linux_tun(uevent: &str, tun_flags: Option<&str>) -> bool {
     let flags =
         tun_flags.and_then(|f| u32::from_str_radix(f.trim().trim_start_matches("0x"), 16).ok());
-    uevent.lines().any(|l| l.trim() == "DEVTYPE=wireguard") || flags.is_some_and(|f| f & 3 == 1)
+    let typed = |l: &str| matches!(l.trim(), "DEVTYPE=wireguard" | "DEVTYPE=ovpn");
+    uevent.lines().any(typed) || flags.is_some_and(|f| f & 3 == 1)
 }
 
 /// macOS utun and ipsec by name; Linux by device type (`linux_tun`).
@@ -466,6 +465,12 @@ pub fn tunnel_name(os: &str, name: &str, tun_device: bool) -> bool {
 }
 
 fn run(bin: &str, args: &[&str], stdin: Option<&str>) -> Option<String> {
+    run_within(bin, args, stdin, Duration::from_secs(5))
+}
+
+/// A tool's output, or None when it fails or runs past `limit` (then it is killed): a hung
+/// resolvectl must fail the check, not stall it on its last answer.
+fn run_within(bin: &str, args: &[&str], stdin: Option<&str>, limit: Duration) -> Option<String> {
     let mut child = Command::new(bin)
         .args(args)
         .stdin(Stdio::piped())
@@ -474,11 +479,26 @@ fn run(bin: &str, args: &[&str], stdin: Option<&str>) -> Option<String> {
         .spawn()
         .ok()?;
     let input = stdin.unwrap_or("").as_bytes();
-    child.stdin.take()?.write_all(input).ok()?;
-    let out = child.wait_with_output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    let wrote = child.stdin.take().map(|mut i| i.write_all(input));
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = vec![];
+        stdout.read_to_end(&mut buf).map(|_| buf)
+    });
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if start.elapsed() < limit => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let out = reader.join().ok()?.ok()?;
+    (wrote?.is_ok() && status?.success()).then(|| String::from_utf8_lossy(&out).into_owned())
 }
 
 fn ip_bin() -> Option<&'static str> {
