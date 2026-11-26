@@ -644,7 +644,7 @@ pub fn clean_cache(cache: &Path) {
 }
 
 // ---------- saving a flick-tool: stream for offline ----------
-// yt-dlp writes its parts to cache/ytdlp/dl-<id> and moves the merged file to downloads/<id>.mp4,
+// yt-dlp writes its parts to cache/ytdlp-dl/<id> (outside the stream cache's daily sweep) and moves the merged file to downloads/<id>.mp4,
 // where the server downloads live. Progress goes out as `download-progress`, the same event.
 
 /// The page a download may save: a token resolve() registered, from a plugin that lists the tool,
@@ -687,6 +687,8 @@ fn download_args(
     page: &str,
 ) -> Vec<std::ffi::OsString> {
     let mut a: Vec<std::ffi::OsString> = [
+        // A user's own yt-dlp config (archive, subtitles, other formats) must not change what is saved.
+        "--ignore-config",
         "--no-warnings", "--no-playlist", "--newline", "--progress-template",
         "download:FLICK %(progress.downloaded_bytes)s %(progress.total_bytes,progress.total_bytes_estimate)s",
         "-f", PLAY_FORMAT, "--merge-output-format", "mp4", "--ffmpeg-location",
@@ -706,9 +708,16 @@ fn download_args(
 
 /// One progress line, "FLICK <done> <total>", as bytes. yt-dlp prints NA for what it does not know.
 fn progress_line(line: &str) -> Option<(u64, u64)> {
+    // An estimated total is a float ("12345.6").
+    let num = |t: &str| {
+        t.parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite() && *n >= 0.0)
+            .map(|n| n as u64)
+    };
     let mut w = line.strip_prefix("FLICK ")?.split_whitespace();
-    let done = w.next()?.parse().ok()?;
-    Some((done, w.next().and_then(|t| t.parse().ok()).unwrap_or(0)))
+    let done = num(w.next()?)?;
+    Some((done, w.next().and_then(num).unwrap_or(0)))
 }
 
 /// Adds up the video part and then the audio part, so done only grows across the two.
@@ -729,6 +738,23 @@ impl Tally {
     }
 }
 
+/// yt-dlp's release builds run as two processes (a PyInstaller loader and the program), and it
+/// starts ffmpeg to merge: stop them all, not only the process Flick started.
+fn kill_tree(c: &mut Child) {
+    #[cfg(unix)]
+    let _ = Command::new("kill")
+        .args(["-KILL", "--", &format!("-{}", c.id())])
+        .stderr(Stdio::null())
+        .status();
+    #[cfg(windows)]
+    let _ = Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &c.id().to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = c.kill();
+}
+
 /// Runs yt-dlp until it finishes, fails, or `stop` is set (then it is killed). Returns the saved file.
 fn save(
     bin: &Path,
@@ -744,7 +770,11 @@ fn save(
     std::fs::create_dir_all(home).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(temp).map_err(|e| e.to_string())?;
     let log = temp.join("yt-dlp.log");
-    let mut child = Command::new(bin)
+    let mut cmd = Command::new(bin);
+    // Its own process group, so a cancel can stop every process under it.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    let mut child = cmd
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -761,7 +791,7 @@ fn save(
                 return;
             }
             if stop.load(Ordering::Relaxed) {
-                let _ = c.kill();
+                kill_tree(&mut c);
                 return;
             }
             drop(c);
@@ -785,10 +815,12 @@ fn save(
         child.lock().unwrap().wait()
     })
     .map_err(|e| e.to_string())?;
-    if stop.load(Ordering::Relaxed) {
+    let file = home.join(format!("{id}.mp4"));
+    // A cancel that lands after yt-dlp finished keeps the finished file.
+    if stop.load(Ordering::Relaxed) && !(status.success() && file.is_file()) {
+        let _ = std::fs::remove_file(&file);
         return Err("Canceled".into());
     }
-    let file = home.join(format!("{id}.mp4"));
     if !status.success() || !file.is_file() {
         let why = last_line(&log);
         return Err(format!(
@@ -805,8 +837,8 @@ fn download_temp(app: &tauri::AppHandle, id: &str) -> Result<PathBuf, String> {
         .path()
         .app_cache_dir()
         .map_err(|e| e.to_string())?
-        .join("ytdlp")
-        .join(format!("dl-{id}")))
+        .join("ytdlp-dl")
+        .join(id))
 }
 
 /// Saves the page behind a `flick-tool:ytdlp/` stream of plugin `plugin` as downloads/<id>.mp4.
@@ -866,6 +898,15 @@ pub async fn tool_download(
 pub fn tool_download_clean(app: tauri::AppHandle, id: String) -> Result<(), String> {
     if !super::valid_id(&id) {
         return Err("Bad download name".into());
+    }
+    if app
+        .state::<super::Downloads>()
+        .0
+        .lock()
+        .unwrap()
+        .contains_key(&id)
+    {
+        return Err("That download is still running.".into());
     }
     match std::fs::remove_dir_all(download_temp(&app, &id)?) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
@@ -1029,6 +1070,7 @@ mod tests {
             a[a.len() - 4..],
             ["-o", "pl-x.mp4", "--", "https://www.youtube.com/watch?v=a"]
         );
+        assert_eq!(a[0], "--ignore-config");
         assert!(!a
             .iter()
             .any(|x| x.starts_with("--exec") || x == "-a" || x == "--batch-file"));
@@ -1038,6 +1080,7 @@ mod tests {
     fn progress_adds_the_video_and_audio_parts() {
         assert_eq!(progress_line("FLICK 10 100"), Some((10, 100)));
         assert_eq!(progress_line("FLICK 10 NA"), Some((10, 0)));
+        assert_eq!(progress_line("FLICK 10 12345.6"), Some((10, 12345)));
         assert_eq!(progress_line("[download] 10%"), None);
         let mut t = Tally::default();
         assert_eq!(t.add(50, 100), (50, 100));
@@ -1093,7 +1136,9 @@ mod tests {
         let err = save(&bad, &args, &home, &temp, "pl-y", &stop, |_, _| {}).unwrap_err();
         assert_eq!(err, "yt-dlp: ERROR: Video unavailable");
         // Cancel kills a yt-dlp that prints nothing.
-        let slow = fake_ytdlp(&dir, "exec sleep 30");
+        // Review first-F1 on #52: the real yt-dlp is a loader plus a child that holds the output
+        // open; killing only the loader left the read waiting for the whole download.
+        let slow = fake_ytdlp(&dir, "sleep 30 & wait");
         let stop = Arc::new(AtomicBool::new(false));
         let s2 = stop.clone();
         std::thread::spawn(move || {
@@ -1200,6 +1245,33 @@ mod tests {
             1,
             "one file, no parts"
         );
+        // Cancel a long one mid-download: the real two-process yt-dlp stops within seconds.
+        let url = run_tool(
+            &e,
+            &st,
+            &t,
+            &hosts,
+            "ytdlp",
+            "resolve",
+            &[json!("https://www.youtube.com/watch?v=aqz-KE-bpKQ")],
+        )
+        .unwrap();
+        let page = download_page(&st, &t, &hosts, "pl-long", url.as_str().unwrap()).unwrap();
+        let temp = out.join("dl-pl-long");
+        let args = download_args(&ffmpeg, &home, &temp, "pl-long", &page);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (s2, at) = (stop.clone(), Arc::new(Mutex::new(None::<Instant>)));
+        let at2 = at.clone();
+        let err = save(&bin, &args, &home, &temp, "pl-long", &stop, move |d, _| {
+            if d > 2_000_000 && !s2.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                *at2.lock().unwrap() = Some(Instant::now());
+            }
+        })
+        .unwrap_err();
+        let took = at.lock().unwrap().expect("cancel was sent").elapsed();
+        println!("cancel: {err} after {took:?}");
+        assert!(err == "Canceled" && took < Duration::from_secs(3));
+        assert!(!home.join("pl-long.mp4").exists());
     }
 
     /// Real network run on this computer: Flick's own yt-dlp searches, resolves and streams.
