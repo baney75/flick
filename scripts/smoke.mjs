@@ -81,6 +81,8 @@ export default {
     return { items: [{ id: 'clip', type: 'movie', name: 'Smoke Clip', year: '2024', description: 'From ' + info.name }] }
   },
   async meta(ctx, { id }) { return { id, type: 'movie', name: 'Smoke Clip', year: '2024', description: 'A test clip.' } },
+  // One title the Flick server also has, and one only this plugin has.
+  async library() { return [{ id: 'lib-sm', type: 'movie', name: 'Server Movie', year: '2024' }, { id: 'lib-only', type: 'movie', name: 'Plugin Only Film', year: '2023' }] },
   async streams(ctx, { id }) {
     await ctx.store.set('last', id)
     return [
@@ -516,6 +518,31 @@ try {
   await page.getByLabel('Search your plugins').fill('smoke')
   await page.keyboard.press('Enter')
   check(await page.locator('.row-section', { hasText: 'Smoke Films · Find' }).getByText('Smoke Clip').waitFor({ timeout: 15000 }).then(() => true, () => false), 'Home search finds titles in plugin catalogs')
+
+  // One library: a plugin's library sits beside the server, and the same title is one card with a source choice.
+  await page.goto(`${BASE}/#/library`)
+  await page.getByRole('tab', { name: /Movies/ }).click()
+  const merged = page.locator('.card', { hasText: 'Server Movie' })
+  check(await merged.locator('.badge', { hasText: 'Flick server · Smoke Films' }).waitFor({ timeout: 15000 }).then(() => true, () => false), 'a title on a server and in a plugin library shows both sources')
+  check(await merged.count() === 1, `the same title is one card (${await merged.count()})`)
+  check(await page.locator('.card', { hasText: 'Plugin Only Film' }).count() === 1, 'plugin library items are in Movies')
+  await merged.click()
+  const srcSheet = page.getByRole("dialog", { name: "Play Server Movie from" })
+  const rowsText = await srcSheet.locator(".source-row").allInnerTexts()
+  check(rowsText.length === 2 && rowsText[0].startsWith('Flick server') && rowsText[1].startsWith('Smoke Films'), `source sheet lists the server, then the plugin (${rowsText.map((t) => t.split('\n')[0]).join(', ')})`)
+  check(await page.evaluate(() => document.activeElement?.classList.contains('source-row') && document.activeElement.textContent.startsWith('Flick server')), 'the first source is focused')
+  await page.screenshot({ path: 'test-media/shots/source-sheet.png' })
+  await srcSheet.locator('.source-row', { hasText: 'Smoke Films' }).click()
+  check(await page.waitForURL(/#\/p\/org\.smoke\.films\/movie\/lib-sm/, { timeout: 5000 }).then(() => true, () => false), 'choosing the plugin opens its title page')
+  await page.goto(`${BASE}/#/library`)
+  await page.getByRole('tab', { name: /Movies/ }).click()
+  await page.locator('.card', { hasText: 'Server Movie' }).click()
+  check((await page.getByRole('dialog').locator('.source-row').first().innerText()).startsWith('Smoke Films'), 'the source picked last time comes first')
+  await page.keyboard.press('Escape')
+  await page.getByRole('dialog').waitFor({ state: 'detached' })
+  check(/#\/library$/.test(page.url()), 'Escape closes the source sheet and stays in the Library')
+  await page.locator('.card', { hasText: 'Plugin Only Film' }).click()
+  check(await page.waitForURL(/#\/p\/org\.smoke\.films\/movie\/lib-only/, { timeout: 5000 }).then(() => true, () => false), 'a title only in a plugin opens its title page with no sheet')
 
   // A theme changes Flick's colors.
   await page.goto(`${BASE}/#/settings`)

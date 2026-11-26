@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { items, playItem, shows, go, notify, reloadItems, progress, episodeLabel, clearProgress } from '../lib/store'
 import { ItemCard, VirtualGrid, useThumb } from '../components/Card'
-import { ShowCard } from './Home'
+import { TitleCard } from '../components/Titles'
+import { buildTitles, type Title } from '../lib/titles'
+import { sources, libraries, loadLibrary } from '../lib/plugins/use'
 import { Icon } from '../components/icons'
 import { addFolder, rescanAll, storeFiles, openFiles } from '../lib/actions'
 import { getFolders, removeFolder, deleteStored, removeItems, type Folder, type Item } from '../lib/library'
@@ -15,6 +17,14 @@ type Sort = 'added' | 'title' | 'year'
 
 const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
 
+// A grid cell: a title (a movie or show, from one place or several) or any other item.
+type Entry = Item | Title
+const isTitle = (x: Entry): x is Title => 'srcs' in x
+const nameOf = (x: Entry) => isTitle(x) ? x.name : x.show ?? x.title
+const posterOf = (x: Entry) => isTitle(x)
+  ? x.srcs.some((s) => s.t === 'plugin' ? s.m.poster : s.t === 'item' ? s.it.poster : s.eps[0].poster)
+  : !!x.poster
+
 export function Library() {
   const [tab, setTab] = useState<Tab>(() => (sessionStorage.getItem('flick.tab') as Tab) || 'all')
   const [q, setQ] = useState('')
@@ -26,6 +36,8 @@ export function Library() {
 
   useEffect(() => { getFolders().then(setFolders) }, [items.value.length])
   useEffect(() => { try { sessionStorage.setItem('flick.tab', tab) } catch { /* ignore */ } }, [tab])
+  // Source plugins' own libraries (a Stremio library) sit beside the files and servers.
+  useEffect(() => { for (const r of sources.value) loadLibrary(r) }, [sources.value])
 
   // "/" jumps to search, like most fast apps.
   useEffect(() => {
@@ -38,37 +50,40 @@ export function Library() {
 
   const all = items.value
   const dl = downloads.value
+  const libs = useMemo(() => sources.value.filter((r) => r.manifest.has.library)
+    .map((r) => ({ p: r.id, pname: r.manifest.name, list: libraries.value[r.id] ?? [] })), [sources.value, libraries.value])
+  const titles = useMemo(() => buildTitles(all.filter((i) => i.kind === 'video' && !i.show), shows.value, libs, (id) => isSaved(dl.get(id))),
+    [all, shows.value, libs, dl])
   const list = useMemo(() => {
     const needle = norm(q.trim())
-    let l = all.filter((i) => {
-      if (tab === 'movies' && (i.kind !== 'video' || i.show)) return false
-      if (tab === 'music' && i.kind !== 'audio') return false
-      if (tab === 'books' && i.kind !== 'book') return false
-      if (tab === 'audiobooks' && i.kind !== 'audiobook') return false
-      if (tab === 'stored' && i.origin !== 'stored') return false
-      if (tab === 'downloads' && !isSaved(dl.get(i.id))) return false
-      if (needle && !norm(`${i.title} ${i.show ?? ''} ${i.author ?? ''} ${i.year ?? ''} ${i.folder ?? ''}`).includes(needle)) return false
-      return true
-    })
-    const by: Record<Sort, (a: Item, b: Item) => number> = {
+    let l: Entry[] = tab === 'all' ? [...titles, ...all.filter((i) => i.kind !== 'video')]
+      : tab === 'movies' ? titles.filter((t) => t.type === 'movie')
+      : tab === 'shows' ? titles.filter((t) => t.type === 'show')
+      : all.filter((i) => {
+        if (tab === 'music' && i.kind !== 'audio') return false
+        if (tab === 'books' && i.kind !== 'book') return false
+        if (tab === 'audiobooks' && i.kind !== 'audiobook') return false
+        if (tab === 'stored' && i.origin !== 'stored') return false
+        if (tab === 'downloads' && !isSaved(dl.get(i.id))) return false
+        return true
+      })
+    if (needle) l = l.filter((x) => norm(isTitle(x) ? `${x.name} ${x.year ?? ''}` : `${x.title} ${x.show ?? ''} ${x.author ?? ''} ${x.year ?? ''} ${x.folder ?? ''}`).includes(needle))
+    const ep = (x: Entry) => isTitle(x) ? [0, 0] : [x.season ?? 0, x.episode ?? 0]
+    const by: Record<Sort, (a: Entry, b: Entry) => number> = {
       added: (a, b) => b.addedAt - a.addedAt,
-      title: (a, b) => (a.show ?? a.title).localeCompare(b.show ?? b.title, undefined, { numeric: true }) || (a.season ?? 0) - (b.season ?? 0) || (a.episode ?? 0) - (b.episode ?? 0),
+      title: (a, b) => nameOf(a).localeCompare(nameOf(b), undefined, { numeric: true }) || ep(a)[0] - ep(b)[0] || ep(a)[1] - ep(b)[1],
       year: (a, b) => (b.year ?? 0) - (a.year ?? 0),
     }
-    l = l.sort(by[sort])
-    return l
-  }, [all, tab, q, sort, dl])
+    // Shows stay in name order, as they always have.
+    return l.sort(by[tab === 'shows' ? 'title' : sort])
+  }, [all, titles, tab, q, sort, dl])
 
-  const showGroups = useMemo(() => {
-    const needle = norm(q.trim())
-    return [...shows.value.values()].filter((eps) => !needle || norm(eps[0].show!).includes(needle))
-      .sort((a, b) => a[0].show!.localeCompare(b[0].show!))
-  }, [shows.value, q])
-
+  const movieCount = titles.filter((t) => t.type === 'movie').length
+  const showCount = titles.filter((t) => t.type === 'show').length
   const counts = {
-    all: all.length,
-    movies: all.filter((i) => i.kind === 'video' && !i.show).length,
-    shows: shows.value.size,
+    all: titles.length + all.filter((i) => i.kind !== 'video').length,
+    movies: movieCount,
+    shows: showCount,
     music: all.filter((i) => i.kind === 'audio').length,
     books: all.filter((i) => i.kind === 'book').length,
     audiobooks: all.filter((i) => i.kind === 'audiobook').length,
@@ -77,7 +92,7 @@ export function Library() {
   }
 
   // Books are tall like posters even without a cover, so they share the poster grid.
-  const posterMode = list.length > 0 && (list.every((i) => i.kind === 'book') || list.filter((i) => i.poster).length > list.length / 2)
+  const posterMode = list.length > 0 && (list.every((i) => !isTitle(i) && i.kind === 'book') || list.filter(posterOf).length > list.length / 2)
 
   const remove = async (it: Item) => {
     setMenu(null)
@@ -143,7 +158,7 @@ export function Library() {
         )}
       </div>
 
-      {all.length === 0 ? (
+      {counts.all === 0 ? (
         <div class="empty">
           <Icon name="library" size={40} />
           <h2>Your library is empty</h2>
@@ -153,13 +168,13 @@ export function Library() {
             <button class="btn" onClick={openFiles}>Just play a file</button>
           </div>
         </div>
-      ) : tab === 'shows' ? (
-        <VirtualGrid list={showGroups} render={(eps) => <ShowCard eps={eps} />} />
       ) : list.length === 0 ? (
         <p class="dim center">Nothing matches “{q}”.</p>
       ) : (
         <VirtualGrid list={list} min={posterMode ? 160 : 230} ratio={posterMode ? 1.5 : 9 / 16}
-          render={(it) => <ItemCard it={it} onClick={() => playItem(it)} onMore={(e) => setMenu({ it, x: e.clientX, y: e.clientY })} />} />
+          render={(x) => isTitle(x)
+            ? <TitleCard t={x} onMore={(it, e) => setMenu({ it, x: e.clientX, y: e.clientY })} />
+            : <ItemCard it={x} onClick={() => playItem(x)} onMore={(e) => setMenu({ it: x, x: e.clientX, y: e.clientY })} />} />
       )}
 
       {menu && (
