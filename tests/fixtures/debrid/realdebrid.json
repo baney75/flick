@@ -1,0 +1,16 @@
+{
+  "_source": "Shapes from https://api.real-debrid.com/ (REST API 1.0, 2026-11-26). Values are made up.",
+  "user_ok": { "status": 200, "body": { "id": 42, "username": "viewer", "email": "viewer@example.com", "points": 100, "avatar": "https://s.real-debrid.com/images/avatars/x.png", "type": "premium", "premium": 666666, "expiration": "2027-03-01T04:42:42.000Z" } },
+  "user_bad": { "status": 401, "body": { "error": "bad_token", "error_code": 8 } },
+  "add": { "status": 201, "body": { "id": "RDT1", "uri": "https://api.real-debrid.com/rest/1.0/torrents/info/RDT1" } },
+  "info_select": { "status": 200, "body": { "id": "RDT1", "hash": "cccccccccccccccccccccccccccccccccccccccc", "status": "waiting_files_selection", "progress": 0, "links": [], "files": [
+    { "id": 1, "path": "/Show.S01/Show.S01E01.1080p.mkv", "bytes": 2100000000, "selected": 0 },
+    { "id": 2, "path": "/Show.S01/Show.S01E02.1080p.mkv", "bytes": 2200000000, "selected": 0 },
+    { "id": 3, "path": "/Show.S01/info.nfo", "bytes": 4000, "selected": 0 }
+  ] } },
+  "select": { "status": 204, "body": null },
+  "info_40": { "status": 200, "body": { "id": "RDT1", "status": "downloading", "progress": 40, "links": [], "files": [] } },
+  "info_done": { "status": 200, "body": { "id": "RDT1", "status": "downloaded", "progress": 100, "links": ["https://real-debrid.com/d/ABCDEF"], "files": [] } },
+  "info_dead": { "status": 200, "body": { "id": "RDT1", "status": "dead", "progress": 0, "links": [], "files": [] } },
+  "unrestrict": { "status": 200, "body": { "id": "ABCDEF", "filename": "Show.S01E02.1080p.mkv", "filesize": 2200000000, "link": "https://real-debrid.com/d/ABCDEF", "host": "real-debrid.com", "download": "https://41.download.real-debrid.com/d/ABCDEF/Show.S01E02.1080p.mkv" } }
+}

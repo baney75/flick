@@ -1,0 +1,16 @@
+{
+  "_source": "Shapes from https://docs.alldebrid.com/ (v4 and v4.1, 2026-11-26). Values are made up.",
+  "user_ok": { "status": 200, "body": { "status": "success", "data": { "user": { "username": "viewer", "email": "viewer@example.com", "isPremium": true, "premiumUntil": 1803859200 } } } },
+  "user_bad": { "status": 401, "body": { "status": "error", "error": { "code": "AUTH_BAD_APIKEY", "message": "The auth apikey is invalid" } } },
+  "upload": { "status": 200, "body": { "status": "success", "data": { "magnets": [ { "magnet": "cccccccccccccccccccccccccccccccccccccccc", "hash": "cccccccccccccccccccccccccccccccccccccccc", "name": "Show.S01", "size": 4300000000, "ready": false, "id": 9001 } ] } } },
+  "status_40": { "status": 200, "body": { "status": "success", "data": { "magnets": { "id": 9001, "filename": "Show.S01", "size": 4300000000, "status": "Downloading", "statusCode": 1, "downloaded": 1720000000 } } } },
+  "status_ready": { "status": 200, "body": { "status": "success", "data": { "magnets": { "id": 9001, "filename": "Show.S01", "size": 4300000000, "status": "Ready", "statusCode": 4, "downloaded": 4300000000 } } } },
+  "status_failed": { "status": 200, "body": { "status": "success", "data": { "magnets": { "id": 9001, "status": "File not available - no peer", "statusCode": 15 } } } },
+  "files": { "status": 200, "body": { "status": "success", "data": { "magnets": [ { "id": 9001, "files": [ { "n": "Show.S01", "e": [
+    { "n": "Show.S01E01.1080p.mkv", "s": 2100000000, "l": "https://alldebrid.com/f/AAA" },
+    { "n": "Show.S01E02.1080p.mkv", "s": 2200000000, "l": "https://alldebrid.com/f/BBB" },
+    { "n": "info.nfo", "s": 4000, "l": "https://alldebrid.com/f/CCC" }
+  ] } ] } ] } } },
+  "unlock": { "status": 200, "body": { "status": "success", "data": { "link": "https://xk7rz2.debrid.it/dl/2kd9f/Show.S01E02.1080p.mkv", "filename": "Show.S01E02.1080p.mkv", "host": "alldebrid", "filesize": 2200000000, "id": "BBB" } } },
+  "status_queued": { "status": 200, "body": { "status": "success", "data": { "magnets": { "id": 9001, "filename": "Show.S01", "size": 4300000000, "status": "In Queue", "statusCode": 0 } } } }
+}
