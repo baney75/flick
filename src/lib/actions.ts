@@ -139,7 +139,7 @@ export async function rescanAll() {
 
 export async function storeFiles() {
   if (!hasOpfs) return notify('This browser cannot store media. Try Chrome, Edge, Safari 17 or the desktop app.')
-  const files = (await pickWebFiles({ accept: 'video/*,audio/*,.mkv,.flac,.m4b,.pdf' })).filter((f) => itemKindOf(f.name))
+  const files = (await pickWebFiles({ accept: 'video/*,audio/*,.mkv,.flac,.m4b,.pdf,.epub' })).filter((f) => itemKindOf(f.name))
   if (!files.length) return
   const est = await navigator.storage.estimate?.()
   const need = files.reduce((a, f) => a + f.size, 0)

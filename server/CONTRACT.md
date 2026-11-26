@@ -39,7 +39,7 @@ Access-Control-Allow-Methods: GET, HEAD, OPTIONS
 - `folder`: label of the shared root (its directory name; a duplicate gets ` 2`, ` 3`).
 - `path`: relative to the root, `/` separators on every OS.
 - `kind`: `video` (mp4 m4v mov mkv webm avi ts m2ts wmv flv mpg mpeg 3gp ogv), `audio` (mp3 m4a m4b aac flac
-  wav ogg oga opus alac aiff wma), `book` (pdf). Other files are not listed.
+  wav ogg oga opus alac aiff wma), `book` (pdf epub). Other files are not listed.
 - `mtime`: milliseconds since the epoch.
 - Hidden files and folders (leading `.`) are skipped; symlinks are not followed. Cap of 200,000 items.
 
@@ -48,7 +48,7 @@ Access-Control-Allow-Methods: GET, HEAD, OPTIONS
 - One range (`bytes=a-b`, `bytes=a-`, `bytes=-n`): `206` with `Content-Range: bytes a-b/total`.
 - Unsatisfiable: `416` with `Content-Range: bytes */total`. Multiple ranges: serve the first.
 - `Content-Type` from the extension (video/mp4, video/x-matroska, video/webm, video/quicktime, audio/mpeg,
-  audio/mp4, audio/flac, audio/ogg, audio/wav, application/pdf, application/octet-stream otherwise).
+  audio/mp4, audio/flac, audio/ogg, audio/wav, application/pdf, application/epub+zip, application/octet-stream otherwise).
 - Only ids in the index are served. No path ever comes from the URL, so nothing outside a shared root is reachable.
 
 Any other `/api/*` path: `401` without the code, `404` with it.

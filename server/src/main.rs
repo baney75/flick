@@ -1,11 +1,12 @@
-use flick_server::{access_code, reach, start, Config, DEFAULT_PORT};
+use flick_server::{access_code, reach, service, start, Config, DEFAULT_PORT, SETUP_BASE};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const HELP: &str = "flick-server: share media folders with Flick
 
 Usage: flick-server [--media DIR]... [--port N] [--name NAME] [--lan | --local] [--web DIR | --no-web]
                     [--tailscale] [--cloudflare] [--public-url URL | --no-public-url] [--config DIR] [--new-code]
+                    [--install | --uninstall]
 
   --media DIR   share DIR (repeat for more folders)
   --port N      port to listen on (default 8740)
@@ -20,6 +21,8 @@ Usage: flick-server [--media DIR]... [--port N] [--name NAME] [--lan | --local] 
   --no-public-url   forget --public-url
   --config DIR  settings folder (default: $FLICK_SERVER_CONFIG, else ~/.config/flick-server)
   --new-code    replace the access code
+  --install     save the settings, then start this server at login (and now) in the background
+  --uninstall   stop the background server and remove it from login
   --help        show this help
 
 Flags marked remembered are saved, as are --media, --port and --name, so plain
@@ -70,6 +73,7 @@ fn run() -> Result<(), String> {
     let (mut media, mut port, mut name, mut lan, mut dir, mut renew) =
         (vec![], None, None, None, None, false);
     let (mut web, mut public_url, mut tailscale, mut cloudflare) = (None, None, false, false);
+    let (mut install, mut uninstall) = (false, false);
     while let Some(a) = args.next() {
         let mut val = || args.next().ok_or(format!("{a} needs a value"));
         match a.as_str() {
@@ -86,12 +90,18 @@ fn run() -> Result<(), String> {
             "--no-public-url" => public_url = Some(None),
             "--tailscale" => tailscale = true,
             "--cloudflare" => cloudflare = true,
+            "--install" => install = true,
+            "--uninstall" => uninstall = true,
             "--help" | "-h" => {
                 println!("{HELP}");
                 return Ok(());
             }
             _ => return Err(format!("unknown argument {a}\n\n{HELP}")),
         }
+    }
+    if uninstall {
+        service::uninstall()?.iter().for_each(|l| println!("{l}"));
+        return Ok(());
     }
     let dir = dir.unwrap_or_else(default_config_dir);
     let file = dir.join("config.json");
@@ -130,6 +140,9 @@ fn run() -> Result<(), String> {
     if renew {
         access_code(&dir, true)?;
         println!("Made a new access code. Old setup links no longer work.");
+    }
+    if install {
+        return install_service(&dir, &saved, tailscale, cloudflare);
     }
     let name = saved.name.clone().unwrap_or_else(hostname);
     let cfg = Config {
@@ -203,6 +216,50 @@ fn run() -> Result<(), String> {
     let _ = rx.recv();
     handle.stop();
     println!("Stopped.");
+    Ok(())
+}
+
+/// Registers this binary to start at login with the saved settings, and prints how to reach it.
+fn install_service(
+    dir: &Path,
+    saved: &Saved,
+    tailscale: bool,
+    cloudflare: bool,
+) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    let dir = std::fs::canonicalize(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // The token exists before the service starts, so the service reads the same one the links carry.
+    let (name, token) = (
+        saved.name.clone().unwrap_or_else(hostname),
+        access_code(&dir, false)?,
+    );
+    service::install(&exe, &dir)?
+        .iter()
+        .for_each(|l| println!("{l}"));
+    let port = saved.port.unwrap_or(DEFAULT_PORT);
+    let own_web = flick_server::serves_web(saved.web.clone());
+    let link = |u: &str| {
+        let base = if own_web { u } else { SETUP_BASE };
+        flick_server::setup_link(base, &name, u, &token)
+    };
+    let mut urls = vec![format!("http://127.0.0.1:{port}")];
+    urls.extend(saved.public_url.clone());
+    for u in &urls {
+        println!("\n{u}\n  Setup link: {}", link(u));
+    }
+    if tailscale {
+        match reach::tailscale_serve(port) {
+            Ok(u) => println!(
+                "\nTailscale: {u}\n  Setup link: {}\n  The Serve mapping persists, so the installed server stays reachable there after a reboot.",
+                link(&u)
+            ),
+            Err(e) => eprintln!("\nTailscale: {e}"),
+        }
+    }
+    if cloudflare {
+        println!("\nCloudflare: --install does not start a quick tunnel, since its address changes each run. For a lasting address, run a named tunnel to http://127.0.0.1:{port} and save it with --public-url URL.");
+    }
     Ok(())
 }
 

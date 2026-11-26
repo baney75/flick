@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
+mod share;
+
 const VIDEO: &[&str] = &[
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "ts", "m2ts", "mts", "mpg", "mpeg",
     "ogv", "3gp",
@@ -20,7 +22,7 @@ const AUDIO: &[&str] = &[
     "mp3", "m4a", "m4b", "aac", "flac", "wav", "ogg", "opus", "alac", "aiff", "aif", "wma",
 ];
 const SUBS: &[&str] = &["srt", "vtt", "ass", "ssa"];
-const BOOKS: &[&str] = &["pdf"];
+const BOOKS: &[&str] = &["pdf", "epub"];
 // What WKWebView plays without help.
 const NATIVE_EXT: &[&str] = &[
     "mp4", "m4v", "mov", "webm", "mp3", "m4a", "m4b", "aac", "wav", "flac", "aiff", "aif", "3gp",
@@ -1327,6 +1329,7 @@ pub fn run() {
         .manage(Opened::default())
         .manage(KodiProxy::default())
         .manage(Downloads::default())
+        .manage(share::Share::default())
         .register_asynchronous_uri_scheme_protocol("kodi", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
             tauri::async_runtime::spawn_blocking(move || responder.respond(kodi_proxy(&app, &req)));
@@ -1349,7 +1352,11 @@ pub fn run() {
             download_remove,
             download_exists,
             downloads_space,
-            make_default_player
+            make_default_player,
+            share::share_start,
+            share::share_stop,
+            share::share_status,
+            share::share_new_code
         ])
         .setup(|app| {
             // Files passed on the command line: `Flick movie.mkv`.
@@ -1374,6 +1381,9 @@ pub fn run() {
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect();
             queue_open(handle, paths);
+        }
+        if let tauri::RunEvent::Exit = &event {
+            share::stop_all(handle);
         }
         let _ = (handle, event);
     });
@@ -2035,6 +2045,13 @@ mod tests {
         assert!(!part.exists());
         assert!(!meta_of(&part).exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn books_count_as_media() {
+        assert!(is_media(Path::new("/b/Jane Doe - Dune.epub")));
+        assert!(is_media(Path::new("/b/Dune.PDF")));
+        assert!(!is_media(Path::new("/b/notes.txt")));
     }
 
     #[test]
