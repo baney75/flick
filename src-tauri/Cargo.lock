@@ -959,6 +959,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "tiny_http",
  "ureq",
  "walkdir",
 ]
