@@ -303,6 +303,13 @@ pub fn parse_resolved(dns: &str, domains: &str, default_route: &str) -> Vec<Dns>
         .collect()
 }
 
+/// Linux: a link carries traffic when sysfs `flags` has IFF_UP and `operstate` is `up`, or
+/// `unknown`, which WireGuard and TUN devices always report.
+pub fn link_up(operstate: &str, flags: &str) -> bool {
+    let flags = u32::from_str_radix(flags.trim().trim_start_matches("0x"), 16).unwrap_or(0);
+    flags & 1 == 1 && matches!(operstate.trim(), "up" | "unknown")
+}
+
 /// Linux mesh VPNs by interface name: Tailscale, ZeroTier, Nebula, NetBird.
 pub fn linux_mesh_name(iface: &str) -> bool {
     ["tailscale", "zt", "nebula", "wt"]
@@ -406,8 +413,15 @@ impl Probe for System {
     }
     fn addrs(&self, iface: &str) -> Vec<IpAddr> {
         let all = if_addrs::get_if_addrs().unwrap_or_default();
+        let sys = Path::new("/sys/class/net").join(iface);
+        let read = |f: &str| std::fs::read_to_string(sys.join(f)).unwrap_or_default();
+        let linux_up = || link_up(&read("operstate"), &read("flags"));
         let up = |i: &&if_addrs::Interface| {
-            i.name == iface && i.oper_status == if_addrs::IfOperStatus::Up
+            i.name == iface
+                && match cfg!(target_os = "linux") {
+                    true => linux_up(),
+                    false => i.oper_status == if_addrs::IfOperStatus::Up,
+                }
         };
         all.iter().filter(up).map(|i| i.ip()).collect()
     }

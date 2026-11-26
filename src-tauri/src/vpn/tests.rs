@@ -322,6 +322,16 @@ fn a_linux_full_tunnel_passes_and_meshes_fail() {
 }
 
 #[test]
+fn linux_tunnels_in_state_unknown_are_up() {
+    // Parish1's tailscale0, a TUN device: operstate "unknown", flags UP|POINTOPOINT|NOARP|MULTICAST.
+    assert!(link_up("unknown\n", "0x1091\n"));
+    assert!(link_up("up", "0x1003"));
+    assert!(!link_up("down", "0x1002"), "no carrier");
+    assert!(!link_up("unknown", "0x1090"), "set down by the admin");
+    assert!(!link_up("dormant", "0x1003") && !link_up("", ""));
+}
+
+#[test]
 fn names_tunnels_per_os() {
     assert!(tunnel_name("macos", "utun4", false) && tunnel_name("macos", "ipsec0", false));
     assert!(!tunnel_name("macos", "en0", false) && !tunnel_name("macos", "utun", false));
