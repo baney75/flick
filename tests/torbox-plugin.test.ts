@@ -80,10 +80,28 @@ describe('TorBox plugin', () => {
     expect(await ctx.store.get('ids')).toEqual({})
   })
 
-  it('picks the file: fileIdx, then the name, then the largest video', () => {
+  it('resolve: a passing TorBox error keeps the torrent, so it is never added twice', async () => {
+    const lists = [{ status: 500, body: { success: false, error: 'UNKNOWN_ERROR', detail: 'Something went wrong.', data: null } }, { status: 429, body: {} }, F.mylist_done]
+    const route = (r: Req): Reply => {
+      if (r.url.includes('/createtorrent')) return F.createtorrent
+      if (r.url.includes('/mylist')) return lists.shift() ?? F.mylist_done
+      if (r.url.includes('/requestdl')) return F.requestdl
+      return { status: 404, body: {} }
+    }
+    const ctx = fakeCtx({ apiKey: KEY }, route)
+    expect(await torbox.resolve(ctx, { infoHash: HASH })).toEqual({ wait: { message: 'TorBox is busy, trying again' } })
+    expect(await torbox.resolve(ctx, { infoHash: HASH })).toEqual({ wait: { message: 'TorBox is busy, trying again' } })
+    expect((await torbox.resolve(ctx, { infoHash: HASH })).url).toMatch(/^https:\/\/store-031/)
+    expect(ctx.requests.filter((r) => r.url.endsWith('/createtorrent'))).toHaveLength(1)
+    expect(await ctx.store.get('ids')).toEqual({ [HASH]: 4711 })
+  })
+
+  it('picks the file: the name, then fileIdx, then the largest video', () => {
     const files = (F.mylist_done.body as { data: { files: { id: number }[] } }).data.files
     expect(pickFile(files, 1).id).toBe(1)
     expect(pickFile(files, undefined, 'Show.S01E01.1080p.mkv').id).toBe(1)
+    // An id that points at another file loses to the name.
+    expect(pickFile(files, 2, 'Show.S01E01.1080p.mkv').id).toBe(1)
     expect(pickFile(files).id).toBe(2)
     expect(pickFile([], 0)).toBeNull()
   })

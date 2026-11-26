@@ -153,13 +153,21 @@ export async function openToolStream(url: string): Promise<string> {
   return fileUrl(await invoke<string>('tool_open', { url }))
 }
 
+/** Why a plugin may not start on this platform, or null. A service runs on the desktop only,
+ *  whatever platforms an older stored manifest lists: elsewhere ctx.fetch skips the host and https checks. */
+export function startRefusal(rec: Installed, platform: V.Platform): string | null {
+  if (rec.kind === 'service' && platform !== 'desktop') return `${rec.manifest.name} works only in the Flick desktop app.`
+  return null
+}
+
 function frameFor(rec: Installed): Promise<Frame> {
   let f = frames.get(rec.id)
   if (!f) {
     f = (async () => {
       if (rec.kind === 'theme' || !rec.enabled) throw new Error(`${rec.manifest.name} is turned off.`)
       const service = rec.kind === 'service'
-      if (service && !(rec.manifest as V.PluginManifest).platforms.includes(platformName())) throw new Error(`${rec.manifest.name} works only in the Flick desktop app.`)
+      const refused = startRefusal(rec, platformName())
+      if (refused) throw new Error(refused)
       if ((await sha256(rec.code)) !== rec.sha256) throw new Error(`${rec.manifest.name} changed on this device since it was installed. Remove it and install it again.`)
       setSecrets(rec.id, rec)
       await registerHosts(rec)

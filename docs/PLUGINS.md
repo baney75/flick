@@ -127,7 +127,9 @@ values go only to that one `action()` call and are not saved; keep what you need
 - `ctx.fetch(url, init?)`: like `fetch`, returns `{ status, ok, headers, text(), json() }`. `init`
   takes `method`, `headers` and a string `body`. On the website it is the sandbox's own fetch, so the
   server must allow CORS (most public APIs do). In the desktop app it goes through the app with no
-  CORS limit, only to `hosts`, and every redirect is checked against `hosts` too. The host list Flick
+  CORS limit, only to `hosts`, and every redirect is checked against `hosts` too. A redirect from
+  `https:` to `http:` is refused for every plugin, because it would send the request's headers in
+  the clear. The host list Flick
   enforces is the one from the installed manifest; the plugin never sends it.
   - `hosts` entries: `example.com` (that host), `*.example.com` (its subdomains, not itself), or `*`
     (any public host; for plugins that reach addresses the user types, like Stremio addons). `*`

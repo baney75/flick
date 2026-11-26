@@ -8,7 +8,7 @@ vi.hoisted(() => {
   g.addEventListener ??= () => {}
 })
 import * as V from '../src/lib/plugins/validate'
-import { ctxHandler, logLine, logs, setSecrets, type Installed } from '../src/lib/plugins/runtime'
+import { ctxHandler, logLine, logs, setSecrets, startRefusal, type Installed } from '../src/lib/plugins/runtime'
 import { pluginSnapshot, mayInstallSynced } from '../src/lib/sync/keys'
 import type * as Reg from '../src/lib/plugins/registry'
 
@@ -66,6 +66,13 @@ describe('service keys', () => {
 })
 
 describe('service records', () => {
+  it('a service starts on the desktop only, even when an older stored manifest lists more', () => {
+    const old = rec({ manifest: { ...manifest, platforms: ['web', 'desktop', 'mobile'] } })
+    expect(startRefusal(old, 'web')).toMatch(/only in the Flick desktop app/)
+    expect(startRefusal(old, 'mobile')).toMatch(/only in the Flick desktop app/)
+    expect(startRefusal(old, 'desktop')).toBeNull()
+    expect(startRefusal({ ...old, kind: 'source' }, 'web')).toBeNull()
+  })
   it('a service stored as a source gets its kind back on load', async () => {
     const db = await import('../src/lib/db')
     await db.put('plugins', 'app.torbox', rec({ kind: 'source' }))
