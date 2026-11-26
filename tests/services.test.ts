@@ -109,13 +109,10 @@ describe('order and removal', () => {
     expect(S.services.value).toEqual([])
   })
   it('settings saved before this change read as: VPN not required for debrid, no order', async () => {
-    vi.resetModules()
-    vi.stubGlobal('localStorage', { getItem: (k: string) => (k === 'flick.settings' ? '{"speed":1.5,"look":"x"}' : null), setItem() {} })
-    const fresh = await import('../src/lib/store')
-    expect(fresh.settings.value.speed).toBe(1.5)
-    expect(fresh.settings.value.debridNeedsVpn).toBe(false)
-    expect(fresh.settings.value.serviceOrder).toEqual([])
-    vi.unstubAllGlobals()
+    const { settingsFrom } = await import('../src/lib/store')
+    const old = settingsFrom('{"speed":1.5,"look":"x"}', [])
+    expect([old.speed, old.debridNeedsVpn, old.serviceOrder]).toEqual([1.5, false, []])
+    expect(settingsFrom(null, []).debridNeedsVpn).toBe(false)
   })
 })
 
