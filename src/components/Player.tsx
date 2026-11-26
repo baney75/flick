@@ -184,12 +184,33 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     return () => { cancelled = true }
   }, [])
 
-  // Show the chosen subtitle track.
+  // Show the chosen subtitle track in our own box, not the browser's cue layer, so
+  // the lines rise above the controls when they show instead of hiding under them.
+  const cueBox = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const v = video.current
-    if (!v) return
+    const box = cueBox.current
+    if (!v || !box) return
     const tracks = v.textTracks
-    for (let i = 0; i < tracks.length; i++) tracks[i].mode = i === subOn ? 'showing' : 'disabled'
+    let on = null as TextTrack | null
+    for (let i = 0; i < tracks.length; i++) {
+      tracks[i].mode = i === subOn ? 'hidden' : 'disabled'
+      if (i === subOn) on = tracks[i]
+    }
+    const draw = () => {
+      const lines: Node[] = []
+      const cues = on?.activeCues
+      for (let i = 0; cues && i < cues.length; i++) {
+        const line = document.createElement('span')
+        line.className = 'cue'
+        line.append((cues[i] as VTTCue).getCueAsHTML())
+        lines.push(line)
+      }
+      box.replaceChildren(...lines)
+    }
+    draw()
+    on?.addEventListener('cuechange', draw)
+    return () => { on?.removeEventListener('cuechange', draw); box.replaceChildren() }
   }, [subOn, subs.length])
 
   // ---- progress saving ----
@@ -454,6 +475,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         {subs.map((s, i) => <track key={s.url} kind="subtitles" label={s.label} srcLang={s.lang} src={s.url} default={i === subOn} />)}
       </video>
       <video ref={preview} class="preview-src" muted preload="auto" playsInline />
+      <div ref={cueBox} class="subs" aria-live="off" />
 
       {status && !error && <div class="status"><span class="spinner" />{status}</div>}
       {error && (

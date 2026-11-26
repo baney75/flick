@@ -4,9 +4,10 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
 import { items, loaded, saveProgress, go, type Progress } from '../lib/store'
 import * as db from '../lib/db'
-import { resolve } from '../lib/library'
-import { clampPage } from '../lib/parse'
+import { resolve, srcName, type Item } from '../lib/library'
+import { clampPage, ext } from '../lib/parse'
 import { Icon } from '../components/icons'
+import { EpubReader } from './EpubReader'
 
 type Pdf = import('pdfjs-dist').PDFDocumentProxy
 
@@ -24,8 +25,26 @@ async function openPdf(url: string): Promise<Pdf> {
   }).promise
 }
 
+/** 'epub' or 'pdf': from the file name, or when there is none (a server link), from the file's first bytes. */
+async function bookFormat(it: Item): Promise<string> {
+  const e = ext(srcName(it.src))
+  if (e === 'epub' || e === 'pdf') return e
+  const r = await resolve(it.src, undefined, it.id, true).catch(() => null)
+  const head = !r ? '' : r.file ? await r.file.slice(0, 2).text() : await fetch(r.url, { headers: { Range: 'bytes=0-1' } }).then((x) => x.text()).catch(() => '')
+  r?.revoke?.()
+  return head.startsWith('PK') ? 'epub' : 'pdf'
+}
 
 export function Reader({ id }: { id: string }) {
+  const it = items.value.find((i) => i.id === id)
+  const [fmt, setFmt] = useState('')
+  useEffect(() => { if (it) bookFormat(it).then(setFmt) }, [it?.id])
+  if (it && fmt === 'epub') return <EpubReader it={it} />
+  if (it && !fmt) return <div class="reader"><div class="reader-stage"><span class="spinner" aria-label="Opening" /></div></div>
+  return <PdfReader id={id} />
+}
+
+function PdfReader({ id }: { id: string }) {
   const it = items.value.find((i) => i.id === id)
   const [pdf, setPdf] = useState<Pdf | null>(null)
   const [err, setErr] = useState('')
