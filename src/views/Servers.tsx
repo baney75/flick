@@ -108,6 +108,7 @@ function FlickForm({ onAdd, here }: { onAdd: (s: Srv.Server) => void; here: Srv.
       {!here && <label>Address<input required placeholder="https://nas.tail1234.ts.net" value={url} onInput={(e) => setUrl((e.target as HTMLInputElement).value)} /></label>}
       <label>Access code<input required autocomplete="off" spellcheck={false} value={code} onInput={(e) => setCode((e.target as HTMLInputElement).value)} /></label>
       <button class="btn primary" disabled={busy}>{busy ? 'Connecting…' : 'Connect'}</button>
+      {busy && !here && Srv.needsLocalNetwork(url) && <p class="small dim">{Srv.LOCAL_NETWORK_HINT}</p>}
       {err && <p class="err">{err}</p>}
     </form>
   )

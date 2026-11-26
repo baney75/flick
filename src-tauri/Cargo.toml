@@ -23,6 +23,9 @@ ureq = { version = "3", default-features = false, features = ["json", "rustls"] 
 # Free space in the downloads folder.
 fs4 = "1"
 percent-encoding = "2"
+# Shares this library with the person's other devices; embed-web serves them the Flick app too.
+flick-server = { path = "../server", features = ["embed-web"] }
+if-addrs = "0.15"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
