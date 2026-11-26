@@ -183,6 +183,7 @@ export function itemRequest(i: Item): PlayRequest {
 /** Plays media, or opens a book in the reader. */
 export function playItem(i: Item) {
   if (i.kind === 'book') return go(`/read/${encodeURIComponent(i.id)}`)
+  if (i.kind === 'audiobook') return go(`/listen/${encodeURIComponent(i.id)}`)
   play(itemRequest(i))
 }
 

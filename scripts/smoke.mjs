@@ -4,6 +4,7 @@ import { chromium } from 'playwright'
 import { spawn, execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
+import { make as makeAudio } from '../tests/media-setup.mjs'
 
 const PORT = 4178
 // SMOKE_BASE=https://flick-player.pages.dev checks a deployed site instead of a local build.
@@ -39,12 +40,18 @@ function writePdf(path, pages = 3) {
 }
 const book = 'test-media/Jane Doe - Test Book (2020).pdf'
 writePdf(book)
+// An M4B with three chapters and a cover, and two MP3 parts for a book in a folder (tests/media-setup.mjs).
+if (!existsSync('test-media/audiobook/book.m4b')) makeAudio()
+const m4b = 'test-media/Jane Doe - Test Audiobook.m4b'
+writeFileSync(m4b, readFileSync('test-media/audiobook/book.m4b'))
 
 // A mock flick-server (see the flick-server API): info, library, media with Range, CORS and an access code.
 const FLICK_CODE = 'smoke_code_0123456789abcdefghijklmnopqrstuvwx'
 const flickFiles = {
   a1: { folder: 'Movies', name: 'Server.Movie.2024.webm', kind: 'video', ext: 'webm', type: 'video/webm', body: readFileSync(media) },
   b2: { folder: 'Books', name: 'John Roe - Server Book (2021).pdf', kind: 'book', ext: 'pdf', type: 'application/pdf', body: readFileSync(book) },
+  d4: { folder: 'Audiobooks', path: 'John Roe/Part Book/01 Part.mp3', name: '01 Part.mp3', kind: 'audio', ext: 'mp3', type: 'audio/mpeg', body: readFileSync('test-media/audiobook/01 Part.mp3') },
+  e5: { folder: 'Audiobooks', path: 'John Roe/Part Book/02 Part.mp3', name: '02 Part.mp3', kind: 'audio', ext: 'mp3', type: 'audio/mpeg', body: readFileSync('test-media/audiobook/02 Part.mp3') },
 }
 const flick = createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -57,7 +64,7 @@ const flick = createServer((req, res) => {
   if (u.pathname === '/api/info') return json(200, { app: 'flick-server', v: 1, name: 'Smoke NAS', version: '0.0.0' })
   if (req.headers.authorization !== `Bearer ${FLICK_CODE}` && u.searchParams.get('t') !== FLICK_CODE) return json(401, { error: 'wrong code' })
   if (u.pathname === '/api/library') {
-    return json(200, { name: 'Smoke NAS', folders: ['Movies', 'Books'], items: Object.entries(flickFiles).map(([id, f]) => ({ id, folder: f.folder, path: f.name, name: f.name, kind: f.kind, ext: f.ext, size: f.body.length, mtime: 1732550400000 })) })
+    return json(200, { name: 'Smoke NAS', folders: ['Movies', 'Books'], items: Object.entries(flickFiles).map(([id, f]) => ({ id, folder: f.folder, path: f.path ?? f.name, name: f.name, kind: f.kind, ext: f.ext, size: f.body.length, mtime: 1732550400000 })) })
   }
   const f = flickFiles[u.pathname.slice('/media/'.length)]
   if (!u.pathname.startsWith('/media/') || !f) return json(404, { error: 'not found' })
@@ -183,6 +190,36 @@ try {
   await fresh.screenshot({ path: 'test-media/shots/reader.png' })
   await fresh.close()
 
+  // Audiobooks: store an M4B, see its chapters, cover and sleep timer; speed stays with the book.
+  await page.goto(`${BASE}/#/library`)
+  const abChooser = page.waitForEvent('filechooser')
+  await page.getByRole('button', { name: /Store files/ }).click()
+  await (await abChooser).setFiles(m4b)
+  await page.getByRole('tab', { name: /Audiobooks/ }).click()
+  await page.getByText('Test Audiobook').first().click()
+  const chaptersBtn = page.getByRole('button', { name: /^Chapters/ })
+  check(await chaptersBtn.filter({ hasText: 'Chapters (3)' }).waitFor({ timeout: 8000 }).then(() => true, () => false), 'M4B chapters are read in the browser')
+  check(await page.locator('img.listen-cover').waitFor({ timeout: 3000 }).then(() => true, () => false), 'audiobook cover art shows')
+  await chaptersBtn.click()
+  const chapterNames = await page.locator('.listen-pop button').allInnerTexts()
+  check(chapterNames.length === 3 && chapterNames[1].startsWith('The Middle'), `chapter list (${chapterNames.map((c) => c.split('\n')[0]).join(', ')})`)
+  await page.locator('.listen-pop button', { hasText: 'The Middle' }).click()
+  await page.getByRole('button', { name: 'Play', exact: true }).click()
+  await page.getByRole('button', { name: 'Sleep' }).click()
+  const sleepItems = await page.locator('.listen-pop button').allInnerTexts()
+  check(['15 minutes', '30 minutes', '45 minutes', '60 minutes', 'End of chapter'].every((s) => sleepItems.includes(s)), `sleep timer menu (${sleepItems.join(', ')})`)
+  await page.screenshot({ path: 'test-media/shots/audiobook.png' })
+  await page.locator('.listen-pop button', { hasText: 'End of chapter' }).click()
+  const stopped = await page.waitForFunction(() => { const a = document.querySelector('.listen audio'); return a && a.paused && a.currentTime > 8 }, null, { timeout: 9000 }).then(() => true, () => false)
+  const stopAt = await page.evaluate(() => document.querySelector('.listen audio')?.currentTime)
+  check(stopped && stopAt < 9.5, `sleep timer stops at the end of the chapter (${stopAt?.toFixed(1)}s, chapter ends at 8.5s)`)
+  await page.getByRole('button', { name: 'Speed' }).click()
+  await page.locator('.listen-pop button', { hasText: /^1\.5×$/ }).click()
+  await page.goto(`${BASE}/#/library`)
+  await page.getByText('Test Audiobook').first().click()
+  check(await page.getByRole('button', { name: 'Speed' }).filter({ hasText: '1.5×' }).waitFor({ timeout: 5000 }).then(() => true, () => false), 'audiobook speed is remembered for the book')
+  check(await page.locator('.listen-chapter', { hasText: 'The Middle' }).waitFor({ timeout: 5000 }).then(() => true, () => false), 'audiobook resumes in the chapter it stopped in')
+
   // A Flick server: connect through the form, see its items, play the video, read the book.
   await page.goto(`${BASE}/#/servers`)
   const flickForm = page.locator('form', { hasText: 'Flick server (NAS)' })
@@ -192,7 +229,7 @@ try {
   check(await flickForm.getByText('access code is wrong').waitFor({ timeout: 5000 }).then(() => true, () => false), 'Flick server form says when the code is wrong')
   await flickForm.getByLabel('Access code').fill(FLICK_CODE)
   await flickForm.getByRole('button', { name: 'Connect' }).click()
-  check(await page.getByText('Smoke NAS: 2 items in your library.').waitFor({ timeout: 8000 }).then(() => true, () => false), 'Flick server connects through the Servers form')
+  check(await page.getByText('Smoke NAS: 3 items in your library.').waitFor({ timeout: 8000 }).then(() => true, () => false), 'Flick server connects through the Servers form')
   await page.goto(`${BASE}/#/library`)
   await page.getByRole('tab', { name: /Movies/ }).click()
   await page.getByText('Server Movie').first().waitFor({ timeout: 5000 })
@@ -206,6 +243,10 @@ try {
   await page.getByRole('tab', { name: /Books/ }).click()
   await page.getByText('Server Book').first().click()
   check(await page.locator('.reader-stage canvas').waitFor({ timeout: 15000 }).then(() => true, () => false), 'book from a Flick server opens in the reader')
+  await page.goto(`${BASE}/#/library`)
+  await page.getByRole('tab', { name: /Audiobooks/ }).click()
+  await page.getByText('Part Book').first().click()
+  check(await page.getByRole('button', { name: 'Chapters (2)' }).waitFor({ timeout: 8000 }).then(() => true, () => false), 'a folder of MP3 parts on a Flick server is one audiobook, a chapter per file')
 
   // The same server again, from a setup link after removing it.
   await page.goto(`${BASE}/#/servers`)
@@ -215,7 +256,7 @@ try {
   await page.goto(`${BASE}/#/setup?c=${flickSetup}`)
   await page.getByRole('button', { name: 'Connect all' }).click()
   await page.getByText('Done').waitFor()
-  check(await page.locator('.list-row', { hasText: `Flick server at ${FLICK_URL}` }).getByText('2 items').isVisible(), 'setup link with a Flick server connects it')
+  check(await page.locator('.list-row', { hasText: `Flick server at ${FLICK_URL}` }).getByText('3 items').isVisible(), 'setup link with a Flick server connects it')
 
   // Phone layout.
   await page.setViewportSize({ width: 390, height: 844 })
