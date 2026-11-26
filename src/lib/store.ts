@@ -161,6 +161,8 @@ export interface PlayRequest {
   fallbackUrl?: string
   poster?: string
   subs?: SubTrack[]
+  /** The subtitle language to turn on at the start, when the audio is not one the user listed. */
+  subLang?: string
   startAt?: number
   ref: Ref
   next?: () => PlayRequest | null
