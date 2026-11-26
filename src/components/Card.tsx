@@ -79,14 +79,14 @@ function useLongPress(onMore?: (e: MouseEvent) => void) {
 export function ItemCard({ it, onClick, onMore }: { it: Item; onClick: () => void; onMore?: (e: MouseEvent) => void }) {
   const img = useThumb(it)
   const p = progress.value[it.id]
-  const sub = it.kind === 'book'
+  const sub = it.kind === 'book' || it.kind === 'audiobook'
     ? [it.author, it.year].filter(Boolean).join(' · ') || 'Book'
     : it.show
     ? `${episodeLabel(it)} · ${it.title}`
     : [it.year, it.duration ? formatTime(it.duration) : null, it.origin !== 'local' ? originName(it) : null].filter(Boolean).join(' · ')
   return (
-    <Card image={img} title={it.show ?? it.title} sub={sub} shape={it.kind === 'audio' ? 'square' : it.kind === 'book' || (it.poster && it.origin !== 'local') ? 'poster' : 'wide'}
-      icon={it.kind === 'audio' ? 'music' : it.kind === 'book' ? 'book' : 'film'} pct={p && p.dur ? p.pos / p.dur : undefined} badge={badgeFor(downloads.value.get(it.id))}
+    <Card image={img} title={it.show ?? it.title} sub={sub} shape={it.kind === 'audio' || it.kind === 'audiobook' ? 'square' : it.kind === 'book' || (it.poster && it.origin !== 'local') ? 'poster' : 'wide'}
+      icon={it.kind === 'audio' ? 'music' : it.kind === 'book' || it.kind === 'audiobook' ? 'book' : 'film'} pct={p && p.dur ? p.pos / p.dur : undefined} badge={badgeFor(downloads.value.get(it.id))}
       onClick={onClick} onMore={onMore} />
   )
 }
@@ -129,7 +129,10 @@ export function VirtualGrid<T>({ list, min = 220, ratio = 9 / 16, extra = 54, re
     return () => ro.disconnect()
   }, [])
 
-  const cols = Math.max(1, Math.floor((w + gap) / (min + gap)))
+  // Phones fit three posters or two wide cards a row, as Streamyfin and Infuse do,
+  // instead of one card the full width of the screen.
+  const fit = w && w < 600 ? Math.min(min, ratio > 1 ? 100 : 150) : min
+  const cols = Math.max(1, Math.floor((w + gap) / (fit + gap)))
   const cardW = w ? (w - gap * (cols - 1)) / cols : min
   const rowH = cardW * ratio + extra + gap
   const rows = Math.ceil(list.length / cols)

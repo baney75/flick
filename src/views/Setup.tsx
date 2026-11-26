@@ -43,6 +43,7 @@ export function Setup({ code }: { code: string }) {
     }
   }, [parsed])
 
+  const reading = [...(parsed.p?.plugins ?? []), ...(parsed.p?.stremioAddons?.length ? [STREMIO_URL] : [])].some((u) => !(u in plugins))
   const connect = async () => {
     if (!parsed.p) return
     setBusy(true)
@@ -62,7 +63,7 @@ export function Setup({ code }: { code: string }) {
           {lines.map((l) => <div class="list-row"><Icon name="plus" size={16} /><div class="grow">{l}</div></div>)}
           <p class="small dim">Only connect a setup from someone you trust. Nothing changes until you tap Connect all.</p>
           <div class="row">
-            <button class="btn primary" onClick={connect} disabled={busy || !lines.length}>{busy ? 'Connecting…' : 'Connect all'}</button>
+            <button class="btn primary" onClick={connect} disabled={busy || !lines.length || reading}>{busy ? 'Connecting…' : 'Connect all'}</button>
             <button class="btn ghost" onClick={() => go('/')} disabled={busy}>Cancel</button>
           </div>
           {busy && parsed.p.servers?.some((s) => needsLocalNetwork(s.url)) && <p class="small dim">{LOCAL_NETWORK_HINT}</p>}

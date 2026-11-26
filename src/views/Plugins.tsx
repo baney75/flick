@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'preact/hooks'
 import { notify, settings, setSettings } from '../lib/store'
 import { Icon } from '../components/icons'
+import { isDesktop } from '../lib/platform'
 import { PluginIcon } from './Plugin'
 import { installed, prepare, install, remove, setEnabled, setPluginSettings, acceptUpdate, officialList, absolute, type Candidate, type OfficialEntry } from '../lib/plugins/registry'
 import { callPlugin, logs, type Installed } from '../lib/plugins/runtime'
@@ -44,13 +45,14 @@ export function ReviewSheet({ c, extra, onDone }: { c: Candidate; extra?: string
           <div><span class="dim">Version</span> {m.version}{c.replaces ? ` (you have ${c.replaces.manifest.version})` : ''}</div>
           <div><span class="dim">Author</span> {m.author}</div>
           {c.url && <div><span class="dim">From</span> <span class="small">{absolute(c.url)}</span></div>}
-          {src && <div><span class="dim">Reaches</span> {src.hosts.length ? src.hosts.map(hostWords).join(', ') : 'nothing beyond the website it runs in'}</div>}
+          {src && <div><span class="dim">Reaches</span> {src.hosts.length ? src.hosts.map(hostWords).join(', ') : 'nothing'}</div>}
           {src && src.tools.length > 0 && <div><span class="dim">Desktop tools</span> {src.tools.join(', ')}</div>}
           {src && src.platforms.length < 3 && <div><span class="dim">Works on</span> {src.platforms.join(', ')}</div>}
         </div>
         {src?.description && <p class="small">{src.description}</p>}
         {extra && <p class="small dim">{extra}</p>}
         {src && <p class="small dim">It runs in a sandbox: it cannot read your library, other plugins, your sync key or your server tokens.</p>}
+        {src && !isDesktop && <p class="small dim web-hosts">On the website the browser cannot hold a plugin to that list: it can also reach any site that allows it. The Flick apps enforce the list.</p>}
         <div class="row">
           <button class="btn primary" onClick={go} disabled={busy}>{busy ? 'Installing…' : c.replaces ? 'Update' : 'Install'}</button>
           <button class="btn ghost" onClick={() => onDone(false)} disabled={busy}>Cancel</button>
