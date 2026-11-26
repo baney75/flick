@@ -83,6 +83,13 @@ pub fn host_allowed(patterns: &[String], url: &Url) -> bool {
     })
 }
 
+impl PluginHosts {
+    /// The hosts registered for one plugin; empty when it has none.
+    pub fn hosts_of(&self, id: &str) -> Vec<String> {
+        self.0.lock().unwrap().get(id).cloned().unwrap_or_default()
+    }
+}
+
 #[tauri::command]
 pub fn plugin_hosts(state: tauri::State<'_, PluginHosts>, id: String, hosts: Vec<String>) {
     let mut map = state.0.lock().unwrap();

@@ -1,6 +1,7 @@
 {
   "api": 1,
   "plugins": [
-    { "url": "/plugins/template.js", "name": "Internet Archive films", "kind": "source", "description": "Public domain feature films from archive.org." }
+    { "url": "/plugins/template.js", "name": "Internet Archive films", "kind": "source", "description": "Public domain feature films from archive.org." },
+    { "url": "/plugins/youtube.js", "name": "YouTube", "kind": "source", "description": "Search and watch YouTube in the desktop app, through yt-dlp." }
   ]
 }

@@ -125,10 +125,16 @@ values go only to that one `action()` call and are not saved; keep what you need
 - `ctx.store.get(key)` / `ctx.store.set(key, value)`: this plugin's own saved data (JSON, 1 MB total).
 - `ctx.settings`: current setting values.
 - `ctx.platform`: `'web' | 'desktop' | 'mobile'`.
-- `ctx.tools.<name>(...)`: desktop tools the plugin listed in `tools`. Version 1 reserves one name:
-  `ytdlp` with `search(query, limit)`, `resolve(url)` (returns a `flick-tool:` stream URL the player
-  plays) and `download(url)` (saves for offline). This Flick does not ship the tool yet: a manifest may
-  list it, and calls fail with a plain message until a later version adds it.
+- `ctx.tools.<name>.<op>(...)`: desktop tools the plugin listed in `tools`, desktop app only. The app
+  checks each call against the `tools` of the installed manifest. Version 1 has one, `ytdlp`:
+  - `search(query, limit)`: YouTube search, up to 50 `Meta`s of type `video`. Each `id` is the watch
+    URL; each also carries `channel` and `duration` (seconds).
+  - `resolve(url)`: returns a `flick-tool:` stream URL for an `https:` page on the plugin's `hosts`.
+    Flick picks the format (H.264 and AAC, up to 1080p) and plays it while yt-dlp streams it.
+  - `download(url)`: not in this version; it fails with a plain message.
+  Flick downloads the official yt-dlp release on first use, checks it against the release's
+  SHA2-256SUMS, and updates it once a day. While that first download runs, calls fail with how far
+  it got. A yt-dlp on PATH is used only when Flick's own fails. Playing needs ffmpeg.
 - `ctx.log(...)`: shows in Settings > Plugins > this plugin > Log.
 
 ## A theme
@@ -163,4 +169,6 @@ tokens.
   Flags: `--search <term>` (default `the`), `--set key=value` for a setting. It also fails when an
   entry would be dropped by the validator, or when `ctx.fetch` goes to a host missing from `hosts`.
   It runs the plugin in Node, outside the sandbox, so check only code you are willing to run.
+  Desktop tools are stubs there: the manifest must list the tool, `ytdlp.search` answers with
+  recorded results and `ytdlp.resolve` checks the URL against `hosts`.
 - Settings > Plugins > Make your own copies a prompt for any AI agent that points at this file.

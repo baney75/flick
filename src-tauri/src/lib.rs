@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 mod plugins;
+mod ytdlp;
 
 const VIDEO: &[&str] = &[
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "ts", "m2ts", "mts", "mpg", "mpeg",
@@ -1289,6 +1290,7 @@ pub fn run() {
         .manage(KodiProxy::default())
         .manage(Downloads::default())
         .manage(plugins::PluginHosts::default())
+        .manage(ytdlp::PluginTools::default())
         .register_asynchronous_uri_scheme_protocol("kodi", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
             tauri::async_runtime::spawn_blocking(move || responder.respond(kodi_proxy(&app, &req)));
@@ -1312,7 +1314,10 @@ pub fn run() {
             downloads_space,
             make_default_player,
             plugins::plugin_hosts,
-            plugins::plugin_fetch
+            plugins::plugin_fetch,
+            ytdlp::plugin_tools,
+            ytdlp::plugin_tool,
+            ytdlp::tool_open
         ])
         .setup(|app| {
             // Files passed on the command line: `Flick movie.mkv`.
@@ -1322,6 +1327,9 @@ pub fn run() {
                 .collect();
             if !args.is_empty() {
                 queue_open(app.handle(), args);
+            }
+            if let Ok(cache) = app.path().app_cache_dir() {
+                std::thread::spawn(move || ytdlp::clean_cache(&cache));
             }
             Ok(())
         })
@@ -1337,6 +1345,9 @@ pub fn run() {
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect();
             queue_open(handle, paths);
+        }
+        if let tauri::RunEvent::Exit = event {
+            ytdlp::stop_job(&handle.state::<ytdlp::PluginTools>());
         }
         let _ = (handle, event);
     });
