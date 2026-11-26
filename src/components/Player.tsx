@@ -6,7 +6,7 @@ import { resolve, storeFile, type Resolved } from '../lib/library'
 import { formatTime } from '../lib/parse'
 import { vttUrl, toVtt } from '../lib/subs'
 import { isDesktop, isMobileApp, hasOpfs, invoke } from '../lib/platform'
-import { kodiConvert } from '../lib/servers'
+import { kodiConvert, convertUrl } from '../lib/servers'
 import { Icon } from './icons'
 
 const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
@@ -133,12 +133,14 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   function onFail(msg: string, unsupported = false) {
     const v = video.current!
     const src = req.src
-    if (unsupported && src?.t === 'kodi' && isDesktop && !isMobileApp && !triedConvert.current) {
-      // The web view cannot decode this file (AC-3 or DTS audio in an MP4, say): convert it and pick up where it stopped.
+    // A URL with a server-side fallback stream (Jellyfin, Plex) uses that instead.
+    const convertible = src?.t === 'kodi' || (src?.t === 'url' && !src.fallback)
+    if (unsupported && convertible && isDesktop && !isMobileApp && !triedConvert.current) {
+      // The web view cannot decode this file (an MKV, or AC-3 or DTS audio in an MP4): convert it and pick up where it stopped.
       triedConvert.current = true
       const at = v.currentTime
       setStatus('Converting for playback')
-      kodiConvert(src, setStatus)
+      ;(src.t === 'kodi' ? kodiConvert(src, setStatus) : convertUrl(src.url, setStatus))
         .then((url) => { req.startAt = at || req.startAt; return attach(v, url) })
         .catch((e) => { setStatus(null); setError((e as Error).message || msg) })
       return
@@ -191,7 +193,9 @@ function PlayerInner({ req }: { req: PlayRequest }) {
 
   // ---- media element events ----
   const onTime = () => {
-    const v = video.current!
+    // A last timeupdate can arrive after the player closes.
+    const v = video.current
+    if (!v) return
     setTime(v.currentTime)
     if (v.buffered.length) setBuffered(v.buffered.end(v.buffered.length - 1))
     if (Date.now() - lastSave.current > 5000) { lastSave.current = Date.now(); save() }
