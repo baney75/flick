@@ -202,7 +202,7 @@ function Book({ it }: { it: Item }) {
             <div class="listen-chapter">{chapters[cur]?.title}</div>
             <input class="listen-scrub" type="range" min={chStart} max={chEnd} step={0.5} value={t} aria-label="Position in chapter"
               style={{ '--fill': `${chEnd > chStart ? ((t - chStart) / (chEnd - chStart)) * 100 : 0}%` }} onInput={(e) => seek(Number((e.target as HTMLInputElement).value))} />
-            <div class="listen-times small dim"><span>{formatTime(t - chStart)}</span><span>-{formatTime((chEnd - t) / speed)}</span></div>
+            <div class="listen-times small dim"><span>{formatTime(t - chStart)}</span><span>{chEnd - t >= 1 ? "-" : ""}{formatTime((chEnd - t) / speed)}</span></div>
             <div class="listen-controls">
               <button class="icon-btn" onClick={prevChapter} aria-label="Previous chapter"><Icon name="left" /></button>
               <button class="icon-btn" onClick={() => seek(t - 30)} aria-label="Back 30 seconds"><Icon name="back10" /><span class="tiny">30</span></button>

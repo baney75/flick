@@ -238,6 +238,11 @@ try {
   check(await page.getByRole('button', { name: 'Speed' }).filter({ hasText: '1.5×' }).waitFor({ timeout: 5000 }).then(() => true, () => false), 'audiobook speed is remembered for the book')
   check(await page.locator('.listen-book', { hasText: /left at 1\.5×/ }).waitFor({ timeout: 3000 }).then(() => true, () => false), 'time left counts the book speed')
   check(await page.locator('.listen-chapter', { hasText: 'The Middle' }).waitFor({ timeout: 5000 }).then(() => true, () => false), 'audiobook resumes in the chapter it stopped in')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.waitForTimeout(200)
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'audiobook player fits a phone without sideways scroll')
+  await page.screenshot({ path: 'test-media/shots/phone-audiobook.png' })
+  await page.setViewportSize({ width: 1280, height: 800 })
   // EPUB: store one, see its cover, page through it, use the contents, and prove the book's scripts never run.
   await page.goto(`${BASE}/#/library`)
   await page.evaluate(() => { window.__pwned = []; addEventListener('message', (e) => { if (e.data?.pwned) window.__pwned.push(e.data.pwned) }) })
