@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { clampPage, itemKindOf, kindOf, parseBook } from '../src/lib/parse'
 
 describe('books', () => {
-  it('treats PDFs as books, never as something to play', () => {
+  it('treats PDFs and EPUBs as books, never as something to play', () => {
     expect(itemKindOf('Dune.pdf')).toBe('book')
     expect(itemKindOf('Dune.PDF')).toBe('book')
+    expect(itemKindOf('Dune.epub')).toBe('book')
+    expect(kindOf('Dune.epub')).toBeNull()
     expect(kindOf('Dune.pdf')).toBeNull()
     expect(itemKindOf('movie.mkv')).toBe('video')
     expect(itemKindOf('notes.txt')).toBeNull()

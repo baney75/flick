@@ -40,7 +40,7 @@ pub fn kind(ext: &str) -> Option<&'static str> {
         | "mpeg" | "3gp" | "ogv" => Some("video"),
         "mp3" | "m4a" | "m4b" | "aac" | "flac" | "wav" | "ogg" | "oga" | "opus" | "alac"
         | "aiff" | "wma" => Some("audio"),
-        "pdf" => Some("book"),
+        "pdf" | "epub" => Some("book"),
         _ => None,
     }
 }
@@ -57,6 +57,7 @@ pub fn content_type(ext: &str) -> &'static str {
         "ogg" | "oga" | "opus" => "audio/ogg",
         "wav" => "audio/wav",
         "pdf" => "application/pdf",
+        "epub" => "application/epub+zip",
         _ => "application/octet-stream",
     }
 }

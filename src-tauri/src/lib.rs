@@ -20,7 +20,7 @@ const AUDIO: &[&str] = &[
     "mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "alac", "aiff", "aif", "wma",
 ];
 const SUBS: &[&str] = &["srt", "vtt", "ass", "ssa"];
-const BOOKS: &[&str] = &["pdf"];
+const BOOKS: &[&str] = &["pdf", "epub"];
 // What WKWebView plays without help.
 const NATIVE_EXT: &[&str] = &[
     "mp4", "m4v", "mov", "webm", "mp3", "m4a", "aac", "wav", "flac", "aiff", "aif", "3gp",
@@ -1957,6 +1957,13 @@ mod tests {
         assert!(!part.exists());
         assert!(!meta_of(&part).exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn books_count_as_media() {
+        assert!(is_media(Path::new("/b/Jane Doe - Dune.epub")));
+        assert!(is_media(Path::new("/b/Dune.PDF")));
+        assert!(!is_media(Path::new("/b/notes.txt")));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 export const VIDEO_EXT = ['mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', 'wmv', 'flv', 'ts', 'm2ts', 'mts', 'mpg', 'mpeg', 'ogv', '3gp']
 export const AUDIO_EXT = ['mp3', 'm4a', 'aac', 'flac', 'wav', 'ogg', 'opus', 'alac', 'aiff', 'aif', 'wma']
 export const SUB_EXT = ['srt', 'vtt', 'ass', 'ssa']
-export const BOOK_EXT = ['pdf']
+export const BOOK_EXT = ['pdf', 'epub']
 
 /** What the player plays. Library items can also be books, which open in the reader. */
 export type Playable = 'video' | 'audio'
@@ -29,7 +29,7 @@ export function itemKindOf(name: string): Kind | null {
 /** Clamps a page number to the book. */
 export const clampPage = (n: number, pages: number) => Math.min(Math.max(1, Math.round(n) || 1), Math.max(1, pages))
 
-/** "Author - Title.pdf" or "Title (2019).pdf" to a clean title, author and year. */
+/** "Author - Title.epub" or "Title (2019).pdf" to a clean title, author and year. */
 export function parseBook(name: string): { title: string; author?: string; year?: number } {
   let base = name.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ').trim()
   const y = base.match(/[([]((?:1[5-9]|20)\d\d)[)\]]/)
