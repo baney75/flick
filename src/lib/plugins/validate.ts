@@ -37,6 +37,8 @@ export interface PluginManifest {
   /** A service plugin: what it provides, and the hosts its download links come from (all also in `hosts`). */
   provides: string[]
   debridHosts: string[]
+  /** A service whose downloads come over https from its own servers, so no peer sees the user: it may play with no VPN. */
+  vpnOptional: boolean
   /** Optional functions the plugin has. */
   has: { library: boolean; action: boolean; progress: boolean; subtitles: boolean; userCatalogs: boolean }
 }
@@ -138,11 +140,15 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
   for (const h of hosts) if (!validHost(h)) fail(`"${h}" is not a host name. Use names like "example.com" or "*.example.com".`)
   const tools = list(x.tools, 'tools', 10).map((t) => str(t, 'A tool', true))
   for (const t of tools) if (!(TOOLS as readonly string[]).includes(t)) fail(`Flick has no desktop tool called "${t}".`)
-  const platforms = (x.platforms === undefined ? [...PLATFORMS] : list(x.platforms, 'platforms')) as string[]
-  for (const p of platforms) if (!(PLATFORMS as readonly string[]).includes(p)) fail(`Unknown platform "${p}".`)
   const kind = x.kind ?? 'source'
   if (!(KINDS as readonly unknown[]).includes(kind)) fail(`Flick has no plugin kind called "${String(kind)}".`)
+  // A service holds the user's key; only the desktop app holds it to its hosts and to https.
+  const platforms = (x.platforms === undefined ? (kind === 'service' ? ['desktop'] : [...PLATFORMS]) : list(x.platforms, 'platforms')) as string[]
+  for (const p of platforms) if (!(PLATFORMS as readonly string[]).includes(p)) fail(`Unknown platform "${p}".`)
+  if (kind === 'service' && platforms.join() !== 'desktop') fail('A service plugin works only in the desktop app: platforms: ["desktop"].')
   let catalogs: CatalogDef[] = [], provides: string[] = [], debridHosts: string[] = []
+  if (x.vpnOptional !== undefined && typeof x.vpnOptional !== 'boolean') fail('vpnOptional must be true or false.')
+  if (x.vpnOptional !== undefined && kind !== 'service') fail('Only a service plugin can set vpnOptional.')
   if (kind === 'service') {
     provides = list(x.provides, 'provides', 10).map((p) => str(p, 'A provides entry', true, 40))
     if (!provides.length) fail('A service plugin must say what it provides, like provides: ["debrid"].')
@@ -180,6 +186,7 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
     catalogs,
     provides,
     debridHosts: [...new Set(debridHosts)],
+    vpnOptional: x.vpnOptional === true,
     has: { library: fns.includes('library'), action: fns.includes('action'), progress: fns.includes('progress'), subtitles: fns.includes('subtitles'), userCatalogs: fns.includes('userCatalogs') },
   }
   const icon = imgUrl(x.icon)
@@ -199,11 +206,17 @@ export function validateCatalogDefs(x: unknown): CatalogDef[] {
   })
 }
 
-/** Permissions the new manifest asks for that the installed one did not have. Empty means a quiet update. */
-export function addedPermissions(old: Pick<PluginManifest, 'hosts' | 'tools'>, next: Pick<PluginManifest, 'hosts' | 'tools'>): string[] {
+type Perms = Pick<PluginManifest, 'hosts' | 'tools'> & { debridHosts?: string[]; vpnOptional?: boolean }
+/**
+ * Permissions the new manifest asks for that the installed one did not have. Empty means a quiet update.
+ * A service dropping a debrid host, or newly saying it plays with no VPN, counts too.
+ */
+export function addedPermissions(old: Perms, next: Perms): string[] {
   return [
     ...next.hosts.filter((h) => !old.hosts.includes(h)).map((h) => `reach ${h}`),
     ...next.tools.filter((t) => !old.tools.includes(t)).map((t) => `use ${t}`),
+    ...(old.debridHosts ?? []).filter((h) => !(next.debridHosts ?? []).includes(h)).map((h) => `stop treating ${h} as a debrid host`),
+    ...(next.vpnOptional && !old.vpnOptional ? ['play with no VPN'] : []),
   ]
 }
 

@@ -1,0 +1,18 @@
+{
+  "_source": "Shapes from https://api.torbox.app/openapi.json and https://api-docs.torbox.app/docs/getting-started (2026-11-26). Values are made up.",
+  "user_ok": { "status": 200, "body": { "success": true, "error": null, "detail": "User data found.", "data": { "id": 1, "email": "viewer@example.com", "plan": 2, "premium_expires_at": "2027-03-01T00:00:00Z" } } },
+  "user_bad": { "status": 401, "body": { "success": false, "error": "BAD_TOKEN", "detail": "Your token is invalid or has expired. Please log in again or reset your token.", "data": null } },
+  "checkcached_one": { "status": 200, "body": { "success": true, "error": null, "detail": "Found 1 cached torrents.", "data": [ { "name": "Big.Buck.Bunny.2008.1080p", "size": 725106140, "hash": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" } ] } },
+  "createtorrent": { "status": 200, "body": { "success": true, "error": null, "detail": "Torrent Added Successfully", "data": { "hash": "cccccccccccccccccccccccccccccccccccccccc", "torrent_id": 4711, "auth_id": "abc" } } },
+  "mylist_queued": { "status": 200, "body": { "success": true, "error": null, "detail": "Torrent list retrieved.", "data": { "id": 4711, "hash": "cccccccccccccccccccccccccccccccccccccccc", "download_state": "metaDL", "progress": 0, "download_finished": false, "download_present": false, "files": [] } } },
+  "mylist_40": { "status": 200, "body": { "success": true, "error": null, "detail": "Torrent list retrieved.", "data": { "id": 4711, "hash": "cccccccccccccccccccccccccccccccccccccccc", "download_state": "downloading", "progress": 0.4, "download_finished": false, "download_present": false, "files": [] } } },
+  "mylist_done": { "status": 200, "body": { "success": true, "error": null, "detail": "Torrent list retrieved.", "data": { "id": 4711, "hash": "cccccccccccccccccccccccccccccccccccccccc", "download_state": "uploading", "progress": 1, "download_finished": true, "download_present": true, "files": [
+    { "id": 0, "name": "Show.S01/Sample.mkv", "short_name": "Sample.mkv", "size": 1000000 },
+    { "id": 1, "name": "Show.S01/Show.S01E01.1080p.mkv", "short_name": "Show.S01E01.1080p.mkv", "size": 2100000000 },
+    { "id": 2, "name": "Show.S01/Show.S01E02.1080p.mkv", "short_name": "Show.S01E02.1080p.mkv", "size": 2200000000 },
+    { "id": 3, "name": "Show.S01/info.nfo", "short_name": "info.nfo", "size": 4000 }
+  ] } } },
+  "mylist_error": { "status": 200, "body": { "success": true, "error": null, "detail": "Torrent list retrieved.", "data": { "id": 4711, "hash": "cccccccccccccccccccccccccccccccccccccccc", "download_state": "error", "progress": 0, "download_finished": false, "download_present": false, "files": [] } } },
+  "mylist_gone": { "status": 404, "body": { "success": false, "error": "DATABASE_ERROR", "detail": "Torrent not found.", "data": null } },
+  "requestdl": { "status": 200, "body": { "success": true, "error": null, "detail": "Download link generated.", "data": "https://store-031.weur.tb-cdn.st/dld/4711/1?token=signed" } }
+}

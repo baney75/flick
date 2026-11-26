@@ -182,9 +182,12 @@ export default {
   again every 3 seconds while it gets `wait`, for at most 10 minutes. A `url` that is not https, or not
   on the plugin's `hosts`, is refused.
 - Flick sends a service only the infoHash, file index and file name: never the library, other titles
-  or a Stremio account. It calls a service only for a torrent stream, only in the desktop app, and only
-  while a VPN is on and hides this computer. A stream whose link is on a service's `debridHosts` is
-  held to the same rule.
+  or a Stremio account. It calls a service only for a torrent stream and only in the desktop app.
+- The VPN: by default Flick calls a service only while a VPN is on and hides this computer, and a
+  stream whose link is on a service's `debridHosts` is held to the same rule. A service whose playback
+  is only an https download from its own servers (no peer sees the user) may say `vpnOptional: true`;
+  it then plays with or without a VPN, and Flick shows which, unless the user turns on "Require a VPN
+  for debrid services too". An update that drops a debrid host or turns on `vpnOptional` waits for a tap.
 - The key is a `password` field, so it is secret: it stays on the device, never syncs and never goes
   in a setup link. A service plugin cannot use desktop tools.
 

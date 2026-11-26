@@ -34,6 +34,18 @@ describe('service plugin manifest', () => {
     expect(() => V.validateManifest(service({ provides: ['vpn'] }), SFNS)).toThrow(/no service called "vpn"/)
     expect(() => V.validateManifest(service({ kind: 'daemon' }), SFNS)).toThrow(/no plugin kind called "daemon"/)
   })
+  it('a service is desktop only', () => {
+    expect(V.validateManifest(service(), SFNS).platforms).toEqual(['desktop'])
+    expect(() => V.validateManifest(service({ platforms: ['web', 'desktop'] }), SFNS)).toThrow(/only in the desktop app/)
+    expect(() => V.validateManifest(service({ platforms: ['mobile'] }), SFNS)).toThrow(/only in the desktop app/)
+  })
+  it('vpnOptional is a true or false that only a service sets', () => {
+    expect(V.validateManifest(service(), SFNS).vpnOptional).toBe(false)
+    expect(V.validateManifest(service({ vpnOptional: true }), SFNS).vpnOptional).toBe(true)
+    expect(() => V.validateManifest(service({ vpnOptional: 'yes' }), SFNS)).toThrow(/vpnOptional must be true or false/)
+    const src = { api: 1, id: 'org.example.films', name: 'Films', version: '1', catalogs: [{ id: 'a', name: 'A', type: 'movie' }], vpnOptional: true }
+    expect(() => V.validateManifest(src, ['catalog', 'meta', 'streams'])).toThrow(/Only a service/)
+  })
   it('leaves source plugins as they were', () => {
     const src = { api: 1, id: 'org.example.films', name: 'Films', version: '1', hosts: ['*'], catalogs: [{ id: 'a', name: 'A', type: 'movie' }] }
     const m = V.validateManifest(src, ['catalog', 'meta', 'streams'])
