@@ -51,9 +51,16 @@ Access-Control-Allow-Methods: GET, HEAD, OPTIONS
   audio/mp4, audio/flac, audio/ogg, audio/wav, application/pdf, application/octet-stream otherwise).
 - Only ids in the index are served. No path ever comes from the URL, so nothing outside a shared root is reachable.
 
-Anything else under `GET`: the Flick web app, when one is available (`--web <dir>`, or built in with the
-`embed-web` feature), with `index.html` for unknown paths. Without one: a short plain-text page saying the server
-is running and to connect from Flick.
+Any other `/api/*` path: `401` without the code, `404` with it.
+
+Anything else under `GET` (not `/api/*` or `/media/*`, no auth): the Flick web app, when one is available
+(`--web <dir>`, else the copy built in with the `embed-web` feature).
+- The file at that path if it exists, else `index.html` (the app routes itself).
+- `Content-Type` from the extension (html, js, css, svg, png, webp, woff2, json, wasm, map, ico, txt, webmanifest).
+- `Cache-Control: public, max-age=31536000, immutable` under `/assets/`, `no-cache` for everything else.
+- The path is percent-decoded first. Any `.` or `..` segment, or one holding `\`, `:` or NUL, gets `404`. The
+  resolved file must sit inside the web dir (symlinks out of it are refused).
+Without a web app: a short plain-text page saying the server is running and to connect from Flick.
 
 ## Setup link the server prints
 
@@ -63,6 +70,20 @@ is running and to connect from Flick.
 ```
 `<base>` is the server's own public URL when it serves the web app, otherwise `https://flick-player.pages.dev`.
 `url` has no trailing slash.
+
+## Reach
+
+The server prints one setup link per address:
+- `http://127.0.0.1:<port>`, plus each LAN address with `--lan` (bind `0.0.0.0`).
+- `--tailscale`: `https://<Self.DNSName>:<port>` through `tailscale serve --bg --https=<port> http://127.0.0.1:<port>`.
+  The HTTPS port equals the server port, so mappings on 443 or other ports are never touched. If that port is
+  already mapped to anything else, the server refuses and changes nothing. The mapping stays after exit; remove it
+  with `tailscale serve --https=<port> off`.
+- `--cloudflare`: a quick tunnel from `cloudflared tunnel --no-autoupdate --url http://127.0.0.1:<port>`, its
+  `https://<x>.trycloudflare.com` address read from cloudflared's log (30 s limit). New address each run; cloudflared
+  stops with the server.
+- `--public-url URL`: an address the user runs (named Cloudflare tunnel, reverse proxy). Saved in `config.json`;
+  `--no-public-url` clears it.
 
 ## Client mapping (Flick web app)
 

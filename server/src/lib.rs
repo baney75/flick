@@ -1,6 +1,8 @@
 //! flick-server: share media folders with Flick over HTTP (API contract v1).
 //! The library keeps no process-global state and never prints, so the desktop app can embed it.
 pub mod index;
+pub mod reach;
+pub mod web;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use index::Index;
@@ -28,7 +30,8 @@ pub struct Config {
     pub lan: bool,
     /// Holds `token`.
     pub config_dir: PathBuf,
-    // The next PR adds `web_dir` here and serves it from `fallback`.
+    /// Flick web app folder. `None` serves the built-in copy with the `embed-web` feature, else a text page.
+    pub web: Option<PathBuf>,
 }
 
 const WORKERS: usize = 16;
@@ -40,6 +43,7 @@ struct State {
     roots: Vec<PathBuf>,
     real_roots: Vec<PathBuf>,
     index: RwLock<Arc<Index>>,
+    web: web::Web,
     // Set by stop(); a body being streamed ends at its next read.
     stopping: AtomicBool,
 }
@@ -57,6 +61,8 @@ impl State {
 pub struct Handle {
     port: u16,
     token: String,
+    name: String,
+    web: bool,
     server: Arc<Server>,
     stop_tx: Option<mpsc::Sender<()>>,
     threads: Vec<JoinHandle<()>>,
@@ -72,6 +78,19 @@ impl Handle {
     }
     pub fn token(&self) -> &str {
         &self.token
+    }
+    /// True when this server serves the Flick web app itself.
+    pub fn serves_web(&self) -> bool {
+        self.web
+    }
+    /// Setup link for `url`. Its base is `url` itself when the web app is served here, else `SETUP_BASE`.
+    pub fn setup_link(&self, url: &str) -> String {
+        let base = if self.web {
+            url.trim_end_matches('/')
+        } else {
+            SETUP_BASE
+        };
+        setup_link(base, &self.name, url, &self.token)
     }
     pub fn stop(mut self) {
         self.shutdown();
@@ -145,7 +164,11 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
         .to_ip()
         .map(|a| a.port())
         .unwrap_or(cfg.port);
+    let web = web::Web::new(cfg.web);
+    let serves_web = web.available();
+    let name = cfg.name.clone();
     let state = Arc::new(State {
+        web,
         name: cfg.name,
         token: token.clone(),
         real_roots: cfg
@@ -180,6 +203,8 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
     Ok(Handle {
         port,
         token,
+        name,
+        web: serves_web,
         server,
         stop_tx: Some(stop_tx),
         threads,
@@ -239,7 +264,7 @@ fn handle(st: &State, req: Request) {
             serde_json::json!({"app":"flick-server","v":1,"name":st.name,"version":VERSION}),
         );
     }
-    if path != "/api/library" && !path.starts_with("/media/") {
+    if !path.starts_with("/api/") && !path.starts_with("/media/") {
         return fallback(st, req);
     }
     let bearer = req
@@ -268,7 +293,9 @@ fn handle(st: &State, req: Request) {
             serde_json::json!({"name":st.name,"folders":idx.folders,"items":idx.items}),
         );
     }
-    let id = &path["/media/".len()..];
+    let Some(id) = path.strip_prefix("/media/") else {
+        return json(req, 404, serde_json::json!({"error":"not found"}));
+    };
     let idx = st.index();
     match idx.get(id) {
         Some(item) => media(req, item, &st.real_roots, &st.stopping),
@@ -277,6 +304,16 @@ fn handle(st: &State, req: Request) {
 }
 
 fn fallback(st: &State, req: Request) {
+    match st.web.get(req.url().split('?').next().unwrap_or("/")) {
+        Err(()) => return json(req, 404, serde_json::json!({"error":"not found"})),
+        Ok(Some(a)) => {
+            let res = Response::new(200.into(), vec![], a.body, Some(a.len), None)
+                .with_header(header("Content-Type", a.content_type))
+                .with_header(header("Cache-Control", a.cache));
+            return respond(req, res);
+        }
+        Ok(None) => {}
+    }
     let text = format!(
         "Flick server {} is running. Connect to it from Flick with the setup link it printed.\n",
         st.name
