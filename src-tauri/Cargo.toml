@@ -29,6 +29,11 @@ if-addrs = "0.15"
 # Checks the yt-dlp release binary against its published SHA2-256SUMS.
 sha2 = "0.10"
 
+# Self-update from GitHub Releases, desktop only: phones update through their stores.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 
