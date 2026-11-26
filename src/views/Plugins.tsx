@@ -145,6 +145,7 @@ function PluginRow({ p, open, onToggle }: { p: Installed; open: boolean; onToggl
           <div class="small dim">{p.kind === 'theme' ? 'Theme' : m.author}{src && !p.enabled ? ' · off' : ''}</div>
         </div>
         {src && <label class="toggle"><input type="checkbox" checked={p.enabled} onChange={(e) => setEnabled(p.id, (e.target as HTMLInputElement).checked)} aria-label={`Turn ${m.name} on`} /></label>}
+        {src && p.enabled && <a class="btn ghost sm" href={`#/p/${encodeURIComponent(p.id)}`} aria-label={`Open ${m.name}`}>Open</a>}
         {src && <button class="btn ghost sm" onClick={onToggle} aria-expanded={open}>{open ? 'Close' : 'Manage'}</button>}
         <button class="btn ghost sm" onClick={drop}>Remove</button>
       </div>
