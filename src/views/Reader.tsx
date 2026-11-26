@@ -2,7 +2,7 @@
 // pdf.js loads only when a book opens, so the rest of Flick stays as fast to start as before.
 
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
-import { items, loaded, saveProgress, go, type Progress } from '../lib/store'
+import { items, loaded, saveProgress, go, type Progress, type Ref } from '../lib/store'
 import * as db from '../lib/db'
 import { resolve, srcName, type Item } from '../lib/library'
 import { clampPage, ext } from '../lib/parse'
@@ -35,17 +35,21 @@ async function bookFormat(it: Item): Promise<string> {
   return head.startsWith('PK') ? 'epub' : 'pdf'
 }
 
-export function Reader({ id }: { id: string }) {
-  const it = items.value.find((i) => i.id === id)
+/** A book from a plugin stream: a URL, a title and the progress Ref to save under. */
+export interface BookLink { url: string; title: string; key: string; ref: Ref }
+
+export function Reader({ id, link }: { id: string; link?: BookLink }) {
+  const it = link ? undefined : items.value.find((i) => i.id === id)
   const [fmt, setFmt] = useState('')
   useEffect(() => { if (it) bookFormat(it).then(setFmt) }, [it?.id])
   if (it && fmt === 'epub') return <EpubReader it={it} />
   if (it && !fmt) return <div class="reader"><div class="reader-stage"><span class="spinner" aria-label="Opening" /></div></div>
-  return <PdfReader id={id} />
+  return <PdfReader id={id} link={link} />
 }
 
-function PdfReader({ id }: { id: string }) {
-  const it = items.value.find((i) => i.id === id)
+function PdfReader({ id, link }: { id: string; link?: BookLink }) {
+  const found = items.value.find((i) => i.id === id)
+  const it = link ? { id: link.key, title: link.title, author: undefined as string | undefined } : found
   const [pdf, setPdf] = useState<Pdf | null>(null)
   const [err, setErr] = useState('')
   // Bumped by Try again: after a reload, a folder needs a click before the browser lets Flick read it again.
@@ -59,7 +63,7 @@ function PdfReader({ id }: { id: string }) {
     if (!it) return
     let live = true
     let revoke: (() => void) | undefined
-    resolve(it.src, undefined, it.id, true)
+    ;(link ? Promise.resolve({ url: link.url, revoke: undefined }) : resolve(found!.src, undefined, found!.id, true))
       .then(async (r) => {
         if (!live) return r.revoke?.()
         revoke = r.revoke
@@ -115,7 +119,7 @@ function PdfReader({ id }: { id: string }) {
   // Remember the page, so the book opens where you left it and shows in Continue.
   useEffect(() => {
     if (!pdf || !it) return
-    saveProgress(it.id, { pos: page, dur: pdf.numPages, book: true, at: Date.now(), title: it.title, subtitle: it.author, ref: { t: 'item', id: it.id } }).catch(() => {})
+    saveProgress(it.id, { pos: page, dur: pdf.numPages, book: true, at: Date.now(), title: it.title, subtitle: it.author, ref: link?.ref ?? { t: 'item', id: it.id } }).catch(() => {})
   }, [pdf, page])
 
   const turn = (d: number) => pdf && setPage((p) => clampPage(p + d, pdf.numPages))

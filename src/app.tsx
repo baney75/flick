@@ -20,6 +20,19 @@ import { installSpatialNav } from './lib/spatial'
 import { resumeDownloads } from './lib/downloads'
 import { startOffline } from './lib/offline'
 import { startShare } from './lib/share'
+import { PluginPage, PluginTitle, PluginIcon } from './views/Plugin'
+import { sources, themes, startPlugins } from './lib/plugins/use'
+import { applyTheme } from './lib/plugins/themes'
+import type { BookLink } from './views/Reader'
+
+function bookLink(qs: URLSearchParams): BookLink | undefined {
+  try {
+    const ref = JSON.parse(qs.get('r') ?? '')
+    const url = qs.get('u') ?? ''
+    if (ref?.t !== 'plugin' || !/^https?:\/\//.test(url)) return undefined
+    return { url, title: qs.get('t') ?? 'Book', key: `pl:${ref.p}:${ref.videoId}`, ref }
+  } catch { return undefined }
+}
 
 const NAV = [
   { path: '/', label: 'Home', icon: 'home' },
@@ -36,6 +49,9 @@ function View() {
   const qs = new URLSearchParams(query ?? '')
   if (parts[0] === 'library') return <Library />
   if (parts[0] === 'read' && parts[1]) return <Reader key={parts[1]} id={decodeURIComponent(parts[1])} />
+  if (parts[0] === 'read-url' && bookLink(qs)) return <Reader key={r} id="" link={bookLink(qs)} />
+  if (parts[0] === 'p' && parts[1] && parts[3]) return <PluginTitle key={r} p={decodeURIComponent(parts[1])} type={parts[2]} id={decodeURIComponent(parts[3])} videoId={qs.get('v') ?? undefined} />
+  if (parts[0] === 'p' && parts[1]) return <PluginPage key={parts[1]} id={decodeURIComponent(parts[1])} />
   if (parts[0] === 'listen' && parts[1]) return <Listen key={parts[1]} id={decodeURIComponent(parts[1])} />
   if (parts[0] === 'show' && parts[1]) return <ShowPage name={decodeURIComponent(parts[1])} />
   if (parts[0] === 'stremio' && parts[2]) return <StremioDetail key={r} type={parts[1]} id={decodeURIComponent(parts[2])} videoId={qs.get('v') ?? undefined} />
@@ -56,10 +72,17 @@ export function App() {
     document.documentElement.dataset.theme = theme === 'system' ? '' : theme
   }, [theme])
 
+  const look = settings.value.look
+  const lookTheme = themes.value.find((t) => t.id === look)
+  useEffect(() => {
+    try { applyTheme(lookTheme ?? null) } catch { applyTheme(null) }
+  }, [lookTheme])
+
   useEffect(() => {
     installSpatialNav(() => !!nowPlaying.value)
     Promise.all([reloadItems(), loadProgress()]).then(startSyncBinding).catch(() => {}).then(startShare)
     loadStremio()
+    startPlugins().catch(() => {})
     resumeDownloads().catch(() => {})
     startOffline()
     addEventListener('flick:db-stale', () => notify('Flick was updated in another tab. Reload this tab to keep going.', 15000))
@@ -116,6 +139,15 @@ export function App() {
             <Icon name={n.icon} size={20} /><span>{n.label}</span>
           </a>
         ))}
+        {sources.value.map((p) => {
+          const path = `/p/${encodeURIComponent(p.id)}`
+          const on = route.value.split('?')[0] === path || route.value.startsWith(path + '/')
+          return (
+            <a href={`#${path}`} class={`nav-item ${on ? 'on' : ''}`} aria-current={on ? 'page' : undefined} onClick={(e) => { e.preventDefault(); go(path) }}>
+              <PluginIcon rec={p} size={20} /><span>{p.manifest.name}</span>
+            </a>
+          )
+        })}
       </nav>
       <main class="main" id="main">
         <View />
