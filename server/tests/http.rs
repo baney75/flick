@@ -269,3 +269,43 @@ fn many_requests_at_once_are_all_answered_by_the_worker_pool() {
     assert!(clients.into_iter().all(|c| c.join().unwrap() == 200));
     h.stop();
 }
+
+#[test]
+fn stop_returns_while_a_client_holds_a_large_stream_open() {
+    let (h, _, _, base) = setup("stop");
+    // A 256 MB file (sparse, so it costs no disk) that a client starts and then stops reading.
+    let big = base.join("Movies/big.mp4");
+    fs::File::create(&big).unwrap().set_len(256 << 20).unwrap();
+    let auth = format!("Authorization: Bearer {}\r\n", h.token());
+    assert_eq!(
+        send(h.port(), "GET", "/api/library?rescan=1", &auth).status,
+        200
+    );
+    let id = flick_server::index::item_id("Movies", "big.mp4");
+    let mut s = TcpStream::connect(("127.0.0.1", h.port())).unwrap();
+    write!(s, "GET /media/{id} HTTP/1.1\r\nHost: x\r\n{auth}\r\n").unwrap();
+    let mut first = [0u8; 4096];
+    s.read_exact(&mut first).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        h.stop();
+        tx.send(()).unwrap();
+    });
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok(),
+        "stop() hung on a stalled stream"
+    );
+    drop(s);
+}
+
+#[test]
+fn same_file_tells_files_apart() {
+    let dir = std::env::temp_dir().join(format!("flick-server-same-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("a"), b"a").unwrap();
+    fs::write(dir.join("b"), b"bb").unwrap();
+    let a = fs::File::open(dir.join("a")).unwrap();
+    assert!(flick_server::same_file(&a, &dir.join("a")));
+    assert!(!flick_server::same_file(&a, &dir.join("b")));
+    let _ = fs::remove_dir_all(dir);
+}
