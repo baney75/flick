@@ -18,6 +18,7 @@ import { kindOf } from './lib/parse'
 import { installSpatialNav } from './lib/spatial'
 import { resumeDownloads } from './lib/downloads'
 import { startOffline } from './lib/offline'
+import { startShare } from './lib/share'
 
 const NAV = [
   { path: '/', label: 'Home', icon: 'home' },
@@ -55,7 +56,7 @@ export function App() {
 
   useEffect(() => {
     installSpatialNav(() => !!nowPlaying.value)
-    Promise.all([reloadItems(), loadProgress()]).then(startSyncBinding).catch(() => {})
+    Promise.all([reloadItems(), loadProgress()]).then(startSyncBinding).catch(() => {}).then(startShare)
     loadStremio()
     resumeDownloads().catch(() => {})
     startOffline()

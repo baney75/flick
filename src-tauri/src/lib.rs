@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
+mod share;
+
 const VIDEO: &[&str] = &[
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "ts", "m2ts", "mts", "mpg", "mpeg",
     "ogv", "3gp",
@@ -1286,6 +1288,7 @@ pub fn run() {
         .manage(Opened::default())
         .manage(KodiProxy::default())
         .manage(Downloads::default())
+        .manage(share::Share::default())
         .register_asynchronous_uri_scheme_protocol("kodi", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
             tauri::async_runtime::spawn_blocking(move || responder.respond(kodi_proxy(&app, &req)));
@@ -1307,7 +1310,11 @@ pub fn run() {
             download_remove,
             download_exists,
             downloads_space,
-            make_default_player
+            make_default_player,
+            share::share_start,
+            share::share_stop,
+            share::share_status,
+            share::share_new_code
         ])
         .setup(|app| {
             // Files passed on the command line: `Flick movie.mkv`.
@@ -1332,6 +1339,9 @@ pub fn run() {
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect();
             queue_open(handle, paths);
+        }
+        if let tauri::RunEvent::Exit = &event {
+            share::stop_all(handle);
         }
         let _ = (handle, event);
     });
