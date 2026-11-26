@@ -19,6 +19,15 @@ describe('release audio languages', () => {
     ['Movie Dual Audio 1080p', ['multi']],
     ['Movie 1080p', []],
     ['Greta Gerwig film', []],
+    ['Movie.2020.1080p.DUAL.5.1', ['multi']],
+    ['Movie.2020.1080p.CHINESE.WEB-DL', ['zh']],
+    ['Movie 2020 VFQ 1080p', ['fr']],
+    ['Movie 2020 Castellano', ['es']],
+    ['The.Italian.Job.2003.1080p.BluRay.x264', []],
+    ['The.French.Dispatch.2021.2160p.WEB-DL', []],
+    ['Russian.Doll.S01E01.1080p', []],
+    ['The.Italian.Job.2003.1080p.ITA.ENG', ['it', 'en']],
+    ['Movie.2020.1080p\n👤 5 💾 2 GB\nMulti Audio / 🇫🇷', ['multi', 'fr']],
   ])('%s reads %j', (text, audio) => expect(parseRelease(text).audio.sort()).toEqual([...audio].sort()))
 
   it('reads VOSTFR as French subtitles, not French audio', () => {
@@ -28,9 +37,18 @@ describe('release audio languages', () => {
     expect(parseRelease('Movie SUBFRENCH 720p')).toMatchObject({ audio: [], subs: ['fr'] })
   })
 
+  it.each([
+    ['Movie.KOREAN.1080p.ENG.SUB', ['ko'], ['en']],
+    ['Anime.S01.1080p.MULTi-SUBS', [], []],
+    ['Movie 2020 English Subtitles', [], ['en']],
+    ['Movie 2020 ITA SUB ENG', ['it'], ['en']],
+    ['Movie 2020 JAP Subs: English', ['ja'], ['en']],
+  ])('%s: audio %j, subtitles %j', (text, audio, subs) =>
+    expect(parseRelease(text)).toMatchObject({ audio, subs }))
+
   it('normalizes language tags', () => {
-    expect(['en-US', 'en-GB', 'eng', 'English', 'fra', 'pt_BR', 'und', '', 'xyz'].map(langCode))
-      .toEqual(['en', 'en', 'en', 'en', 'fr', 'pt', null, null, null])
+    expect(['en-US', 'en-GB', 'eng', 'English', 'fra', 'pt_BR', 'und', '', 'xyz', 'English (SDH)', 'eng.forced', 'iw', 'in'].map(langCode))
+      .toEqual(['en', 'en', 'en', 'en', 'fr', 'pt', null, null, null, 'en', 'en', 'he', 'id'])
   })
 })
 
@@ -43,7 +61,8 @@ describe('release details', () => {
   it.each([
     ['Movie 1080p HDCAM', true], ['Movie CAM 720p', true], ['Movie.TS.XviD', true], ['Movie HDTS', true],
     ['Movie TELESYNC', true], ['Movie TC', true], ['Movie Telecine', true], ['Movie SCR', true],
-    ['Movie Screener', true], ['Movie 720p WEB-DL', false], ['Cam 2018 1080p WEB', false], ['clip.ts', false], ['Scream 1996', false],
+    ['Movie Screener', true], ['Movie.2024.CAMRip.x264', true], ['Movie.2024.HDCAMRip', true],
+    ['Movie.2024.DVDSCR', true], ['Movie.HDTC.720p', true], ['Movie.TSRip', true], ['Movie.PreDVDRip', true], ['Movie 720p WEB-DL', false], ['Cam 2018 1080p WEB', false], ['clip.ts', false], ['Scream 1996', false],
   ])('%s bad source %s', (text, bad) => expect(parseRelease(text).bad).toBe(bad))
 
   it('reads seeders', () => {
@@ -57,6 +76,9 @@ describe('release details', () => {
     expect(bytesOf('💾 4.0 GB')).toBe(4e9)
     expect(bytesOf('700MB')).toBe(7e8)
     expect(bytesOf('1,5 GiB')).toBe(1.5 * 2 ** 30)
+    expect(bytesOf('1,234 MB')).toBe(1.234e9)
+    expect(bytesOf('1,024.5 MB')).toBe(1.0245e9)
+    expect(bytesOf('💾 1.2 TB')).toBe(1.2e12)
     expect(bytesOf('1080p')).toBeUndefined()
   })
 
