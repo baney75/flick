@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks'
+import { useEffect, useState } from 'preact/hooks'
 import { items, continueList, playItem, go, stremio, shows, type Progress, openStremioRef } from '../lib/store'
 import { Card, ItemCard, Row, useThumb } from '../components/Card'
 import { Icon } from '../components/icons'
@@ -7,6 +7,8 @@ import { continueWatching } from '../lib/stremio'
 import { isDesktop } from '../lib/platform'
 import { online } from '../lib/offline'
 import { downloads } from '../lib/downloads'
+import { sources, searchAll, openPluginRef, libraries, loadLibrary, continueOf, type Found } from '../lib/plugins/use'
+import { MetaCard, PluginIcon } from './Plugin'
 
 function ResumeCard({ k, p }: { k: string; p: Progress }) {
   const ref = p.ref
@@ -15,6 +17,7 @@ function ResumeCard({ k, p }: { k: string; p: Progress }) {
   const click = () => {
     if (p.ref.t === 'item') { if (it) playItem(it) }
     else if (p.ref.t === 'stremio') openStremioRef(p.ref)
+    else if (p.ref.t === 'plugin') openPluginRef(p.ref)
     else if (p.ref.t === 'url' && p.ref.url) {
       if (p.ref.url.startsWith('/')) playPaths([p.ref.url])
       else openUrl(p.ref.url)
@@ -32,7 +35,10 @@ export function Home() {
   const st = stremio.value
   const stCont = continueWatching(st.library).slice(0, 20)
   const showList = [...shows.value.values()].slice(0, 20)
-  const empty = !all.length && !cont.length && !stCont.length
+  const srcs = sources.value
+  const plCont = srcs.map((rec) => ({ rec, list: continueOf(libraries.value[rec.id] ?? []).slice(0, 20) })).filter((x) => x.list.length)
+  const empty = !all.length && !cont.length && !stCont.length && !plCont.length
+  useEffect(() => { for (const rec of srcs) loadLibrary(rec) }, [srcs.map((r) => r.id).join()])
 
   const saved = [...downloads.value.values()].filter((d) => d.state === 'done').length
   const toDownloads = () => {
@@ -42,6 +48,7 @@ export function Home() {
 
   return (
     <div class="page">
+      <PluginSearch />
       {!online.value && (
         <div class="offline-note" role="status">
           <Icon name="download" size={16} />
@@ -88,6 +95,11 @@ export function Home() {
               ))}
             </Row>
           )}
+          {plCont.map(({ rec, list }) => (
+            <Row title={`Continue on ${rec.manifest.name}`} action={<a class="link" href={`#/p/${encodeURIComponent(rec.id)}`}>{rec.manifest.name}</a>}>
+              {list.map((m) => <MetaCard rec={rec} m={m} />)}
+            </Row>
+          ))}
           {recent.length > 0 && (
             <Row title="Recently added" action={<a class="link" href="#/library">See all</a>}>
               {recent.map((it) => <ItemCard it={it} onClick={() => playItem(it)} />)}
@@ -113,6 +125,38 @@ export function ShowCard({ eps }: { eps: import('../lib/library').Item[] }) {
   const seasons = new Set(eps.map((e) => e.season ?? 1)).size
   return <Card image={thumb} title={first.show!} sub={`${seasons > 1 ? `${seasons} seasons · ` : ''}${eps.length} episodes`}
     shape="wide" onClick={() => go(`/show/${encodeURIComponent(first.show!.toLowerCase())}`)} />
+}
+
+/** Searches every enabled plugin catalog marked search. Hidden when no plugin can search. */
+function PluginSearch() {
+  const [q, setQ] = useState('')
+  const [found, setFound] = useState<Found[] | null>(null)
+  const [busy, setBusy] = useState(false)
+  if (!sources.value.some((r) => r.manifest.catalogs.some((c) => c.search))) return null
+  const run = async (e: Event) => {
+    e.preventDefault()
+    if (!q.trim()) { setFound(null); return }
+    const out: Found[] = []
+    setFound([])
+    setBusy(true)
+    await searchAll(q.trim(), (f) => { out.push(f); setFound([...out]) })
+    setBusy(false)
+  }
+  return (
+    <div class="home-search">
+      <form class="search" onSubmit={run}>
+        <Icon name="search" size={16} />
+        <input value={q} onInput={(e) => { const v = (e.target as HTMLInputElement).value; setQ(v); if (!v) setFound(null) }} placeholder="Search your plugins" aria-label="Search your plugins" />
+      </form>
+      {found && (found.length === 0
+        ? <p class="dim">{busy ? 'Searching' : `No results for "${q}".`}</p>
+        : found.map((f) => (
+          <Row title={`${f.rec.manifest.name} · ${f.catalog.name}`} action={<PluginIcon rec={f.rec} size={16} />}>
+            {f.items.map((m) => <MetaCard rec={f.rec} m={m} />)}
+          </Row>
+        )))}
+    </div>
+  )
 }
 
 function epFromVideoId(v: string) {

@@ -44,4 +44,4 @@ It validates the file with Flick's own code and prints each contrast ratio. Done
 
 Host the file at any `https://` URL with CORS, for example a GitHub gist's **Raw** link without the
 commit hash (`https://gist.githubusercontent.com/<user>/<id>/raw/theme.json`). In Flick: Settings >
-Plugins > Add by URL, then pick it under Theme.
+Plugins > Add by URL, then pick it in Settings > Appearance > Colors.

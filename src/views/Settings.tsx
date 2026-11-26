@@ -7,6 +7,7 @@ import { SharePanel } from './Share'
 import { Icon } from '../components/icons'
 import { downloads, removeDownload } from '../lib/downloads'
 import { currentSetup, encodeSetup, validateSetup, SETUP_BASE } from '../lib/setup'
+import { PluginsPanel, ThemePicker } from './Plugins'
 
 async function shareSetup() {
   const link = SETUP_BASE + encodeSetup(await currentSetup(stremio.value.addons.map((a) => a.transportUrl)))
@@ -73,14 +74,17 @@ export function Settings() {
 
       <section class="panel">
         <h3>Appearance</h3>
-        <label>Theme
+        <label>Mode
           <select value={s.theme} onChange={(e) => setSettings({ theme: (e.target as HTMLSelectElement).value as 'system' })}>
             <option value="system">Match the system</option>
             <option value="dark">Dark</option>
             <option value="light">Light</option>
           </select>
         </label>
+        <ThemePicker />
       </section>
+
+      <PluginsPanel />
 
       {isDesktop && (
         <section class="panel">

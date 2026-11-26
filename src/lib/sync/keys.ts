@@ -2,6 +2,7 @@
 //   p:i:<content key>  watch progress for a library item
 //   p:k:<key>          watch progress for anything else (Stremio, URLs), keyed as on every device
 //   a:<addon url>      a Stremio addon added by URL (true, or null once removed)
+//   x:<plugin url>     an installed plugin or theme: { on, settings } with secret settings left out, or null once removed
 //   v:<server id>      a Plex or Jellyfin server connection
 //   s:settings         player settings
 //
@@ -11,6 +12,8 @@
 
 import type { Item } from '../library'
 import type { Progress } from '../store'
+import { portable, publicSettings, type Installed, type Candidate } from '../plugins/registry'
+import { addedPermissions, type PluginManifest } from '../plugins/validate'
 
 const LOCAL = new Set(['local', 'stored'])
 
@@ -40,6 +43,30 @@ export function localProgressKeys(docKey: string, byContent: Map<string, string[
   if (docKey.startsWith('p:k:')) return [docKey.slice(4)]
   if (docKey.startsWith('p:i:')) return byContent.get(docKey.slice(4)) ?? []
   return []
+}
+
+/** What syncs for each installed plugin: by URL, on or off, non-secret settings. File installs stay local. */
+export function pluginSnapshot(list: Installed[]): Map<string, string> {
+  return new Map(list.flatMap((p) => {
+    const url = p.url ? portable(p.url) : null
+    if (!url) return []
+    const m = p.manifest as Partial<PluginManifest>
+    const v: SyncedPlugin = { on: p.enabled, settings: publicSettings(p), sha256: p.sha256, hosts: m.hosts ?? [], tools: m.tools ?? [] }
+    return [[`x:${url}`, JSON.stringify(v)] as [string, string]]
+  }))
+}
+
+/** A plugin as it syncs: on or off, non-secret settings, and the code and permissions its owner reviewed. */
+export interface SyncedPlugin { on: boolean; settings: Record<string, unknown>; sha256?: string; hosts?: string[]; tools?: string[] }
+
+/**
+ * Whether code fetched for a plugin synced from another device may install with no review here: the same
+ * code that was reviewed there, or new code that asks for no host or tool beyond what was reviewed.
+ */
+export function mayInstallSynced(v: SyncedPlugin, c: Candidate): boolean {
+  if (v.sha256 && c.sha256 === v.sha256) return true
+  if (c.kind !== 'source') return true
+  return addedPermissions({ hosts: v.hosts ?? [], tools: v.tools ?? [] }, c.manifest as PluginManifest).length === 0
 }
 
 export function contentIndex(items: Item[]): Map<string, string[]> {
