@@ -129,7 +129,10 @@ export function VirtualGrid<T>({ list, min = 220, ratio = 9 / 16, extra = 54, re
     return () => ro.disconnect()
   }, [])
 
-  const cols = Math.max(1, Math.floor((w + gap) / (min + gap)))
+  // Phones fit three posters or two wide cards a row, as Streamyfin and Infuse do,
+  // instead of one card the full width of the screen.
+  const fit = w && w < 600 ? Math.min(min, ratio > 1 ? 100 : 150) : min
+  const cols = Math.max(1, Math.floor((w + gap) / (fit + gap)))
   const cardW = w ? (w - gap * (cols - 1)) / cols : min
   const rowH = cardW * ratio + extra + gap
   const rows = Math.ceil(list.length / cols)

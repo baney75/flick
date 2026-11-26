@@ -76,7 +76,8 @@ export function Library() {
     downloads: all.filter((i) => isSaved(dl.get(i.id))).length,
   }
 
-  const posterMode = list.length > 0 && list.filter((i) => i.poster).length > list.length / 2
+  // Books are tall like posters even without a cover, so they share the poster grid.
+  const posterMode = list.length > 0 && (list.every((i) => i.kind === 'book') || list.filter((i) => i.poster).length > list.length / 2)
 
   const remove = async (it: Item) => {
     setMenu(null)
