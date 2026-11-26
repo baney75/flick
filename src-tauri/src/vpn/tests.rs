@@ -6,26 +6,32 @@ use std::collections::HashMap;
 struct Fake {
     routes: HashMap<String, String>,
     addrs: HashMap<String, Vec<IpAddr>>,
-    dns: Option<Vec<String>>,
+    dns: Option<Vec<Dns>>,
     mesh: bool,
     v6: bool,
+    os: &'static str,
+    ready: bool,
+    tun: bool,
 }
 
 impl Probe for Fake {
     fn route(&self, ip: &str) -> Option<String> {
         self.routes.get(ip).cloned()
     }
-    fn dns(&self) -> Option<Vec<String>> {
+    fn dns(&self) -> Option<Vec<Dns>> {
         self.dns.clone()
     }
     fn addrs(&self, iface: &str) -> Vec<IpAddr> {
         self.addrs.get(iface).cloned().unwrap_or_default()
     }
     fn is_tunnel(&self, iface: &str) -> bool {
-        tunnel_name("macos", iface, false)
+        tunnel_name(self.os, iface, self.tun)
     }
-    fn mesh_service(&self, _: &str) -> bool {
-        self.mesh
+    fn mesh_service(&self, iface: &str) -> bool {
+        self.mesh || (self.os == "linux" && linux_mesh_name(iface))
+    }
+    fn ready(&self) -> bool {
+        self.ready
     }
     fn global_v6(&self) -> bool {
         self.v6
@@ -52,9 +58,12 @@ fn vpn() -> Fake {
     let f = Fake {
         routes: HashMap::new(),
         addrs: HashMap::new(),
-        dns: Some(vec!["10.2.0.1".into()]),
+        dns: Some(vec![Dns::routed("10.2.0.1")]),
         mesh: false,
         v6: false,
+        os: "macos",
+        ready: true,
+        tun: false,
     };
     f.route("1.1.1.1", "utun4")
         .route("198.51.100.1", "utun4")
@@ -113,7 +122,7 @@ fn a_split_tunnel_fails() {
 #[test]
 fn dns_outside_the_tunnel_fails() {
     let mut lan = vpn().route("192.168.1.1", "en0");
-    lan.dns = Some(vec!["10.2.0.1".into(), "192.168.1.1".into()]);
+    lan.dns = Some(vec![Dns::routed("10.2.0.1"), Dns::routed("192.168.1.1")]);
     assert_eq!(fails(&lan), Some(Fail::Dns));
     let mut unknown = vpn();
     unknown.dns = None;
@@ -125,6 +134,26 @@ fn dns_outside_the_tunnel_fails() {
     let mut empty = vpn();
     empty.dns = Some(vec![]);
     assert_eq!(fails(&empty), Some(Fail::Dns));
+    // resolved sends a link's servers out of that link: an ISP server bound to eth0 leaks even
+    // though its route says utun4.
+    let mut bound = vpn().route("75.75.75.75", "utun4");
+    let isp = Dns {
+        server: "75.75.75.75".into(),
+        link: Some("eth0".into()),
+    };
+    bound.dns = Some(vec![Dns::routed("10.2.0.1"), isp]);
+    assert_eq!(
+        fails(&bound),
+        Some(Fail::Dns),
+        "a server bound to the LAN link"
+    );
+    let mut tunnel = vpn();
+    let own = Dns {
+        server: "192.168.1.1".into(),
+        link: Some("utun4".into()),
+    };
+    tunnel.dns = Some(vec![own]);
+    assert!(decide(&tunnel).ok, "a server bound to the tunnel");
 }
 
 #[test]
@@ -174,21 +203,117 @@ fn parses_linux_route_and_dns_output() {
     assert_eq!(parse_route_linux(""), None);
     let conf = "# generated\nnameserver 127.0.0.53\noptions edns0\nsearch lan\n";
     assert_eq!(parse_resolv_conf(conf), ["127.0.0.53"]);
-    let stub = vec!["127.0.0.53".to_string()];
-    let up = Some("nameserver 10.64.0.1\n");
+    let stub = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let wg = || {
+        Some(vec![Dns {
+            server: "10.64.0.1".into(),
+            link: Some("wg0".into()),
+        }])
+    };
+    let mut got = linux_dns(stub(&["127.0.0.53"]), wg).unwrap();
+    assert_eq!(got, wg().unwrap());
+    got = linux_dns(stub(&["127.0.0.54", "9.9.9.9"]), wg).unwrap();
+    assert_eq!(got, [Dns::routed("9.9.9.9"), wg().unwrap().remove(0)]);
     assert_eq!(
-        expand_stub(stub.clone(), up),
-        Some(vec!["10.64.0.1".to_string()])
+        linux_dns(stub(&["127.0.0.53"]), || None),
+        None,
+        "resolvectl missing"
     );
-    assert_eq!(expand_stub(stub.clone(), None), None);
-    assert_eq!(expand_stub(stub.clone(), Some("# none\n")), None);
-    assert_eq!(expand_stub(stub, Some("nameserver 127.0.0.1\n")), None);
+    let never = || -> Option<Vec<Dns>> { panic!("not resolved's stub") };
+    assert_eq!(
+        linux_dns(stub(&["127.0.0.1"]), never),
+        None,
+        "dnsmasq on 127.0.0.1"
+    );
+    assert_eq!(
+        linux_dns(stub(&["127.0.1.1"]), never),
+        None,
+        "NetworkManager's dnsmasq"
+    );
+    assert_eq!(
+        linux_dns(stub(&["10.64.0.1"]), never).unwrap(),
+        [Dns::routed("10.64.0.1")]
+    );
+}
+
+// `resolvectl dns`, `domain` and `default-route` with wg-quick up (it sets `~.` on wg0) and the
+// ISP's server on eth0 from DHCP.
+const RESOLVED_DNS: &str = "Global: 1.1.1.1#cloudflare-dns.com\nLink 2 (eth0): 75.75.75.75\nLink 3 (wg0): 10.64.0.1\nLink 4 (docker0):\n";
+const RESOLVED_DOMAINS: &str = "Global:\nLink 2 (eth0): lan\nLink 3 (wg0): ~.\nLink 4 (docker0):\n";
+const RESOLVED_ROUTES: &str = "Link 2 (eth0): yes\nLink 3 (wg0): yes\nLink 4 (docker0): no\n";
+
+#[test]
+fn reads_systemd_resolved_links() {
+    let link = |s: &str, l: &str| Dns {
+        server: s.into(),
+        link: Some(l.into()),
+    };
+    let catch_all = parse_resolved(RESOLVED_DNS, RESOLVED_DOMAINS, RESOLVED_ROUTES);
+    assert_eq!(
+        catch_all,
+        [Dns::routed("1.1.1.1"), link("10.64.0.1", "wg0")]
+    );
+    // No `~.` anywhere: every DefaultRoute link answers, so eth0's server counts and leaks.
+    let no_catch_all = RESOLVED_DOMAINS.replace("~.", "");
+    let open = parse_resolved(RESOLVED_DNS, &no_catch_all, RESOLVED_ROUTES);
+    let eth0 = link("75.75.75.75", "eth0");
+    assert_eq!(
+        open,
+        [
+            Dns::routed("1.1.1.1"),
+            eth0.clone(),
+            link("10.64.0.1", "wg0")
+        ]
+    );
+    let off = RESOLVED_ROUTES.replace("(eth0): yes", "(eth0): no");
+    let only_wg = parse_resolved(RESOLVED_DNS, &no_catch_all, &off);
+    assert!(!only_wg.contains(&eth0), "DefaultRoute off on eth0");
+    assert!(
+        parse_resolved(RESOLVED_DNS, &no_catch_all, "").contains(&eth0),
+        "unknown means on"
+    );
+}
+
+#[test]
+fn a_linux_full_tunnel_passes_and_meshes_fail() {
+    let mut wg = vpn();
+    wg.os = "linux";
+    for to in ["1.1.1.1", "198.51.100.1", "203.0.113.1"] {
+        wg = wg.route(to, "wg0");
+    }
+    let wg = wg.addr("wg0", "10.66.0.2");
+    let mut ok = wg.clone();
+    ok.dns = Some(vec![Dns {
+        server: "10.64.0.1".into(),
+        link: Some("wg0".into()),
+    }]);
+    assert!(decide(&ok).ok, "{:?}", decide(&ok));
+    let mut eth = ok.clone().route("1.1.1.1", "eth0");
+    eth.addrs.insert("eth0".into(), vec![ip("192.168.1.5")]);
+    assert_eq!(fails(&eth), Some(Fail::NoVpn));
+    for mesh in ["tailscale0", "zt5u4y6bc4", "nebula1", "wt0"] {
+        let mut m = ok.clone();
+        for to in ["1.1.1.1", "198.51.100.1", "203.0.113.1"] {
+            m = m.route(to, mesh);
+        }
+        let mut m = m.addr(mesh, "10.147.17.5");
+        m.dns = Some(vec![Dns {
+            server: "10.64.0.1".into(),
+            link: Some(mesh.into()),
+        }]);
+        m.tun = true; // mesh clients' devices are TUN devices
+        assert_eq!(fails(&m), Some(Fail::Mesh), "{mesh}");
+    }
+    let mut no_ip = ok;
+    no_ip.ready = false;
+    assert_eq!(fails(&no_ip), Some(Fail::Unchecked), "iproute2 missing");
 }
 
 #[test]
 fn names_tunnels_per_os() {
     assert!(tunnel_name("macos", "utun4", false) && tunnel_name("macos", "ipsec0", false));
     assert!(!tunnel_name("macos", "en0", false) && !tunnel_name("macos", "utun", false));
+    assert!(!tunnel_name("macos", "utunx", false) && !tunnel_name("linux", "tunx", false));
     assert!(tunnel_name("linux", "wg0-mullvad", false) && tunnel_name("linux", "tun0", false));
     assert!(
         tunnel_name("linux", "proton0", true),

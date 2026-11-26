@@ -52,7 +52,7 @@ pub trait Probe {
     /// The interface the system routes `ip` through.
     fn route(&self, ip: &str) -> Option<String>;
     /// The DNS servers general lookups use; None when a local stub's upstreams are unknown.
-    fn dns(&self) -> Option<Vec<String>>;
+    fn dns(&self) -> Option<Vec<Dns>>;
     /// Addresses of an interface that is up; empty when it is down or missing.
     fn addrs(&self, iface: &str) -> Vec<IpAddr>;
     fn is_tunnel(&self, iface: &str) -> bool;
@@ -60,6 +60,25 @@ pub trait Probe {
     fn mesh_service(&self, iface: &str) -> bool;
     /// Some interface has a global IPv6 address (2000::/3).
     fn global_v6(&self) -> bool;
+    /// The system tools the checks read are present.
+    fn ready(&self) -> bool {
+        true
+    }
+}
+
+/// A DNS server general lookups use. A link-bound server (systemd-resolved's per-link DNS) is
+/// queried out of that link whatever the routes say.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dns {
+    pub server: String,
+    pub link: Option<String>,
+}
+
+impl Dns {
+    pub fn routed(server: &str) -> Self {
+        let (server, link) = (server.to_string(), None);
+        Dns { server, link }
+    }
 }
 
 /// Tailscale's ranges: 100.64.0.0/10 (shared with other CGNAT meshes) and fd7a:115c:a1e0::/48.
@@ -72,6 +91,9 @@ pub fn is_mesh_addr(ip: IpAddr) -> bool {
 
 /// The default route's tunnel when the route checks pass (rule 25 a to c).
 pub fn route_check(p: &dyn Probe) -> Result<String, Fail> {
+    if !p.ready() {
+        return Err(Fail::Unchecked);
+    }
     let iface = p.route(PROBE_V4).ok_or(Fail::NoVpn)?;
     let addrs = p.addrs(&iface);
     if !p.is_tunnel(&iface) || addrs.is_empty() {
@@ -91,7 +113,11 @@ pub fn route_check(p: &dyn Probe) -> Result<String, Fail> {
         return Err(Fail::Ipv6Leak);
     }
     let dns = p.dns().unwrap_or_default();
-    if dns.is_empty() || dns.iter().any(|s| p.route(s).as_deref() != Some(&iface)) {
+    let around = |d: &Dns| match &d.link {
+        Some(link) => *link != iface,
+        None => p.route(&d.server).as_deref() != Some(&iface),
+    };
+    if dns.is_empty() || dns.iter().any(around) {
         return Err(Fail::Dns);
     }
     Ok(iface)
@@ -204,23 +230,79 @@ pub fn parse_resolv_conf(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// A local stub resolver (systemd-resolved's 127.0.0.53) counts only through its upstreams.
-/// None when a stub's upstreams are unknown.
-pub fn expand_stub(servers: Vec<String>, upstream_conf: Option<&str>) -> Option<Vec<String>> {
-    let loopback = |s: &str| s.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
-    let mut out = vec![];
-    for s in servers {
-        if !loopback(&s) {
-            out.push(s);
-            continue;
-        }
-        let up = parse_resolv_conf(upstream_conf?);
-        if up.is_empty() || up.iter().any(|u| loopback(u)) {
-            return None;
-        }
-        out.extend(up);
+/// Linux DNS from resolv.conf's servers. systemd-resolved's stub (127.0.0.53 or 127.0.0.54)
+/// counts through `resolved`, read only when the stub is listed; any other local stub (dnsmasq,
+/// unbound) has unknown upstreams, so the answer is None.
+pub fn linux_dns(
+    servers: Vec<String>,
+    resolved: impl FnOnce() -> Option<Vec<Dns>>,
+) -> Option<Vec<Dns>> {
+    let stub = |s: &String| s == "127.0.0.53" || s == "127.0.0.54";
+    let local = |s: &String| s.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
+    if servers.iter().any(|s| local(s) && !stub(s)) {
+        return None;
+    }
+    let mut out: Vec<Dns> = servers
+        .iter()
+        .filter(|s| !stub(s))
+        .map(|s| Dns::routed(s))
+        .collect();
+    if servers.iter().any(stub) {
+        out.extend(resolved()?);
     }
     Some(out)
+}
+
+/// One `resolvectl` listing: (None for Global or the link's name, its values).
+fn scopes(out: &str) -> Vec<(Option<String>, Vec<String>)> {
+    out.lines()
+        .filter_map(|l| {
+            let (head, vals) = l.trim().split_once(':')?;
+            let link = match head.strip_prefix("Link ") {
+                Some(rest) => Some(rest.split_once('(')?.1.strip_suffix(')')?.to_string()),
+                None if head == "Global" => None,
+                None => return None,
+            };
+            Some((link, vals.split_whitespace().map(String::from).collect()))
+        })
+        .collect()
+}
+
+/// The servers systemd-resolved sends general lookups to, from `resolvectl dns`, `domain` and
+/// `default-route`. A query goes to the links with the catch-all routing domain `~.` when any has
+/// one, else to every link with DefaultRoute on. Global servers always count (strict), checked by
+/// route; a link's servers are checked by their link.
+pub fn parse_resolved(dns: &str, domains: &str, default_route: &str) -> Vec<Dns> {
+    let (doms, routes) = (scopes(domains), scopes(default_route));
+    let has = |set: &[(Option<String>, Vec<String>)], link: &Option<String>, v: &str| {
+        set.iter()
+            .any(|(l, vs)| l == link && vs.iter().any(|x| x == v))
+    };
+    let catch_all = doms.iter().any(|(_, vs)| vs.iter().any(|x| x == "~."));
+    let general = |link: &Option<String>| match catch_all {
+        _ if link.is_none() => true,
+        true => has(&doms, link, "~."),
+        false => !has(&routes, link, "no"),
+    };
+    let server = |v: &String| v.split('#').next().unwrap_or("").to_string();
+    scopes(dns)
+        .into_iter()
+        .filter(|(link, _)| general(link))
+        .flat_map(|(link, vs)| {
+            let server = &server;
+            vs.into_iter().map(move |v| Dns {
+                server: server(&v),
+                link: link.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Linux mesh VPNs by interface name: Tailscale, ZeroTier, Nebula, NetBird.
+pub fn linux_mesh_name(iface: &str) -> bool {
+    ["tailscale", "zt", "nebula", "wt"]
+        .iter()
+        .any(|p| iface.starts_with(p))
 }
 
 /// Service ids of connected Tailscale services in `scutil --nc list`.
@@ -268,8 +350,22 @@ fn run(bin: &str, args: &[&str], stdin: Option<&str>) -> Option<String> {
 }
 
 fn ip_bin() -> Option<&'static str> {
-    let bins = ["/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip", "/bin/ip"];
+    let nixos = "/run/current-system/sw/bin/ip";
+    let bins = ["/usr/sbin/ip", "/sbin/ip", "/usr/bin/ip", "/bin/ip", nixos];
     bins.into_iter().find(|p| Path::new(p).is_file())
+}
+
+fn resolvectl() -> Option<Vec<Dns>> {
+    let bins = [
+        "/usr/bin/resolvectl",
+        "/bin/resolvectl",
+        "/run/current-system/sw/bin/resolvectl",
+    ];
+    let bin = bins.into_iter().find(|p| Path::new(p).is_file())?;
+    let dns = run(bin, &["dns"], None)?;
+    let domains = run(bin, &["domain"], None).unwrap_or_default();
+    let routes = run(bin, &["default-route"], None).unwrap_or_default();
+    Some(parse_resolved(&dns, &domains, &routes))
 }
 
 /// The real system: macOS route and scutil; Linux ip and resolv.conf.
@@ -290,14 +386,18 @@ impl Probe for System {
             parse_route_linux(&run(ip_bin()?, &[fam, "route", "get", ip], None)?)
         }
     }
-    fn dns(&self) -> Option<Vec<String>> {
+    fn dns(&self) -> Option<Vec<Dns>> {
         if cfg!(target_os = "macos") {
             let out = run("/usr/sbin/scutil", &["--dns"], None)?;
-            return Some(parse_scutil_dns(&out));
+            return Some(
+                parse_scutil_dns(&out)
+                    .iter()
+                    .map(|s| Dns::routed(s))
+                    .collect(),
+            );
         }
         let conf = std::fs::read_to_string("/etc/resolv.conf").ok()?;
-        let stub = std::fs::read_to_string("/run/systemd/resolve/resolv.conf").ok();
-        expand_stub(parse_resolv_conf(&conf), stub.as_deref())
+        linux_dns(parse_resolv_conf(&conf), resolvectl)
     }
     fn addrs(&self, iface: &str) -> Vec<IpAddr> {
         let all = if_addrs::get_if_addrs().unwrap_or_default();
@@ -314,7 +414,7 @@ impl Probe for System {
     }
     fn mesh_service(&self, iface: &str) -> bool {
         if !cfg!(target_os = "macos") {
-            return iface.starts_with("tailscale");
+            return linux_mesh_name(iface);
         }
         let list = run("/usr/sbin/scutil", &["--nc", "list"], None).unwrap_or_default();
         parse_mesh_services(&list).iter().any(|id| {
@@ -327,6 +427,9 @@ impl Probe for System {
         let all = if_addrs::get_if_addrs().unwrap_or_default();
         all.iter()
             .any(|i| matches!(i.ip(), IpAddr::V6(a) if a.segments()[0] & 0xe000 == 0x2000))
+    }
+    fn ready(&self) -> bool {
+        cfg!(target_os = "macos") || ip_bin().is_some()
     }
 }
 
