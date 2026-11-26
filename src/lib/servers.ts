@@ -1,14 +1,14 @@
-// Media servers: Jellyfin (and Emby, same API), Plex and Kodi. Items come back as library Items.
+// Media servers: Jellyfin (and Emby, same API), Plex, Kodi and flick-server. Items come back as library Items.
 
 import type { Item, Source } from './library'
-import { hash, prepared, thumbUrl, KODI_IMG } from './library'
+import { hash, named, prepared, thumbUrl, KODI_IMG } from './library'
 import * as db from './db'
 import { announce } from './sync/bus'
-import { invoke, fileUrl, protocolUrl, isMobileApp, isApple } from './platform'
+import { invoke, fileUrl, protocolUrl, isDesktop, isMobileApp, isApple } from './platform'
 
 export interface Server {
   id: string
-  type: 'jellyfin' | 'plex' | 'kodi'
+  type: 'jellyfin' | 'plex' | 'kodi' | 'flick'
   name: string
   url: string
   token: string
@@ -330,6 +330,74 @@ export async function kodiItems(s: Server): Promise<Item[]> {
   return kodiMap(s, { movies, episodes, songs })
 }
 
+// ---------------- flick-server ----------------
+// A small media server on a NAS or computer. API: GET /api/info, /api/library and /media/<id>, with an access code.
+
+export const FLICK_UNREACHABLE = "Flick can't reach that address. Check the address, and that Tailscale or the tunnel is on."
+
+export interface FlickInfo { app: string; v: number; name: string; version?: string }
+export interface FlickEntry { id: string; folder: string; path: string; name: string; kind: Item['kind']; ext: string; size: number; mtime: number }
+export interface FlickLibrary { name: string; folders: string[]; items: FlickEntry[] }
+
+function flickUrl(u: string) {
+  u = u.trim().replace(/\/+$/, '')
+  return /^https?:\/\//i.test(u) ? u : 'https://' + u
+}
+
+/** The server's info, or null when nothing at that address is a flick-server. */
+export async function flickInfo(url: string, signal?: AbortSignal): Promise<FlickInfo | null> {
+  const r = await fetch(`${url}/api/info`, { signal })
+  const j = (await r.json().catch(() => null)) as FlickInfo | null
+  return j?.app === 'flick-server' ? j : null
+}
+
+// Hosts where the page never comes from a flick-server: the public site and the ports dev and tests use.
+const NOT_FLICK_HOST = /(^|\.)flick-player\.pages\.dev$/
+const DEV_PORTS = ['4173', '4178', '4179', '5173']
+
+/** The flick-server this page was loaded from, if any. Skipped on the public site, in dev and in the apps. */
+export async function sameOriginFlick(): Promise<FlickInfo | null> {
+  if (isDesktop || typeof location === 'undefined' || !/^https?:$/.test(location.protocol)) return null
+  if (NOT_FLICK_HOST.test(location.hostname) || (/^(localhost|127\.0\.0\.1)$/.test(location.hostname) && DEV_PORTS.includes(location.port))) return null
+  return flickInfo(location.origin, AbortSignal.timeout(3000)).catch(() => null)
+}
+
+export async function flickConnect(url: string, code: string): Promise<Server> {
+  url = flickUrl(url)
+  code = code.trim()
+  const info = await flickInfo(url).catch((e: Error) => { throw new Error(FLICK_UNREACHABLE, { cause: e }) })
+  if (!info) throw new Error('That address answered, but it is not a Flick server.')
+  const r = await fetch(`${url}/api/library`, { headers: { Authorization: `Bearer ${code}` } }).catch(() => null)
+  if (!r) throw new Error(FLICK_UNREACHABLE)
+  if (r.status === 401 || r.status === 403) throw new Error('That access code is wrong. Copy it again from flick-server.')
+  if (!r.ok) throw new Error(`${info.name || 'The Flick server'} said ${r.status}`)
+  return { id: hash(url), type: 'flick', name: info.name || 'Flick server', url, token: code }
+}
+
+/** Maps a flick-server library to Items, titled from file names like local files. Pure, for tests. */
+export function flickMap(s: Server, lib: FlickLibrary): Item[] {
+  return lib.items.filter((x) => x.kind === 'video' || x.kind === 'audio' || x.kind === 'book').map((x) => ({
+    id: hash(`${s.id}:${x.id}`),
+    kind: x.kind,
+    ...named(x.name, x.kind),
+    src: { t: 'url', url: `${s.url}/media/${x.id}?t=${encodeURIComponent(s.token)}` },
+    origin: 'flick',
+    server: s.id,
+    folder: `${s.name}: ${x.folder}`,
+    size: x.size,
+    mtime: x.mtime,
+    addedAt: x.mtime || Date.now(),
+  }))
+}
+
+export async function flickItems(s: Server): Promise<Item[]> {
+  const r = await fetch(`${s.url}/api/library`, { headers: { Authorization: `Bearer ${s.token}` } }).catch(() => null)
+  if (!r) throw new Error(FLICK_UNREACHABLE)
+  if (r.status === 401) throw new Error('The access code no longer works. Remove this server and connect it again with the new code.')
+  if (!r.ok) throw new Error(`${s.name} said ${r.status}`)
+  return flickMap(s, await r.json())
+}
+
 const kodiServer = async (id?: string) => (await getServers()).find((x) => x.id === id)
 
 /** The login for a Kodi server, for shell calls that send it as a header. */
@@ -370,17 +438,22 @@ export async function kodiResolve(src: Extract<Source, { t: 'kodi' }>, onStatus?
 export async function kodiConvert(src: Extract<Source, { t: 'kodi' }>, onStatus?: (s: string) => void): Promise<string> {
   if (isMobileApp) throw new Error(KODI_DESKTOP_ONLY)
   const s = await kodiServer(src.server)
-  const ff = await invoke<{ ffmpeg: string | null }>('ffmpeg_status').catch(() => ({ ffmpeg: null }))
-  if (!ff.ffmpeg) throw new Error(kodiNeedsFfmpeg())
   const [user, pass] = s ? kodiLogin(s) : ['', '']
-  return fileUrl(await prepared(src.url, onStatus, user, pass))
+  return convertUrl(src.url, onStatus, user, pass, 'Kodi')
+}
+
+/** A local MP4 of a media URL (a flick-server MKV, say), converted with ffmpeg on a computer. */
+export async function convertUrl(url: string, onStatus?: (s: string) => void, user = '', pass = '', from = 'a server'): Promise<string> {
+  const ff = await invoke<{ ffmpeg: string | null }>('ffmpeg_status').catch(() => ({ ffmpeg: null }))
+  if (!ff.ffmpeg) throw new Error(kodiNeedsFfmpeg(from))
+  return fileUrl(await prepared(url, onStatus, user, pass))
 }
 
 export const KODI_DESKTOP_ONLY = 'This format needs the desktop app (Mac, Windows or Linux). Phones and TVs play MP4, M4V, MOV, WebM and common audio from Kodi.'
 
 /** Why a Kodi file cannot play on a computer without ffmpeg, in words the person can act on. */
-export function kodiNeedsFfmpeg(): string {
-  return 'This file needs a quick convert, which uses ffmpeg. Install ffmpeg (brew install ffmpeg on a Mac) to play MKV and AVI files from Kodi.'
+export function kodiNeedsFfmpeg(from = 'Kodi'): string {
+  return `This file needs a quick convert, which uses ffmpeg. Install ffmpeg (brew install ffmpeg on a Mac) to play MKV and AVI files from ${from}.`
 }
 
 /** Fetches a password-protected Kodi poster once, then serves it from the thumbs store. */
@@ -399,7 +472,7 @@ export async function kodiPoster(it: Item): Promise<string | null> {
 }
 
 export async function syncServer(s: Server): Promise<number> {
-  const items = s.type === 'jellyfin' ? await jellyfinItems(s) : s.type === 'kodi' ? await kodiItems(s) : await plexItems(s)
+  const items = s.type === 'jellyfin' ? await jellyfinItems(s) : s.type === 'kodi' ? await kodiItems(s) : s.type === 'flick' ? await flickItems(s) : await plexItems(s)
   const existing = await db.all<Item>('items')
   const keep = new Set(items.map((i) => i.id))
   await db.delMany('items', existing.filter((i) => i.server === s.id && !keep.has(i.id)).map((i) => i.id))

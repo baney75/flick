@@ -3,7 +3,7 @@
 
 import { settings, setSettings, stremioExtra, saveStremio, loadStremio, reloadItems, type Settings } from './store'
 import { CINEMETA, OPENSUBS, fetchManifest, normalizeAddonUrl } from './stremio'
-import { getServers, saveServer, syncServer, plexManual, type Server } from './servers'
+import { getServers, saveServer, syncServer, plexManual, flickConnect, type Server } from './servers'
 import { isDesktop } from './platform'
 import { addFolderPath } from './actions'
 
@@ -12,7 +12,7 @@ const MAX_ADDONS = 50
 const MAX_SERVERS = 20
 const MAX_FOLDERS = 50
 
-export interface SetupServer { type: 'jellyfin' | 'plex'; name?: string; url: string; token: string; userId?: string }
+export interface SetupServer { type: 'jellyfin' | 'plex' | 'flick'; name?: string; url: string; token: string; userId?: string }
 export interface Setup { v: 1; stremioAddons?: string[]; servers?: SetupServer[]; folders?: string[]; settings?: Partial<Settings> }
 export interface SetupResult { label: string; ok: boolean; detail?: string }
 
@@ -78,11 +78,12 @@ export function validateSetup(obj: unknown): Setup {
     out.servers = obj.servers.map((s: unknown) => {
       if (!isObj(s)) throw new Error('Each server must be an object.')
       if ('password' in s || 'pw' in s) throw new Error('Setups never carry passwords. Use a server token instead.')
-      if (s.type !== 'jellyfin' && s.type !== 'plex') throw new Error('Server type must be "jellyfin" or "plex".')
+      if (s.type !== 'jellyfin' && s.type !== 'plex' && s.type !== 'flick') throw new Error('Server type must be "jellyfin", "plex" or "flick".')
       const url = str(s.url)?.replace(/\/+$/, '')
       if (!url || !isHttp(url)) throw new Error(`Server address must start with http or https: ${String(s.url)}`)
       const token = str(s.token)
       if (!token) throw new Error(`The server at ${url} needs a token.`)
+      if (s.type === 'flick' && !/^[A-Za-z0-9_-]{16,128}$/.test(token)) throw new Error(`The Flick server at ${url} has a damaged access code.`)
       const userId = str(s.userId)
       if (s.type === 'jellyfin' && !userId) throw new Error(`The Jellyfin server at ${url} needs a userId.`)
       const srv: SetupServer = { type: s.type, url, token }
@@ -123,6 +124,7 @@ export function describeSettings(s: Partial<Settings>): string {
 
 async function toServer(s: SetupServer): Promise<Server> {
   if (s.type === 'plex') return { ...(await plexManual(s.url, s.token)), name: s.name ?? 'Plex' }
+  if (s.type === 'flick') return flickConnect(s.url, s.token)
   const info = await fetch(`${s.url}/System/Info/Public`).then((r) => r.json()).catch(() => null)
   if (!info?.Id) throw new Error('No Jellyfin or Emby server answered at that address.')
   return { id: `jf-${info.Id}`, type: 'jellyfin', name: s.name ?? info.ServerName ?? 'Jellyfin', url: s.url, token: s.token, userId: s.userId }
@@ -148,7 +150,7 @@ export async function applySetup(p: Setup): Promise<SetupResult[]> {
     await loadStremio()
   }
   for (const s of p.servers ?? []) {
-    const label = `${s.type === 'plex' ? 'Plex' : 'Jellyfin'} server at ${s.url}`
+    const label = `${s.type === 'plex' ? 'Plex' : s.type === 'flick' ? 'Flick' : 'Jellyfin'} server at ${s.url}`
     try {
       const srv = await toServer(s)
       await saveServer(srv)

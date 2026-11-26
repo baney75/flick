@@ -19,7 +19,7 @@ export type Source =
 /** Poster marker for a Kodi that has a password: Card fetches it through the desktop shell. */
 export const KODI_IMG = 'kodi-img:'
 
-export type Origin = 'local' | 'stored' | 'jellyfin' | 'plex' | 'kodi'
+export type Origin = 'local' | 'stored' | 'jellyfin' | 'plex' | 'kodi' | 'flick'
 
 export interface Item {
   id: string
@@ -75,7 +75,7 @@ export function itemFromFile(file: File, src: Source, origin: Origin, folder?: s
 }
 
 /** Title fields for a file: release-name parsing for media, "Author - Title" for books. */
-function named(name: string, kind: Kind): Pick<Item, 'title' | 'show' | 'season' | 'episode' | 'year' | 'author'> {
+export function named(name: string, kind: Kind): Pick<Item, 'title' | 'show' | 'season' | 'episode' | 'year' | 'author'> {
   if (kind === 'book') return parseBook(name)
   const p = parseName(name)
   return { title: p.title, show: p.show, season: p.season, episode: p.episode, year: p.year }

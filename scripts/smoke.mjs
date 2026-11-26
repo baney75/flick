@@ -2,7 +2,8 @@
 // subtitles, saved progress and the Stremio pages. Screenshots land in test-media/shots.
 import { chromium } from 'playwright'
 import { spawn, execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 
 const PORT = 4178
 // SMOKE_BASE=https://flick-player.pages.dev checks a deployed site instead of a local build.
@@ -38,6 +39,40 @@ function writePdf(path, pages = 3) {
 }
 const book = 'test-media/Jane Doe - Test Book (2020).pdf'
 writePdf(book)
+
+// A mock flick-server (see the flick-server API): info, library, media with Range, CORS and an access code.
+const FLICK_CODE = 'smoke_code_0123456789abcdefghijklmnopqrstuvwx'
+const flickFiles = {
+  a1: { folder: 'Movies', name: 'Server.Movie.2024.webm', kind: 'video', ext: 'webm', type: 'video/webm', body: readFileSync(media) },
+  b2: { folder: 'Books', name: 'John Roe - Server Book (2021).pdf', kind: 'book', ext: 'pdf', type: 'application/pdf', body: readFileSync(book) },
+}
+const flick = createServer((req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Range')
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS')
+  if (req.method === 'OPTIONS') return res.writeHead(204).end()
+  const u = new URL(req.url, 'http://x')
+  const json = (code, o) => res.writeHead(code, { 'content-type': 'application/json' }).end(JSON.stringify(o))
+  if (u.pathname === '/api/info') return json(200, { app: 'flick-server', v: 1, name: 'Smoke NAS', version: '0.0.0' })
+  if (req.headers.authorization !== `Bearer ${FLICK_CODE}` && u.searchParams.get('t') !== FLICK_CODE) return json(401, { error: 'wrong code' })
+  if (u.pathname === '/api/library') {
+    return json(200, { name: 'Smoke NAS', folders: ['Movies', 'Books'], items: Object.entries(flickFiles).map(([id, f]) => ({ id, folder: f.folder, path: f.name, name: f.name, kind: f.kind, ext: f.ext, size: f.body.length, mtime: 1732550400000 })) })
+  }
+  const f = flickFiles[u.pathname.slice('/media/'.length)]
+  if (!u.pathname.startsWith('/media/') || !f) return json(404, { error: 'not found' })
+  const total = f.body.length
+  const m = /^bytes=(\d*)-(\d*)/.exec(req.headers.range ?? '')
+  let [a, b] = [0, total - 1]
+  if (m) {
+    if (m[1]) { a = +m[1]; if (m[2]) b = Math.min(+m[2], total - 1) } else a = Math.max(0, total - +m[2])
+    if (a >= total || a > b) return res.writeHead(416, { 'Content-Range': `bytes */${total}` }).end()
+  }
+  res.writeHead(m ? 206 : 200, { 'Content-Type': f.type, 'Accept-Ranges': 'bytes', 'Content-Length': b - a + 1, ...(m ? { 'Content-Range': `bytes ${a}-${b}/${total}` } : {}) })
+  res.end(req.method === 'HEAD' ? undefined : f.body.subarray(a, b + 1))
+})
+await new Promise((r) => flick.listen(0, '127.0.0.1', r))
+const FLICK_URL = `http://127.0.0.1:${flick.address().port}`
 
 const server = process.env.SMOKE_BASE ? null : spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' })
 const fails = []
@@ -148,6 +183,40 @@ try {
   await fresh.screenshot({ path: 'test-media/shots/reader.png' })
   await fresh.close()
 
+  // A Flick server: connect through the form, see its items, play the video, read the book.
+  await page.goto(`${BASE}/#/servers`)
+  const flickForm = page.locator('form', { hasText: 'Flick server (NAS)' })
+  await flickForm.getByLabel('Address').fill(FLICK_URL)
+  await flickForm.getByLabel('Access code').fill('not-the-right-code-at-all')
+  await flickForm.getByRole('button', { name: 'Connect' }).click()
+  check(await flickForm.getByText('access code is wrong').waitFor({ timeout: 5000 }).then(() => true, () => false), 'Flick server form says when the code is wrong')
+  await flickForm.getByLabel('Access code').fill(FLICK_CODE)
+  await flickForm.getByRole('button', { name: 'Connect' }).click()
+  check(await page.getByText('Smoke NAS: 2 items in your library.').waitFor({ timeout: 8000 }).then(() => true, () => false), 'Flick server connects through the Servers form')
+  await page.goto(`${BASE}/#/library`)
+  await page.getByRole('tab', { name: /Movies/ }).click()
+  await page.getByText('Server Movie').first().waitFor({ timeout: 5000 })
+  check(true, 'Flick server items appear in the Library')
+  await page.getByText('Server Movie').first().click()
+  await page.locator('.player').waitFor()
+  const flickPlays = await page.waitForFunction(() => { const v = document.querySelector('.player video'); return v && v.readyState >= 2 && v.currentTime > 0.5 }, null, { timeout: 8000 }).then(() => true, () => false)
+  check(flickPlays, 'video from a Flick server plays')
+  await page.keyboard.press('Escape')
+  await page.locator('.player').waitFor({ state: 'detached' })
+  await page.getByRole('tab', { name: /Books/ }).click()
+  await page.getByText('Server Book').first().click()
+  check(await page.locator('.reader-stage canvas').waitFor({ timeout: 15000 }).then(() => true, () => false), 'book from a Flick server opens in the reader')
+
+  // The same server again, from a setup link after removing it.
+  await page.goto(`${BASE}/#/servers`)
+  await page.locator('.list-row', { hasText: 'Smoke NAS' }).getByRole('button', { name: 'Remove' }).click()
+  await page.locator('.list-row', { hasText: 'Smoke NAS' }).waitFor({ state: 'detached' })
+  const flickSetup = Buffer.from(JSON.stringify({ v: 1, servers: [{ type: 'flick', name: 'Smoke NAS', url: FLICK_URL, token: FLICK_CODE }] })).toString('base64url')
+  await page.goto(`${BASE}/#/setup?c=${flickSetup}`)
+  await page.getByRole('button', { name: 'Connect all' }).click()
+  await page.getByText('Done').waitFor()
+  check(await page.locator('.list-row', { hasText: `Flick server at ${FLICK_URL}` }).getByText('2 items').isVisible(), 'setup link with a Flick server connects it')
+
   // Phone layout.
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(`${BASE}/#/library`)
@@ -163,6 +232,7 @@ try {
   await browser.close()
 } finally {
   server?.kill()
+  flick.close()
 }
 if (fails.length) { console.error(`\n${fails.length} check(s) failed`); process.exit(1) }
 console.log('\nsmoke: all checks passed')
