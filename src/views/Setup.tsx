@@ -8,7 +8,7 @@ import { Icon } from '../components/icons'
 function preview(p: Payload, names: Record<string, string>): string[] {
   return [
     ...(p.stremioAddons ?? []).map((u) => `Stremio addon: ${names[u] ?? u}`),
-    ...(p.servers ?? []).map((s) => `${s.type === 'plex' ? 'Plex' : 'Jellyfin'} server${s.name ? ` "${s.name}"` : ''} at ${s.url}`),
+    ...(p.servers ?? []).map((s) => `${s.type === 'plex' ? 'Plex' : s.type === 'flick' ? 'Flick' : 'Jellyfin'} server${s.name ? ` "${s.name}"` : ''} at ${s.url}`),
     ...(p.folders ?? []).map((f) => `Folder ${f}${isDesktop ? '' : ' (desktop app only, will be skipped here)'}`),
     ...(p.settings ? [`Settings: ${describeSettings(p.settings)}`] : []),
   ]
