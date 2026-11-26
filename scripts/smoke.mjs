@@ -285,8 +285,9 @@ try {
   check(await epubCard.locator('img').waitFor({ timeout: 8000 }).then(() => true, () => false), 'EPUB cover shows as its poster')
   await epubCard.click()
   const pageNo = page.locator('.reader-page')
-  await pageNo.filter({ hasText: /^Page 1 of [2-9]/ }).waitFor({ timeout: 10000 })
-  check(true, `EPUB opens paged (${await pageNo.innerText()})`)
+  const paged = await pageNo.filter({ hasText: /^Page 1 of ([2-9]|\d\d+)/ }).waitFor({ timeout: 10000 }).then(() => true, () => false)
+  check(paged, `EPUB opens paged (${await pageNo.innerText().catch(() => 'no page number')})`)
+  if (!paged) throw new Error('the EPUB reader did not open')
   await page.keyboard.press('ArrowRight')
   check(await pageNo.filter({ hasText: /^Page 2 of/ }).waitFor({ timeout: 3000 }).then(() => true, () => false), 'arrow key turns the EPUB page')
   const frame = page.frameLocator('.epub-frame')
@@ -327,7 +328,7 @@ try {
   }
   for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight')
   await page.waitForTimeout(1500)
-  const landed = await page.locator('.reader-title .t2').innerText()
+  const landed = (await page.locator('.reader-title .t2').innerText()).split(' · ')[0]
   check(landed === 'Chapter Two', `quick turns past a chapter's end land in the next chapter (${landed})`)
   await page.getByRole('button', { name: 'Contents' }).click()
   await page.locator('.epub-toc').getByText('Chapter Two').click()
@@ -339,8 +340,26 @@ try {
   await page.getByRole('button', { name: 'Larger text' }).click()
   await page.getByRole('button', { name: 'Larger text' }).click()
   check(await page.waitForFunction((b) => { const t = document.querySelector('.reader-page')?.textContent; return t && t !== b }, before2, { timeout: 5000 }).then(() => true, () => false), 'larger text repaginates the chapter')
+  check(/\d+ pages? left in this chapter|Last page of this chapter/.test(await page.locator('.chapter-left').innerText().catch(() => '')), 'the reader shows pages left in the chapter')
   await page.emulateMedia({ colorScheme: 'light' })
-  await page.getByRole('button', { name: 'Night', exact: true }).click()
+  await page.getByRole('radio', { name: 'Paper', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('.epub-frame')?.srcdoc.includes('#f4ecd8'), null, { timeout: 5000 }).catch(() => {})
+  const paper = await page.evaluate(() => {
+    const [r, , b] = getComputedStyle(document.querySelector('.reader')).backgroundColor.match(/\d+/g).map(Number)
+    return { warm: r - b, frame: document.querySelector('.epub-frame')?.srcdoc.includes('#f4ecd8') }
+  })
+  check(paper.warm > 15 && paper.frame, `Paper gives the page and toolbar a warm sepia (red minus blue ${paper.warm})`)
+  await page.screenshot({ path: 'test-media/shots/epub-paper.png' })
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await page.getByRole('radio', { name: 'Day', exact: true }).click()
+  const dayBg = await page.evaluate(() => getComputedStyle(document.querySelector('.reader')).backgroundColor.match(/\d+/g).slice(0, 3).reduce((a, n) => a + Number(n), 0) / 3)
+  check(dayBg > 200, `Day keeps the toolbar light when the system is dark (bg ${Math.round(dayBg)})`)
+  await page.setViewportSize({ width: 390, height: 844 })
+  const left = await page.evaluate(() => { const e = document.querySelector('.chapter-left'); const r = e?.getBoundingClientRect(); return e ? { text: e.textContent, fits: r.height > 0 && r.right <= innerWidth && r.bottom <= innerHeight && [r.left + 2, r.right - 2].every((x) => document.elementFromPoint(x, r.top + r.height / 2)?.closest('.chapter-left') === e) } : null })
+  check(!!left?.fits && /left in this chapter|Last page/.test(left.text), `pages left in the chapter show whole on a phone (${left?.text})`)
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await page.emulateMedia({ colorScheme: 'light' })
+  await page.getByRole('radio', { name: 'Night', exact: true }).click()
   const chrome = await page.evaluate(() => {
     const lum = (c) => { const [r, g, b] = c.match(/\d+/g).map(Number); return (r * 299 + g * 587 + b * 114) / 1000 }
     const r = document.querySelector('.reader'), t = document.querySelector('.reader-title .t1')

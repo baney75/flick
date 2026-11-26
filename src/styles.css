@@ -401,6 +401,18 @@ html.tv .hrow { grid-auto-columns: 300px; padding: 10px 6px 14px; }
 .reader.night { --bg: #121212; --bg-2: #18181a; --surface: #1c1c1f; --surface-2: #26262a; --line: #2c2c31; --text: #e8e6e3; --dim: #a29f9a; --faint: #77746f; color-scheme: dark; }
 .reader { color: var(--text); }
 .reader.night .reader-stage canvas { filter: invert(.92) hue-rotate(180deg); }
+/* Paper: warm sepia page and toolbar, easy on the eyes in daylight. */
+.reader.day { --bg: #f4f3ef; --bg-2: #eceae4; --surface: #fbfaf7; --surface-2: #efede7; --line: #dddad2; --text: #1b1b1b; --dim: #5b5953; --faint: #87847d; color-scheme: light; }
+.reader.paper { --bg: #efe6d2; --bg-2: #e9dfc8; --surface: #f4ecd8; --surface-2: #e6dac0; --line: #d9cbae; --text: #3b2f22; --dim: #6e5c45; --faint: #94826a; color-scheme: light; }
+.reader.paper .reader-stage canvas { filter: sepia(.35) brightness(.97); }
+.reader.paper .epub-frame { background: #f4ecd8; }
+.page-colors { display: flex; gap: 4px; }
+.swatch-btn { width: 32px; height: 32px; border-radius: 50%; font: 600 12px/1 inherit; border: 1px solid var(--line); cursor: pointer; }
+.swatch-btn.day { background: #fbfaf7; color: #1b1b1b; }
+.swatch-btn.paper { background: #f4ecd8; color: #3b2f22; }
+.swatch-btn.night { background: #121212; color: #e8e6e3; }
+.swatch-btn.on { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chapter-left { flex: none; text-align: center; font-size: 12px; color: var(--dim); padding: 6px 16px; padding-bottom: max(6px, env(safe-area-inset-bottom)); }
 .reader.epub .reader-stage { position: relative; padding: 0; display: flex; justify-content: center; align-items: stretch; }
 .epub-frame { width: min(100%, 760px); border: 0; background: #fbfaf7; }
 .reader.night .epub-frame { background: #121212; }
