@@ -56,6 +56,8 @@ export interface PickCtx {
   gate: boolean
   /** Why this platform has no built-in torrent engine (web, phones, Windows); undefined when it has one. */
   noEngine?: string
+  /** Why this platform has no VPN gate at all (web, phones); undefined where there is one. */
+  noGate?: string
   /** Settings > Streaming services: "Require a VPN for debrid services too". */
   vpnForDebrid: boolean
   online: boolean
@@ -98,7 +100,7 @@ function blockedBy(c: Candidate, rel: Release, dev: Device, ctx: PickCtx): strin
     if (ctx.noEngine) return ctx.noEngine
     if (!ctx.gate) return VPN_P2P
   }
-  if (c.via !== 'p2p' && needsGate(c, ctx.vpnForDebrid) && !ctx.gate) return VPN_DEBRID
+  if (c.via !== 'p2p' && needsGate(c, ctx.vpnForDebrid) && !ctx.gate) return ctx.noGate ?? VPN_DEBRID
   if (rel.codec && dev.codecs[rel.codec] === false && !dev.desktop) return `This device can't play ${CODEC_NAME[rel.codec]}`
   return undefined
 }

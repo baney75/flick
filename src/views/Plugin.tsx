@@ -16,7 +16,7 @@ import type { CatalogDef, Meta, Stream, Video } from '../lib/plugins/validate'
 import { sections, qualityOf, hdrOf, sizeOf, downloadable } from '../lib/plugins/streams'
 import { rank, pickLine, subLangFor, needsGate, type Ranked } from '../lib/pick'
 import { streamCandidates } from '../lib/candidates'
-import { ctxNow, debridNow, deviceFor, holdGate, prefsNow, serviceName, watchGate } from '../lib/picking'
+import { ctxNow, debridNow, deviceFor, holdGate, prefsNow, releaseGate, serviceName, shutFor, watchGate } from '../lib/picking'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
 import { langCode } from '../lib/release'
@@ -267,14 +267,16 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   const rows = rank(cands, prefsNow(), deviceFor(), ctx)
   const streamOf = (r: Ranked) => shown[Number(r.c.id.slice(r.c.id.lastIndexOf('#') + 1))]
   const rowOf = new Map(rows.map((r) => [streamOf(r), r]))
-  const best = rows[0] && !rows[0].blocked ? rows[0] : null
+  const shutBy = (r?: Ranked) => shutFor(r, ctx.vpnForDebrid)
+  const best = rows.find((r) => !r.blocked && !shutBy(r)) ?? null
   const top = best ? streamOf(best) : null
 
   const start = async (s: Stream, startAt?: number) => {
-    if (s.external) { window.open(s.url, '_blank', 'noopener'); return }
-    // A stream behind the VPN gate never plays on a tap while the gate fails.
+    // A stream behind the VPN gate never opens on a tap while the gate fails, nor outside its hold.
     const r = rowOf.get(s)
-    if (gated(r) && r!.blocked) { notify(r!.blocked); return }
+    const shut = shutBy(r)
+    if (shut) { notify(shut); return }
+    if (s.external) { window.open(s.url, '_blank', 'noopener'); return }
     if (s.kind === 'book') {
       go(`/read-url?u=${encodeURIComponent(s.url)}&t=${encodeURIComponent(meta.name)}&r=${encodeURIComponent(JSON.stringify(ref))}`)
       return
@@ -290,7 +292,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     if (gated(r)) {
       const g = await holdGate(key)
       if (!g.ok) { notify(g.message || 'Turn on your VPN'); return }
-    }
+    } else releaseGate()
     play({
       key,
       title: meta.name,
@@ -316,8 +318,8 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     // a host that refuses the browser fails the download with the message to use the Flick app.
     // Downloading a gated stream would fetch it outside the gate's hold, so those rows play only.
     const canSave = free && how !== null && !gated(rowOf.get(s))
-    const why = rowOf.get(s)?.blocked
-    const shut = !!why && gated(rowOf.get(s))
+    const shut = shutBy(rowOf.get(s))
+    const why = shut ?? rowOf.get(s)?.blocked
     return (
       <div class={`stream-item${why ? ' blocked' : ''}`}>
         <button class="stream" aria-disabled={shut ? 'true' : undefined} onClick={() => start(s)}>
@@ -328,8 +330,8 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
             {hdr && <span class="q">{hdr}</span>}
             {size && <span>{size}</span>}
             {s.kind === 'book' && <span>Book</span>}
-            {s.external && <span>Opens in your browser</span>}
-            {why && !s.external && <span class="warn">{why}</span>}
+            {s.external && !shut && <span>Opens in your browser</span>}
+            {why && (shut || !s.external) && <span class="warn">{why}</span>}
             </div>
           <Icon name={s.external ? 'external' : 'play'} size={18} class="stream-go" />
         </button>
@@ -346,7 +348,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
         {dl?.state === 'done'
           ? <button class="btn primary play-best" onClick={() => playSaved(dl, { onSave })}><Icon name="play" size={16} /> {resumeAt ? `Resume downloaded ${formatTime(resumeAt)}` : 'Play downloaded'}</button>
           : top ? <><button class="btn primary play-best" onClick={() => start(top)}><Icon name="play" size={16} /> {resumeAt ? `Resume ${formatTime(resumeAt)}` : 'Play'}</button><span class="pick-line small dim">{pickLine(best!, serviceName)}</span></>
-            : rows[0] && <p class="pick-why small">{rows[0].blocked}</p>}
+            : rows[0] && <p class="pick-why small">{shutBy(rows[0]) ?? rows[0].blocked}</p>}
         {(dl?.state === 'done' || top) && resumeAt > 0 && <button class="btn ghost start-over" onClick={() => (dl?.state === 'done' ? playSaved(dl, { onSave, startAt: 0 }) : start(top!, 0))}>Start over</button>}
       </div>
       {dl && !(dl.state === 'failed' && dl.error === 'Canceled' && !dl.part) && (

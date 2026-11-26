@@ -1,21 +1,23 @@
 import 'fake-indexeddb/auto'
 import { describe, expect, it, vi } from 'vitest'
 import { streamCandidates, type Debrid } from '../src/lib/candidates'
-import { needsGate, rank, VPN_DEBRID, VPN_P2P, type Device, type PickCtx } from '../src/lib/pick'
+import { needsGate, rank, VPN_DEBRID, VPN_P2P, type Candidate, type Device, type PickCtx, type Ranked } from '../src/lib/pick'
+import { parseRelease } from '../src/lib/release'
 
 // The store reads the route at import; the shell is a desktop one whose gate the tests answer.
 const shell = vi.hoisted(() => {
   Object.assign(globalThis, { location: { hash: '', href: 'http://localhost/', search: '' }, addEventListener: () => {}, removeEventListener: () => {} })
-  return { desktop: true, calls: [] as [string, unknown][], answer: { ok: true } as { ok: boolean; message?: string }, emit: null as null | ((g: unknown) => void) }
+  return { desktop: true, calls: [] as [string, unknown][], answer: { ok: true } as { ok: boolean; message?: string }, emit: null as null | ((g: unknown) => void), listenFails: false }
 })
 vi.mock('../src/lib/platform', async (orig) => ({
   ...(await orig<typeof import('../src/lib/platform')>()),
   get isDesktop() { return shell.desktop },
   isMobileApp: false,
   invoke: async (cmd: string, args?: unknown) => { shell.calls.push([cmd, args]); return shell.answer },
-  onDesktopEvent: async (_: string, cb: (g: unknown) => void) => { shell.emit = cb; return () => {} },
+  onDesktopEvent: async (_: string, cb: (g: unknown) => void) => { if (shell.listenFails) throw new Error('no listen'); shell.emit = cb; return () => {} },
 }))
-const { holdGate, noEngineFor, gate, VPN_DROPPED, WINDOWS_NO_ENGINE, NO_ENGINE_YET } = await import('../src/lib/picking')
+const { holdGate, releaseGate, shutFor, debridNow, noEngineFor, gate, VPN_DROPPED, NO_WATCH, OUTSIDE_GATE, WINDOWS_NO_ENGINE, NO_ENGINE_YET } = await import('../src/lib/picking')
+const { installed } = await import('../src/lib/plugins/registry')
 const { nowPlaying, toast } = await import('../src/lib/store')
 const { DESKTOP_ONLY } = await import('../src/views/Vpn')
 
@@ -77,7 +79,8 @@ describe('the built-in engine by platform', () => {
 
 describe('playing through the gate', () => {
   const req = (key: string) => ({ key, title: 'T', kind: 'video' as const, url: 'https://dl.other.net/x', ref: { t: 'url' as const, url: 'x' } })
-  it('holds before it plays, stops the player when the VPN drops, and lets go on leaving', async () => {
+  const released = (id: string) => shell.calls.some(([c, a]) => c === 'vpn_gate_release' && (a as { id: string }).id === id)
+  it('holds before it plays; a drop stops the player, says why and lets the hold go', async () => {
     shell.answer = { ok: true }
     expect((await holdGate('a')).ok).toBe(true)
     expect(shell.calls).toContainEqual(['vpn_gate_hold', { id: 'a' }])
@@ -86,23 +89,44 @@ describe('playing through the gate', () => {
     expect(nowPlaying.value).toBeNull()
     expect(toast.value?.text).toBe(VPN_DROPPED)
     expect(gate.value?.ok).toBe(false)
-
+    expect(released('a')).toBe(true)
+  })
+  it('leaving the stream lets it go; what was never held is left alone by a drop', async () => {
     shell.answer = { ok: true }
     await holdGate('b')
     nowPlaying.value = req('b')
     nowPlaying.value = req('c')
-    expect(shell.calls).toContainEqual(['vpn_gate_release', { id: 'b' }])
-    // c was never held: a later drop leaves it alone.
+    expect(released('b')).toBe(true)
     shell.emit!({ ok: false })
     expect(nowPlaying.value?.key).toBe('c')
   })
-  it('a failing hold plays nothing and holds nothing', async () => {
-    nowPlaying.value = null
+  it('a failing hold plays nothing, holds nothing, and leaves the stream already playing held', async () => {
+    shell.answer = { ok: true }
+    await holdGate('g')
+    nowPlaying.value = req('g')
     shell.answer = { ok: false, message: 'Turn on your VPN to play torrents.' }
-    expect(await holdGate('d')).toMatchObject({ ok: false, message: 'Turn on your VPN to play torrents.' })
-    nowPlaying.value = req('d')
+    expect(await holdGate('h')).toMatchObject({ ok: false, message: 'Turn on your VPN to play torrents.' })
+    expect(released('g')).toBe(false)
     shell.emit!({ ok: false })
-    expect(nowPlaying.value?.key).toBe('d')
+    expect(nowPlaying.value).toBeNull()
+  })
+  it('a direct stream taking over lets the hold go, so a drop leaves it playing', async () => {
+    shell.answer = { ok: true }
+    await holdGate('i')
+    nowPlaying.value = req('i')
+    releaseGate()
+    expect(released('i')).toBe(true)
+    shell.emit!({ ok: false })
+    expect(nowPlaying.value?.key).toBe('i')
+  })
+  it('a drop while the hold is on its way fails it, even when the VPN comes back first', async () => {
+    shell.answer = { ok: true }
+    const slow = holdGate('f')
+    await Promise.resolve()
+    shell.emit!({ ok: false, message: 'No VPN' })
+    shell.emit!({ ok: true })
+    expect(await slow).toEqual({ ok: false, message: VPN_DROPPED })
+    expect(released('f')).toBe(true)
   })
   it('on the website there is no gate: it fails without asking', async () => {
     shell.desktop = false
@@ -111,16 +135,44 @@ describe('playing through the gate', () => {
     expect(shell.calls.length).toBe(before)
     shell.desktop = true
   })
+  it('with no way to hear a drop, nothing gated plays', async () => {
+    vi.resetModules()
+    shell.listenFails = true
+    const fresh = await import('../src/lib/picking')
+    expect(await fresh.holdGate('j')).toEqual({ ok: false, message: NO_WATCH })
+    expect(shell.calls).not.toContainEqual(['vpn_gate_hold', { id: 'j' }])
+    shell.listenFails = false
+  })
 })
 
-describe('a drop while the hold is on its way', () => {
-  it('wins over the hold\'s older ok: nothing is held and the hold is let go', async () => {
-    shell.answer = { ok: true }
-    const slow = holdGate('f')
-    shell.emit!({ ok: false, message: 'No VPN' })
-    const g = await slow
-    expect(g.ok).toBe(false)
-    expect(shell.calls).toContainEqual(['vpn_gate_release', { id: 'f' }])
-    expect(gate.value?.ok).toBe(false)
+describe('what stays shut on a tap', () => {
+  const r = (c: Partial<Candidate>, blocked?: string): Ranked =>
+    ({ c: { id: 'k#0', media: 'video', place: 'plugin', via: 'direct', text: '', order: 0, ...c }, rel: parseRelease(''), ...(blocked ? { blocked } : {}) })
+  it('a gated row the gate fails', () => expect(shutFor(r({ via: 'debrid-cached' }, VPN_DEBRID), false)).toBe(VPN_DEBRID))
+  it('a gated book or browser link, even with the gate passing', () => {
+    expect(shutFor(r({ via: 'debrid-cached', media: 'book' }), false)).toBe(OUTSIDE_GATE)
+    expect(shutFor(r({ via: 'debrid-cached', external: true }, 'Opens outside Flick'), false)).toBe(OUTSIDE_GATE)
+  })
+  it('not a vpnOptional service with the switch off, nor a direct link', () => {
+    expect(shutFor(r({ via: 'debrid-cached', vpnOptional: true, media: 'book' }), false)).toBeUndefined()
+    expect(shutFor(r({ external: true }, 'Opens outside Flick'), true)).toBeUndefined()
+  })
+})
+
+describe('no gate on this platform', () => {
+  const dev: Device = { maxQuality: '1080p', hdr: false, codecs: {}, desktop: false, phone: true }
+  const prefs = { audio: ['en'], subs: [], maxQuality: '4K' as const }
+  it('a gated debrid link says it needs the desktop app, not to turn on a VPN', () =>
+    expect(rank(streamCandidates('k', [{ url: 'https://dl.other.net/x' }], { debrid: debrid() }), prefs, dev, { gate: false, vpnForDebrid: false, online: true, noGate: DESKTOP_ONLY })[0].blocked).toBe(DESKTOP_ONLY))
+  it('a vpnOptional one with the switch off still plays', () =>
+    expect(rank(streamCandidates('k', [{ url: 'https://torbox.app/x' }], { debrid: debrid() }), prefs, dev, { gate: false, vpnForDebrid: false, online: true, noGate: DESKTOP_ONLY })[0].blocked).toBeUndefined())
+})
+
+describe('installed services', () => {
+  it('their download hosts compare in lowercase, without a leading dot', () => {
+    installed.value = [{ id: 'org.x', kind: 'service', manifest: { name: 'X', vpnOptional: false, debridHosts: ['.DL.X.net'] } } as never]
+    expect(debridNow().known).toEqual([{ id: 'org.x', vpnOptional: false, debridHosts: ['dl.x.net'] }])
+    expect(streamCandidates('k', [{ url: 'https://a.dl.x.net/f' }], { debrid: debridNow() })[0].via).toBe('debrid-cached')
+    installed.value = []
   })
 })

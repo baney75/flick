@@ -2,7 +2,7 @@
 import { effect, signal } from '@preact/signals'
 import { settings, progress, nowPlaying, notify } from './store'
 import { deviceNow, readDevice } from './device'
-import type { Device, PickCtx, Prefs } from './pick'
+import { needsGate, type Device, type PickCtx, type Prefs, type Ranked } from './pick'
 import type { RankBy } from './titles'
 import { progressKey } from './plugins/use'
 import type { Src } from './titles'
@@ -38,60 +38,86 @@ export function prefsNow(): Prefs {
  */
 export const gate = signal<Gate | null>(null)
 export const VPN_DROPPED = "Your VPN dropped or isn't hiding you, so playback stopped. Reconnect it and press Play."
-let watching = false
+export const OUTSIDE_GATE = "Opens outside Flick, where the VPN gate can't cover it"
+export const NO_WATCH = "Flick can't watch the VPN right now, so it won't play this. Restart Flick and try again."
+/** Resolves true once the change event is heard, false if it cannot be; null before watchGate. */
+let listening: Promise<boolean> | null = null
 /** What plays through the gate now (a PlayRequest key), so a failure stops it. */
 let held: string | null = null
-
 /** Failures the change event has reported, so a hold in flight knows one came meanwhile. */
 let drops = 0
 
+const release = (id: string) => { invoke('vpn_gate_release', { id }).catch(() => {}) }
+
+/** Lets the held stream go: it stopped, or a stream that needs no gate replaced it. */
+export function releaseGate() {
+  if (held) release(held)
+  held = null
+}
+
 function onGate(g: Gate) {
   gate.value = g
-  if (!g.ok) drops++
-  if (!g.ok && held) {
-    held = null
+  if (g.ok) return
+  drops++
+  if (held) {
+    releaseGate()
     nowPlaying.value = null
     notify(VPN_DROPPED, 6000)
   }
 }
 
 export function watchGate() {
-  if (watching || !isDesktop || isMobileApp) return
-  watching = true
+  if (listening || !isDesktop || isMobileApp) return
   let heard = false
-  onDesktopEvent<Gate>('vpn-gate', (g) => { heard = true; onGate(g) }).catch(() => {})
+  listening = onDesktopEvent<Gate>('vpn-gate', (g) => { heard = true; onGate(g) }).then(() => true, () => {
+    // No drop can reach a player, so nothing gated may play; the next page tries again.
+    listening = null
+    gate.value = { ok: false, message: NO_WATCH }
+    return false
+  })
   // The first answer, unless a change event already came with a newer one.
   invoke<Gate>('vpn_gate', { force: false }).then(
     (g) => { if (!heard) gate.value = g },
     (e) => { if (!heard) gate.value = { ok: false, message: String(e) } },
   )
-  // Leaving the held stream lets it go, so the next one must pass the gate again.
-  effect(() => {
-    const now = nowPlaying.value
-    if (held && now?.key !== held) {
-      invoke('vpn_gate_release', { id: held }).catch(() => {})
-      held = null
-    }
-  })
 }
+
+// Leaving the held stream lets it go, so the next one must pass the gate again.
+effect(() => {
+  const now = nowPlaying.value
+  if (held && now?.key !== held) releaseGate()
+})
 
 /**
  * Right before a gated stream plays: the gate passes now and watches `key` until it stops, or it
- * fails and nothing plays. On the website and phones there is no gate, so it always fails.
+ * fails and nothing plays. On the website and phones there is no gate, so it always fails. A drop
+ * reported while the hold is on its way fails it too; the user presses Play again.
  */
 export async function holdGate(key: string): Promise<Gate> {
   if (!isDesktop || isMobileApp) return { ok: false, message: DESKTOP_ONLY }
   watchGate()
+  if (!(await listening)) return { ok: false, message: NO_WATCH }
   const seen = drops
-  let g = await invoke<Gate>('vpn_gate_hold', { id: key }).catch((e): Gate => ({ ok: false, message: String(e) }))
-  // A failure reported while the hold was on its way is newer than its answer.
+  const g = await invoke<Gate>('vpn_gate_hold', { id: key }).catch((e): Gate => ({ ok: false, message: String(e) }))
   if (drops !== seen) {
-    if (g.ok) invoke('vpn_gate_release', { id: key }).catch(() => {})
-    g = gate.value ?? { ok: false }
-  } else gate.value = g
-  if (held && held !== key) invoke('vpn_gate_release', { id: held }).catch(() => {})
-  held = g.ok ? key : null
+    if (g.ok) release(key)
+    return { ok: false, message: VPN_DROPPED }
+  }
+  gate.value = g
+  if (!g.ok) return g
+  // The old hold goes only once the new one holds; a failed tap leaves what plays alone.
+  if (held && held !== key) release(held)
+  held = key
   return g
+}
+
+/**
+ * Why a stream behind the gate stays shut on a tap: the gate fails, or it would open outside the
+ * gate's hold (a book in the reader, a link in the browser). Undefined when it may play.
+ */
+export function shutFor(r: Ranked | undefined, vpnForDebrid: boolean): string | undefined {
+  if (!r || !needsGate(r.c, vpnForDebrid)) return undefined
+  return r.c.external || r.c.media === 'book' ? OUTSIDE_GATE : r.blocked
 }
 
 export const WINDOWS_NO_ENGINE = 'Torrents play on Windows through a debrid service for now'
@@ -118,6 +144,7 @@ export function ctxNow(): Omit<PickCtx, 'picked'> {
   }
   const why = noEngineFor({ desktop: isDesktop, mobile: isMobileApp, windows })
   if (why) c.noEngine = why
+  if (!isDesktop || isMobileApp) c.noGate = DESKTOP_ONLY
   const m = lastMbps()
   if (m) c.mbps = m
   return c
@@ -133,7 +160,7 @@ const services = () => installed.value.filter((p) => p.kind === 'service')
 export function debridNow(): Debrid {
   const known = services().map((p) => {
     const m = p.manifest as PluginManifest
-    return { id: p.id, vpnOptional: m.vpnOptional === true, debridHosts: m.debridHosts ?? [] }
+    return { id: p.id, vpnOptional: m.vpnOptional === true, debridHosts: (m.debridHosts ?? []).map((h) => h.toLowerCase().replace(/^\.+/, '')) }
   })
   return { known, order: [] }
 }
