@@ -8,8 +8,9 @@ import { Icon } from '../components/icons'
 import { isDesktop } from '../lib/platform'
 import { callPlugin } from '../lib/plugins/runtime'
 import { installed } from '../lib/plugins/registry'
-import { sourceById, searchAll, titlePath, progressKey, libraries, loadLibrary, continueOf, type Source, type Found } from '../lib/plugins/use'
+import { sources, sourceById, searchAll, titlePath, progressKey, libraries, loadLibrary, continueOf, type Source, type Found } from '../lib/plugins/use'
 import type { CatalogDef, Meta, Stream, Video } from '../lib/plugins/validate'
+import { sections, best, qualityOf, hdrOf, sizeOf } from '../lib/plugins/streams'
 
 const shape = (m: Meta) => (m.posterShape === 'landscape' ? 'wide' : m.posterShape === 'square' ? 'square' : 'poster')
 
@@ -22,6 +23,26 @@ export function MetaCard({ rec, m }: { rec: Source; m: Meta }) {
 export function PluginIcon({ rec, size = 20 }: { rec: { manifest: object }; size?: number }) {
   const icon = (rec.manifest as { icon?: string }).icon
   return icon ? <img class="plugin-icon" src={icon} alt="" width={size} height={size} /> : <Icon name="plug" size={size} />
+}
+
+/** Every installed source as a tile: the phone's way in when the bar has no room for each one. */
+export function SourcesPage() {
+  const list = sources.value
+  return (
+    <div class="page">
+      <h1>Sources</h1>
+      {list.length === 0 && <p class="dim">No sources yet. Add one in <a href="#/settings">Settings</a>.</p>}
+      <div class="source-tiles">
+        {list.map((p) => (
+          <a class="source-tile" href={`#/p/${encodeURIComponent(p.id)}`} onClick={(e) => { e.preventDefault(); go(`/p/${encodeURIComponent(p.id)}`) }}>
+            <PluginIcon rec={p} size={36} />
+            <span class="source-name">{p.manifest.name}</span>
+            {p.manifest.description && <span class="small dim source-desc">{p.manifest.description}</span>}
+          </a>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 function Missing({ id }: { id: string }) {
@@ -77,7 +98,12 @@ export function PluginPage({ id }: { id: string }) {
       {results ? (
         results.length === 0
           ? <p class="dim">{searching ? <><span class="spinner sm" /> Searching</> : `No results for "${q}".`}</p>
-          : results.map((f) => <Row title={`${f.catalog.name} · ${f.catalog.type}`}>{f.items.map((m) => <MetaCard rec={rec} m={m} />)}</Row>)
+          : results.map((f) => (
+            <section class="row-section">
+              <div class="row-head"><h2>{`${f.catalog.name} · ${f.catalog.type}`}</h2><span class="dim small">{f.items.length}</span></div>
+              <div class="result-grid">{f.items.map((m) => <MetaCard rec={rec} m={m} />)}</div>
+            </section>
+          ))
       ) : (
         <>
           {cont.length > 0 && <Row title="Continue watching">{cont.slice(0, 30).map((m) => <MetaCard rec={rec} m={m} />)}</Row>}
@@ -181,6 +207,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   const [list, setList] = useState<Stream[] | null>(null)
   const [err, setErr] = useState('')
   const [group, setGroup] = useState('all')
+  const [opened, setOpened] = useState<string[]>([])
   useEffect(() => {
     callPlugin(rec, 'streams', [{ type: meta.type, id: meta.id, videoId }]).then(setList).catch((e) => { setErr((e as Error).message); setList([]) })
   }, [videoId])
@@ -219,9 +246,34 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     })
   }
 
+  const secs = sections(shown)
+  const top = best(shown)
+  const row = (s: Stream) => {
+    const q = qualityOf(s), hdr = hdrOf(s), size = sizeOf(s)
+    return (
+      <button class="stream" onClick={() => start(s)}>
+        <div class="stream-name">{s.group ?? rec.manifest.name}</div>
+        <div class="stream-detail">{s.title ?? ''}</div>
+        <div class="stream-tags">
+          {q !== 'Other' && <span class="q">{q}</span>}
+          {hdr && <span class="q">{hdr}</span>}
+          {size && <span>{size}</span>}
+          {s.kind === 'book' && <span>Book</span>}
+          {s.external && <span>Opens in your browser</span>}
+          {s.needsDesktop && !isDesktop && <span class="warn">May need the desktop app</span>}
+        </div>
+        <Icon name={s.external ? 'external' : 'play'} size={18} class="stream-go" />
+      </button>
+    )
+  }
+
   return (
     <section class="streams">
-      <div class="row-head"><h2>Streams{video ? ` · ${epLabel(video) || video.title}` : ''}</h2>{list === null && <span class="spinner sm" />}</div>
+      <div class="row-head">
+        <h2>Streams{video ? ` · ${epLabel(video) || video.title}` : ''}</h2>
+        {list === null && <span class="spinner sm" />}
+        {top && <button class="btn primary play-best" onClick={() => start(top)}><Icon name="play" size={16} /> Play{qualityOf(top) !== 'Other' ? ` ${qualityOf(top)}` : ''}</button>}
+      </div>
       {groups.length > 1 && (
         <div class="chips">
           <button class={`chip ${group === 'all' ? 'on' : ''}`} onClick={() => setGroup('all')}>All <span>{list!.length}</span></button>
@@ -229,21 +281,16 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
         </div>
       )}
       {list && list.length === 0 && <p class="dim">{err ? `${rec.manifest.name}: ${err}` : 'No streams for this one.'}</p>}
-      <div class="stream-list">
-        {shown.map((s) => (
-          <button class="stream" onClick={() => start(s)}>
-            <div class="stream-name">{s.quality ?? s.group ?? rec.manifest.name}</div>
-            <div class="stream-detail">{s.title ?? ''}</div>
-            <div class="stream-tags">
-              {s.group && <span>{s.group}</span>}
-              {s.kind === 'book' && <span>Book</span>}
-              {s.external && <span>Opens in your browser</span>}
-              {s.needsDesktop && !isDesktop && <span class="warn">May need the desktop app</span>}
-            </div>
-            <Icon name={s.external ? 'external' : 'play'} size={18} class="stream-go" />
-          </button>
-        ))}
-      </div>
+      {secs.map((sec) => {
+        const all = opened.includes(sec.quality) || sec.streams.length <= 4
+        return (
+          <div class="stream-sec">
+            {(secs.length > 1 || sec.quality !== 'Other') && <h3 class="stream-q">{sec.quality} <span>{sec.streams.length}</span></h3>}
+            <div class="stream-list">{(all ? sec.streams : sec.streams.slice(0, 3)).map(row)}</div>
+            {!all && <button class="btn ghost sm more" onClick={() => setOpened([...opened, sec.quality])}>Show {sec.streams.length - 3} more</button>}
+          </div>
+        )
+      })}
     </section>
   )
 }
