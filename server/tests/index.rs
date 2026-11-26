@@ -1,4 +1,4 @@
-use flick_server::index::{item_id, kind, labels, scan};
+use flick_server::index::{content_type, item_id, kind, labels, scan};
 use flick_server::{parse_range, Range::*};
 use std::fs;
 use std::path::PathBuf;
@@ -57,8 +57,15 @@ fn kinds() {
         assert_eq!(kind(e), Some("audio"), "{e}");
     }
     assert_eq!(kind("pdf"), Some("book"));
+    assert_eq!(kind("epub"), Some("book"));
     assert_eq!(kind("txt"), None);
     assert_eq!(kind("srt"), None);
+}
+
+#[test]
+fn book_content_types() {
+    assert_eq!(content_type("pdf"), "application/pdf");
+    assert_eq!(content_type("epub"), "application/epub+zip");
 }
 
 #[test]
