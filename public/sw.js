@@ -12,7 +12,12 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url)
   if (e.request.method !== 'GET' || url.origin !== location.origin) return
   if (e.request.headers.has('range')) return
-  if (e.request.mode === 'navigate') {
+  if (url.pathname === '/plugin-host.html' || url.pathname === '/plugin-host.js') {
+    // The plugin sandbox page: network first, cached for offline, never stored as the app shell.
+    e.respondWith(fetch(e.request).then((r) => { const copy = r.clone(); caches.open(CACHE).then((c) => c.put(url.pathname, copy)); return r }).catch(() => caches.match(url.pathname)))
+    return
+  }
+  if (e.request.mode === 'navigate' && e.request.destination === 'document') {
     // Network first for the page, so updates land; cache when offline.
     e.respondWith(fetch(e.request).then((r) => { caches.open(CACHE).then((c) => c.put('/', r.clone())); return r }).catch(() => caches.match('/')))
     return

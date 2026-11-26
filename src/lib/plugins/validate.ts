@@ -1,0 +1,338 @@
+// Checks every plugin manifest, theme and plugin result against the shapes in docs/PLUGINS.md.
+// Self-contained on purpose: the app and scripts/plugin-check.mjs (Node) load this same file.
+
+export const API = 1
+export const TYPES = ['movie', 'series', 'video', 'channel', 'audio', 'audiobook', 'book'] as const
+export const TOOLS = ['ytdlp'] as const
+export const PLATFORMS = ['web', 'desktop', 'mobile'] as const
+export const CALL_TIMEOUT_MS = 20_000
+export const STORE_LIMIT = 1024 * 1024
+
+export type MetaType = (typeof TYPES)[number]
+export type Platform = (typeof PLATFORMS)[number]
+
+export interface Field { key: string; label: string; type: 'text' | 'password' | 'select' | 'toggle' | 'list'; options?: string[]; default?: unknown; secret?: boolean; help?: string }
+export interface ActionDef { id: string; label: string; fields: Field[] }
+export interface CatalogDef { id: string; name: string; type: MetaType; search?: boolean }
+export interface PluginManifest {
+  api: 1
+  id: string
+  name: string
+  version: string
+  author: string
+  description: string
+  icon?: string
+  hosts: string[]
+  tools: string[]
+  platforms: Platform[]
+  settings: Field[]
+  actions: ActionDef[]
+  catalogs: CatalogDef[]
+  /** Optional functions the plugin has. */
+  has: { library: boolean; action: boolean; progress: boolean }
+}
+export interface Video { id: string; title: string; season?: number; episode?: number; released?: string; thumbnail?: string; overview?: string }
+export interface Meta {
+  id: string
+  type: MetaType
+  name: string
+  poster?: string
+  posterShape?: 'poster' | 'square' | 'landscape'
+  background?: string
+  description?: string
+  year?: string
+  genres?: string[]
+  runtime?: string
+  videos?: Video[]
+  progress?: { pos: number; dur: number; at: number; videoId?: string }
+}
+export interface Sub { url: string; lang: string; label?: string }
+export interface Stream { url: string; title?: string; quality?: string; kind?: 'video' | 'audio' | 'book'; subs?: Sub[]; needsDesktop?: boolean; external?: boolean; group?: string }
+export interface CatalogResult { items: Meta[]; more: boolean }
+export interface ActionResult { ok: boolean; message?: string }
+
+export interface ThemeColors { bg: string; surface: string; fg: string; dim: string; line: string; accent: string }
+export interface ThemeManifest { flick: 'theme'; api: 1; id: string; name: string; version: string; author: string; light: ThemeColors; dark: ThemeColors; radius?: number; font?: string }
+
+export class PluginError extends Error {}
+const fail = (msg: string): never => { throw new PluginError(msg) }
+
+const MAX_STR = 2000
+const MAX_LIST = 500
+const MAX_ITEMS = 200
+const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x)
+const ID_RE = /^[a-z0-9]+(\.[a-z0-9-]+)+$/
+const COLOR_RE = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i
+
+function str(x: unknown, what: string, required: true, max?: number): string
+function str(x: unknown, what: string, required?: false, max?: number): string | undefined
+function str(x: unknown, what: string, required = false, max = MAX_STR): string | undefined {
+  if (x === undefined || x === null || x === '') return required ? fail(`${what} is missing.`) : undefined
+  if (typeof x === 'number') x = String(x)
+  if (typeof x !== 'string') return fail(`${what} must be text.`)
+  const s = x.trim().slice(0, max)
+  return s || (required ? fail(`${what} is missing.`) : undefined)
+}
+const num = (x: unknown): number | undefined => (typeof x === 'number' && Number.isFinite(x) ? x : undefined)
+function list(x: unknown, what: string, max = MAX_LIST): unknown[] {
+  if (x === undefined || x === null) return []
+  if (!Array.isArray(x)) return fail(`${what} must be a list.`)
+  return x.slice(0, max)
+}
+
+/** An image or link: http(s) or an image data: URI. Anything else is dropped. */
+function imgUrl(x: unknown): string | undefined {
+  if (typeof x !== 'string') return undefined
+  const u = x.trim()
+  if (/^data:image\/(png|jpeg|gif|webp|svg\+xml);/i.test(u) && u.length < 200_000) return u
+  return /^https?:\/\//i.test(u) && u.length <= MAX_STR ? u : undefined
+}
+
+/** A host pattern from `hosts`: `*`, `*.example.com`, `example.com`, `127.0.0.1` or `[::1]`. */
+export function validHost(h: string): boolean {
+  if (h === '*') return true
+  const name = h.startsWith('*.') ? h.slice(2) : h
+  return /^(\[[0-9a-f:]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*)$/.test(name)
+}
+
+function field(x: unknown, where: string): Field {
+  if (!isObj(x)) return fail(`Each ${where} field must be an object.`)
+  const key = str(x.key, `A ${where} field key`, true, 64)
+  if (!/^[A-Za-z0-9_.-]+$/.test(key)) fail(`The ${where} field key "${key}" may use only letters, digits, _ . and -.`)
+  const type = x.type ?? 'text'
+  if (type !== 'text' && type !== 'password' && type !== 'select' && type !== 'toggle' && type !== 'list') fail(`The field "${key}" has an unknown type.`)
+  const f: Field = { key, label: str(x.label, `The label of "${key}"`) ?? key, type: type as Field['type'] }
+  if (type === 'select') f.options = list(x.options, `The options of "${key}"`).map((o) => str(o, 'An option', true, 200))
+  if (x.default !== undefined) f.default = type === 'toggle' ? !!x.default : type === 'list' ? list(x.default, 'A default').map((o) => str(o, 'A list item', true)) : str(x.default, 'A default')
+  if (x.secret === true || type === 'password') f.secret = true
+  const help = str(x.help, 'Help')
+  if (help) f.help = help
+  return f
+}
+
+/** Check a plugin's exported object (functions already reduced to their names). Throws a plain-words error. */
+export function validateManifest(x: unknown, fns: string[]): PluginManifest {
+  if (!isObj(x)) return fail('The plugin must export a default object.')
+  if (x.api !== API) fail(`This plugin uses API ${String(x.api)}; this Flick reads API ${API}.`)
+  const id = str(x.id, 'id', true, 128)
+  if (!ID_RE.test(id)) fail(`id "${id}" must be reverse-DNS style and lowercase, like "org.example.films".`)
+  const hosts = list(x.hosts, 'hosts', 100).map((h) => str(h, 'A host', true, 253).toLowerCase())
+  for (const h of hosts) if (!validHost(h)) fail(`"${h}" is not a host name. Use names like "example.com" or "*.example.com".`)
+  const tools = list(x.tools, 'tools', 10).map((t) => str(t, 'A tool', true))
+  for (const t of tools) if (!(TOOLS as readonly string[]).includes(t)) fail(`Flick has no desktop tool called "${t}".`)
+  const platforms = (x.platforms === undefined ? [...PLATFORMS] : list(x.platforms, 'platforms')) as string[]
+  for (const p of platforms) if (!(PLATFORMS as readonly string[]).includes(p)) fail(`Unknown platform "${p}".`)
+  for (const f of ['catalog', 'meta', 'streams']) if (!fns.includes(f)) fail(`The plugin needs a ${f}() function.`)
+  const catalogs = list(x.catalogs, 'catalogs', 50).map((c): CatalogDef => {
+    if (!isObj(c)) return fail('Each catalog must be an object.')
+    const type = c.type as MetaType
+    if (!TYPES.includes(type)) fail(`Catalog type "${String(c.type)}" is not one of ${TYPES.join(', ')}.`)
+    const out: CatalogDef = { id: str(c.id, 'A catalog id', true, 128), name: str(c.name, 'A catalog name', true, 200), type }
+    if (c.search === true) out.search = true
+    return out
+  })
+  if (!catalogs.length) fail('The plugin needs at least one catalog.')
+  const settings = list(x.settings, 'settings', 50).map((f) => field(f, 'setting'))
+  const actions = list(x.actions, 'actions', 20).map((a): ActionDef => {
+    if (!isObj(a)) return fail('Each action must be an object.')
+    return { id: str(a.id, 'An action id', true, 64), label: str(a.label, 'An action label', true, 100), fields: list(a.fields, 'Action fields', 20).map((f) => field(f, 'action')) }
+  })
+  if (actions.length && !fns.includes('action')) fail('The plugin lists actions but has no action() function.')
+  const m: PluginManifest = {
+    api: 1,
+    id,
+    name: str(x.name, 'name', true, 100),
+    version: str(x.version, 'version', true, 50),
+    author: str(x.author, 'author', false, 100) ?? 'Unknown',
+    description: str(x.description, 'description', false, 500) ?? '',
+    hosts: [...new Set(hosts)],
+    tools: [...new Set(tools)],
+    platforms: platforms as Platform[],
+    settings,
+    actions,
+    catalogs,
+    has: { library: fns.includes('library'), action: fns.includes('action'), progress: fns.includes('progress') },
+  }
+  const icon = imgUrl(x.icon)
+  if (icon) m.icon = icon
+  return m
+}
+
+/** Permissions the new manifest asks for that the installed one did not have. Empty means a quiet update. */
+export function addedPermissions(old: Pick<PluginManifest, 'hosts' | 'tools'>, next: Pick<PluginManifest, 'hosts' | 'tools'>): string[] {
+  return [
+    ...next.hosts.filter((h) => !old.hosts.includes(h)).map((h) => `reach ${h}`),
+    ...next.tools.filter((t) => !old.tools.includes(t)).map((t) => `use ${t}`),
+  ]
+}
+
+// ---------- results ----------
+
+function video(x: unknown): Video | null {
+  if (!isObj(x)) return null
+  const id = str(x.id, 'Video id', false, 512)
+  if (!id) return null
+  const v: Video = { id, title: str(x.title, 'title') ?? str(x.name, 'name') ?? id }
+  const season = num(x.season), episode = num(x.episode)
+  if (season !== undefined) v.season = season
+  if (episode !== undefined) v.episode = episode
+  const released = str(x.released, 'released', false, 40), thumb = imgUrl(x.thumbnail), overview = str(x.overview, 'overview')
+  if (released) v.released = released
+  if (thumb) v.thumbnail = thumb
+  if (overview) v.overview = overview
+  return v
+}
+
+export function validateMeta(x: unknown): Meta {
+  if (!isObj(x)) return fail('A meta must be an object.')
+  const type = x.type as MetaType
+  if (!TYPES.includes(type)) fail(`Meta type "${String(x.type)}" is not one of ${TYPES.join(', ')}.`)
+  const m: Meta = { id: str(x.id, 'Meta id', true, 512), type, name: str(x.name, 'Meta name', true) }
+  const poster = imgUrl(x.poster), background = imgUrl(x.background)
+  if (poster) m.poster = poster
+  if (background) m.background = background
+  if (x.posterShape === 'poster' || x.posterShape === 'square' || x.posterShape === 'landscape') m.posterShape = x.posterShape
+  const description = str(x.description, 'description'), year = str(x.year, 'year', false, 20), runtime = str(x.runtime, 'runtime', false, 40)
+  if (description) m.description = description
+  if (year) m.year = year
+  if (runtime) m.runtime = runtime
+  const genres = list(x.genres, 'genres', 20).filter((g) => typeof g === 'string').map((g) => (g as string).slice(0, 60))
+  if (genres.length) m.genres = genres
+  if (x.videos !== undefined) m.videos = list(x.videos, 'videos', 5000).map(video).filter((v): v is Video => !!v)
+  if (isObj(x.progress) && num(x.progress.pos) !== undefined) {
+    const p = x.progress
+    m.progress = { pos: num(p.pos)!, dur: num(p.dur) ?? 0, at: num(p.at) ?? 0 }
+    const vid = str(p.videoId, 'videoId', false, 512)
+    if (vid) m.progress.videoId = vid
+  }
+  return m
+}
+
+/** A list of metas; one bad entry is skipped, not the whole list. */
+function metas(x: unknown, max: number): Meta[] {
+  const out: Meta[] = []
+  for (const m of list(x, 'items', max)) { try { out.push(validateMeta(m)) } catch { /* skip one bad meta */ } }
+  return out
+}
+
+export function validateCatalog(x: unknown): CatalogResult {
+  if (Array.isArray(x)) return { items: metas(x, MAX_ITEMS), more: false }
+  if (!isObj(x)) return fail('catalog() must return { items, more }.')
+  return { items: metas(x.items, MAX_ITEMS), more: x.more === true }
+}
+
+export function validateLibrary(x: unknown): Meta[] {
+  if (!Array.isArray(x)) return fail('library() must return a list of metas.')
+  return metas(x, MAX_LIST)
+}
+
+const PLAY_SCHEMES = /^(https?:|flick-tool:)/i
+
+export function validateStreams(x: unknown): Stream[] {
+  if (!Array.isArray(x)) return fail('streams() must return a list.')
+  const out: Stream[] = []
+  for (const s of x.slice(0, MAX_LIST)) {
+    if (!isObj(s) || typeof s.url !== 'string') continue
+    const url = s.url.trim()
+    if (url.length > 8000) continue
+    const external = s.external === true
+    if (external ? !/^https:\/\//i.test(url) : !PLAY_SCHEMES.test(url)) continue
+    const st: Stream = { url }
+    const title = str(s.title, 'title'), quality = str(s.quality, 'quality', false, 40), group = str(s.group, 'group', false, 100)
+    if (title) st.title = title
+    if (quality) st.quality = quality
+    if (group) st.group = group
+    if (s.kind === 'video' || s.kind === 'audio' || s.kind === 'book') st.kind = s.kind
+    if (s.needsDesktop === true) st.needsDesktop = true
+    if (external) st.external = true
+    const subs = list(s.subs, 'subs', 100).filter(isObj).filter((u) => typeof u.url === 'string' && /^https?:\/\//i.test(u.url))
+      .map((u) => { const o: Sub = { url: (u.url as string).trim(), lang: str(u.lang, 'lang', false, 20) ?? 'und' }; const l = str(u.label, 'label', false, 100); if (l) o.label = l; return o })
+    if (subs.length) st.subs = subs
+    out.push(st)
+  }
+  return out
+}
+
+export function validateSubs(x: unknown): Sub[] {
+  return validateStreams([{ url: 'https://x', subs: x }])[0]?.subs ?? []
+}
+
+export function validateAction(x: unknown): ActionResult {
+  if (!isObj(x)) return { ok: x !== false }
+  const r: ActionResult = { ok: x.ok !== false }
+  const m = str(x.message, 'message', false, 500)
+  if (m) r.message = m
+  return r
+}
+
+// ---------- themes ----------
+
+function rgb(hex: string): [number, number, number, number] {
+  let h = hex.slice(1)
+  if (h.length === 3) h = [...h].map((c) => c + c).join('')
+  const n = (i: number) => parseInt(h.slice(i, i + 2), 16)
+  return [n(0), n(2), n(4), h.length === 8 ? n(6) / 255 : 1]
+}
+
+/** Lay a color with alpha over an opaque one. */
+function over(top: string, under: [number, number, number]): [number, number, number] {
+  const [r, g, b, a] = rgb(top)
+  return [r * a + under[0] * (1 - a), g * a + under[1] * (1 - a), b * a + under[2] * (1 - a)]
+}
+
+function luminance([r, g, b]: [number, number, number]): number {
+  const f = (c: number) => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4 }
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+}
+
+/** WCAG contrast ratio of fg on bg. A translucent bg sits on black in dark mode and white in light mode. */
+export function contrast(fg: string, bg: string, dark = true): number {
+  const base: [number, number, number] = dark ? [0, 0, 0] : [255, 255, 255]
+  const b = over(bg, base)
+  const f = over(fg, b)
+  const [l1, l2] = [luminance(f), luminance(b)].sort((x, y) => y - x)
+  return (l1 + 0.05) / (l2 + 0.05)
+}
+
+const TOKENS = ['bg', 'surface', 'fg', 'dim', 'line', 'accent'] as const
+
+function colors(x: unknown, mode: 'light' | 'dark'): ThemeColors {
+  if (!isObj(x)) return fail(`The theme needs a "${mode}" palette.`)
+  const out = {} as ThemeColors
+  for (const k of TOKENS) {
+    const v = x[k]
+    if (typeof v !== 'string' || !COLOR_RE.test(v)) fail(`${mode}.${k} must be a color like #1d2420.`)
+    out[k] = (v as string).toLowerCase()
+  }
+  for (const on of ['bg', 'surface'] as const) {
+    const c = contrast(out.fg, out[on], mode === 'dark')
+    if (c < 4.5) fail(`${mode}: fg on ${on} has contrast ${c.toFixed(2)}:1; it needs at least 4.5:1.`)
+  }
+  return out
+}
+
+export function validateTheme(x: unknown): ThemeManifest {
+  if (!isObj(x) || x.flick !== 'theme') return fail('A theme is a JSON object with "flick": "theme".')
+  if (x.api !== API) fail(`This theme uses API ${String(x.api)}; this Flick reads API ${API}.`)
+  const id = str(x.id, 'id', true, 128)
+  if (!ID_RE.test(id)) fail(`id "${id}" must be reverse-DNS style and lowercase.`)
+  const t: ThemeManifest = {
+    flick: 'theme', api: 1, id,
+    name: str(x.name, 'name', true, 100),
+    version: str(x.version, 'version', true, 50),
+    author: str(x.author, 'author', false, 100) ?? 'Unknown',
+    light: colors(x.light, 'light'),
+    dark: colors(x.dark, 'dark'),
+  }
+  if (x.radius !== undefined) {
+    const r = num(x.radius)
+    if (r === undefined || r < 0 || r > 24) fail('radius must be a number from 0 to 24.')
+    t.radius = r
+  }
+  if (x.font !== undefined) {
+    const f = str(x.font, 'font', true, 60)
+    if (!/^[A-Za-z0-9 _-]+$/.test(f)) fail('font must be a plain family name, like "Inter".')
+    t.font = f
+  }
+  return t
+}
