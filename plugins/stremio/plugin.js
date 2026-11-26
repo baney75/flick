@@ -138,7 +138,7 @@ export default {
   api: 1,
   id: 'dev.flick.stremio',
   name: 'Stremio',
-  version: '1.0.0',
+  version: '1.1.0',
   author: 'Flick',
   description: 'Your Stremio addons, library and Continue Watching. Sign in, or start with Cinemeta and OpenSubtitles. Torrent streams play through the Stremio server on this computer.',
   icon: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0IiByeD0iNSIgZmlsbD0iIzdiNWJmNSIvPjxwYXRoIGQ9Ik0xMiA0bDcgNHY4bC03IDQtNy00Vjh6IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMS42Ii8+PHBhdGggZD0iTTEwLjUgOXY2bDUtM3oiIGZpbGw9IiNmZmYiLz48L3N2Zz4=',
@@ -221,6 +221,11 @@ export default {
       } catch { /* optional */ }
     }))
     return out
+  },
+
+  /** The user's addon URLs, so Flick can offer a debrid key set up in one (Torrentio's torbox=...). */
+  async addonUrls(ctx) {
+    return (await addons(ctx)).map((a) => a.transportUrl).filter((u) => /^https:\/\//i.test(u))
   },
 
   async library(ctx) {

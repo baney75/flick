@@ -3,7 +3,8 @@
 
 import { computed } from '@preact/signals'
 import { settings, setSettings } from '../store'
-import { installed, install, remove, setPluginSettings, type Candidate } from './registry'
+import { installed, install, officialList, prepare, remove, setPluginSettings, type Candidate } from './registry'
+import { findDebridKeys, type FoundKey } from './debrid-keys'
 import { callPlugin, platformName, registerHosts, stopPlugin, type Installed } from './runtime'
 import { PluginError, validateResolve, type AccountResult, type PluginManifest, type ResolveResult } from './validate'
 
@@ -76,6 +77,38 @@ export async function checkAndSave(from: Candidate | Service, key: string, call:
   else await install(from, { [field]: key })
   if (!settings.value.serviceOrder.includes(m.id)) setSettings({ serviceOrder: [...settings.value.serviceOrder, m.id] })
   return { ok: true, line: accountLine(name, r) }
+}
+
+// ---------- keys from the user's Stremio addons ----------
+export const STREMIO_ID = 'dev.flick.stremio'
+
+/** Keys found in these addon URLs that are not already the saved key of that service. */
+export function keyOffers(urls: string[], list: Service[] = allServices.value): FoundKey[] {
+  return findDebridKeys(urls).filter((f) => {
+    const s = list.find((x) => x.id === f.serviceId)
+    const k = s && keyField(s.manifest)
+    return !(s && k && s.settings[k] === f.key)
+  })
+}
+
+/** The bundled Stremio plugin's addon URLs, when it is installed and on; [] otherwise. */
+export async function stremioAddonUrls(call: Call = callPlugin): Promise<string[]> {
+  const rec = installed.value.find((p) => p.id === STREMIO_ID && p.official && p.enabled && p.kind === 'source')
+  if (!rec || !(rec.manifest as PluginManifest).has.addonUrls) return []
+  try { return await call(rec, 'addonUrls', []) } catch { return [] }
+}
+
+/** The user pressed "Use the TorBox key from your Torrentio setup": check it and save it like a pasted key. */
+export async function takeFoundKey(f: FoundKey, call: Call = callPlugin, find: (f: FoundKey) => Promise<Candidate> = officialCandidate): Promise<{ ok: boolean; line: string }> {
+  const have = allServices.value.find((s) => s.id === f.serviceId)
+  return checkAndSave(have ?? (await find(f)), f.key, call)
+}
+async function officialCandidate(f: FoundKey): Promise<Candidate> {
+  const e = (await officialList()).find((o) => o.kind === 'service' && o.name === f.service)
+  if (!e) throw new Error(`Flick has no ${f.service} service to add.`)
+  const c = await prepare({ url: e.url })
+  if (c.manifest.id !== f.serviceId) throw new Error(`Flick's ${f.service} plugin is not the one this key is for.`)
+  return c
 }
 
 export interface PollOptions {

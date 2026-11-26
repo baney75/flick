@@ -188,6 +188,7 @@ const CHECKS: Record<string, (x: unknown, m: V.PluginManifest, args: unknown[]) 
   streams: V.validateStreams,
   subtitles: V.validateSubs,
   library: V.validateLibrary,
+  addonUrls: V.validateAddonUrls,
   action: V.validateAction,
   progress: () => null,
   account: V.validateAccount,
@@ -196,7 +197,7 @@ const CHECKS: Record<string, (x: unknown, m: V.PluginManifest, args: unknown[]) 
 }
 
 export interface Results {
-  userCatalogs: V.CatalogDef[]; catalog: V.CatalogResult; meta: V.Meta; streams: V.Stream[]; subtitles: V.Sub[]; library: V.Meta[]; action: V.ActionResult; progress: null
+  userCatalogs: V.CatalogDef[]; catalog: V.CatalogResult; meta: V.Meta; streams: V.Stream[]; subtitles: V.Sub[]; library: V.Meta[]; action: V.ActionResult; progress: null; addonUrls: string[]
   account: V.AccountResult; cached: string[]; resolve: V.ResolveResult
 }
 

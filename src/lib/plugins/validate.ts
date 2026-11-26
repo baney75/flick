@@ -40,7 +40,7 @@ export interface PluginManifest {
   /** A service whose downloads come over https from its own servers, so no peer sees the user: it may play with no VPN. */
   vpnOptional: boolean
   /** Optional functions the plugin has. */
-  has: { library: boolean; action: boolean; progress: boolean; subtitles: boolean; userCatalogs: boolean }
+  has: { library: boolean; action: boolean; progress: boolean; subtitles: boolean; userCatalogs: boolean; addonUrls: boolean }
 }
 export interface Video { id: string; title: string; season?: number; episode?: number; released?: string; thumbnail?: string; overview?: string }
 export interface Meta {
@@ -187,7 +187,7 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
     provides,
     debridHosts: [...new Set(debridHosts)],
     vpnOptional: x.vpnOptional === true,
-    has: { library: fns.includes('library'), action: fns.includes('action'), progress: fns.includes('progress'), subtitles: fns.includes('subtitles'), userCatalogs: fns.includes('userCatalogs') },
+    has: { library: fns.includes('library'), action: fns.includes('action'), progress: fns.includes('progress'), subtitles: fns.includes('subtitles'), userCatalogs: fns.includes('userCatalogs'), addonUrls: fns.includes('addonUrls') },
   }
   const icon = imgUrl(x.icon)
   if (icon) m.icon = icon
@@ -317,6 +317,12 @@ export function validateAction(x: unknown): ActionResult {
   const m = str(x.message, 'message', false, 500)
   if (m) r.message = m
   return r
+}
+
+/** A source's addon URLs (the Stremio plugin's), for Flick to look for debrid keys in: https only. */
+export function validateAddonUrls(x: unknown): string[] {
+  if (!Array.isArray(x)) throw new Error('addonUrls() must return a list of URLs.')
+  return [...new Set((x as unknown[]).filter((u): u is string => typeof u === 'string' && u.length <= 4000 && /^https:\/\//i.test(u)))].slice(0, 200)
 }
 
 // ---------- service results ----------
