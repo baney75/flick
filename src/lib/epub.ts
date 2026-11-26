@@ -87,9 +87,24 @@ export async function openEpub(buf: ArrayBuffer): Promise<Book> {
   return { title: meta('title'), author: meta('creator'), spine, toc, cover: coverItem ? pathOf(coverItem) : undefined, types, zip }
 }
 
+/** The raster image type a file's first bytes prove, or null. The book's own media-type is never trusted. */
+export function imageType(h: Uint8Array): string | null {
+  const s = String.fromCharCode(...h.subarray(0, 12))
+  if (h[0] === 0xff && h[1] === 0xd8 && h[2] === 0xff) return 'image/jpeg'
+  if (s.startsWith('\x89PNG\r\n\x1a\n')) return 'image/png'
+  if (s.startsWith('GIF87a') || s.startsWith('GIF89a')) return 'image/gif'
+  if (s.startsWith('RIFF') && s.slice(8, 12) === 'WEBP') return 'image/webp'
+  return null
+}
+
+/** The cover as an inert raster image, or null. It is shown on Flick's own origin, so anything that is
+ *  not provably a JPEG, PNG, GIF or WebP (HTML, SVG) is refused, whatever the book declares. */
 export async function coverBlob(b: Book): Promise<Blob | null> {
   const get = b.cover ? b.zip.get(b.cover) : undefined
-  return get ? new Blob([(await get()) as BlobPart], { type: b.types.get(b.cover!) || 'image/jpeg' }) : null
+  if (!get) return null
+  const bytes = await get()
+  const type = imageType(bytes)
+  return type ? new Blob([bytes as BlobPart], { type }) : null
 }
 
 const MIME: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp', css: 'text/css', woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf' }
@@ -174,7 +189,10 @@ export async function chapterPage(b: Book, index: number, o: PageOpts): Promise<
   const csp = `default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'`
   const head = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}">` +
     sheets.map((s) => `<style>${s.replace(/</g, '\\3c ')}</style>`).join('') + `<style>${readerCss(o)}</style>`
-  const body = out.body.outerHTML.replace(/<\/body>$/, `<script nonce="${nonce}">(${pager})(${JSON.stringify(o.start)}, ${o.gen | 0})</script></body>`)
+  // The start can be a fragment from the book: escape < so it can't close the script, and use a function
+  // so $ patterns in it are not expanded.
+  const start = JSON.stringify(o.start).replace(/</g, '\\u003c')
+  const body = out.body.outerHTML.replace(/<\/body>$/, () => `<script nonce="${nonce}">(${pager})(${start}, ${o.gen | 0})</script></body>`)
   return `<!doctype html><html><head>${head}</head>${body}</html>`
 }
 

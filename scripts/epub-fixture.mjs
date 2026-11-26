@@ -34,6 +34,7 @@ export const EVIL = `<script>parent.postMessage({pwned:'script'},'*');try{localS
 <p><a id="evil" href="javascript:parent.postMessage({pwned:'link'},'*')">A link that runs a script</a></p>
 <META http-equiv="refresh" content="0;url=http://127.0.0.1:9/upper-meta"/><SCRIPT>parent.postMessage({pwned:'upper-script'},'*')</SCRIPT>
 <xmp>&lt;/xmp&gt;&lt;meta http-equiv="refresh" content="0;url=http://127.0.0.1:9/xmp"&gt;</xmp>
+<p><a id="frag" href="ch2.xhtml#&lt;/script&gt;&lt;meta http-equiv=refresh content=0;url=/frag-escape&gt;$&amp;">A link with a hostile fragment</a></p>
 <noembed>&lt;/noembed&gt;&lt;meta http-equiv="refresh" content="0;url=http://127.0.0.1:9/noembed"&gt;</noembed>`
 
 const para = (i) => `<p>Paragraph ${i}. ${'The quick brown fox jumps over the lazy dog while the reader turns another page. '.repeat(6)}</p>`
