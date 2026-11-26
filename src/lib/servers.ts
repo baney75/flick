@@ -334,6 +334,28 @@ export async function kodiItems(s: Server): Promise<Item[]> {
 // A small media server on a NAS or computer. API: GET /api/info, /api/library and /media/<id>, with an access code.
 
 export const FLICK_UNREACHABLE = "Flick can't reach that address. Check the address, and that Tailscale or the tunnel is on."
+export const LOCAL_NETWORK_HINT = 'Your browser may ask to find devices on your local network. Choose Allow so Flick can reach this server.'
+export const LOCAL_NETWORK_BLOCKED = "Your browser kept Flick from reaching devices on your network. Click the icon left of the address bar, allow local network access for this site, and try again."
+
+/** A host only this device's network or tailnet can reach: private, CGNAT (Tailscale), link-local and loopback addresses, and .local and .ts.net names. */
+export function isLocalHost(host: string): boolean {
+  host = host.toLowerCase().replace(/^\[|\]$/g, '')
+  if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.ts.net')) return true
+  const v4 = host.match(/^(\d+)\.(\d+)\.\d+\.\d+$/)
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])]
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127)
+  }
+  return host === '::1' || /^f[cd][0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host)
+}
+
+/** True when this page is a public website and `url` is on a local network, so Chrome and Edge ask the person before Flick may reach it. */
+export function needsLocalNetwork(url: string, page: { hostname: string } | null = typeof location === 'undefined' ? null : location): boolean {
+  if (isDesktop || !page) return false
+  try { return !isLocalHost(page.hostname) && isLocalHost(new URL(flickUrl(url)).hostname) } catch { return false }
+}
+
+const unreachable = (url: string) => new Error(needsLocalNetwork(url) ? LOCAL_NETWORK_BLOCKED : FLICK_UNREACHABLE)
 
 export interface FlickInfo { app: string; v: number; name: string; version?: string }
 export interface FlickEntry { id: string; folder: string; path: string; name: string; kind: Item['kind']; ext: string; size: number; mtime: number }
@@ -365,10 +387,10 @@ export async function sameOriginFlick(): Promise<FlickInfo | null> {
 export async function flickConnect(url: string, code: string): Promise<Server> {
   url = flickUrl(url)
   code = code.trim()
-  const info = await flickInfo(url).catch((e: Error) => { throw new Error(FLICK_UNREACHABLE, { cause: e }) })
+  const info = await flickInfo(url).catch(() => { throw unreachable(url) })
   if (!info) throw new Error('That address answered, but it is not a Flick server.')
   const r = await fetch(`${url}/api/library`, { headers: { Authorization: `Bearer ${code}` } }).catch(() => null)
-  if (!r) throw new Error(FLICK_UNREACHABLE)
+  if (!r) throw unreachable(url)
   if (r.status === 401 || r.status === 403) throw new Error('That access code is wrong. Copy it again from flick-server.')
   if (!r.ok) throw new Error(`${info.name || 'The Flick server'} said ${r.status}`)
   return { id: hash(url), type: 'flick', name: info.name || 'Flick server', url, token: code }
@@ -392,7 +414,7 @@ export function flickMap(s: Server, lib: FlickLibrary): Item[] {
 
 export async function flickItems(s: Server): Promise<Item[]> {
   const r = await fetch(`${s.url}/api/library`, { headers: { Authorization: `Bearer ${s.token}` } }).catch(() => null)
-  if (!r) throw new Error(FLICK_UNREACHABLE)
+  if (!r) throw unreachable(s.url)
   if (r.status === 401) throw new Error('The access code no longer works. Remove this server and connect it again with the new code.')
   if (!r.ok) throw new Error(`${s.name} said ${r.status}`)
   return flickMap(s, await r.json())
