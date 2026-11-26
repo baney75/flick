@@ -140,6 +140,10 @@ label.toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
 .panel-head { display: flex; align-items: center; justify-content: space-between; }
 .list-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
 .list-row:first-of-type { border-top: 0; }
+.lang-list { margin: 6px 0 14px; }
+.lang-list h4 { margin-bottom: 4px; }
+.lang-list .list-row { padding: 6px 0; }
+.lang-list select { margin-top: 6px; }
 .addon-logo { width: 28px; height: 28px; border-radius: 6px; object-fit: contain; background: var(--bg); }
 .server-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
 .server-grid .panel { margin: 0; }
