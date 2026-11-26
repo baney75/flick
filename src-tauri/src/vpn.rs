@@ -11,7 +11,7 @@ use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // Addresses whose routes stand for "all traffic": Cloudflare's resolver, which the exit check also
 // fetches, and documentation ranges nobody routes on purpose, so a split tunnel that carries only
@@ -252,9 +252,14 @@ pub fn parse_route_macos(out: &str) -> Option<String> {
 /// The `dev` of `ip route get <ip>` on Linux ("1.1.1.1 via 10.0.0.1 dev wg0 src ...").
 pub fn parse_route_linux(out: &str) -> Option<String> {
     let mut w = out.split_whitespace();
+    // A route that drops traffic (an IPv6 block such as `unreachable ::/0`) goes nowhere.
+    let first = w.clone().next();
+    if matches!(first, Some("unreachable" | "blackhole" | "prohibit")) {
+        return None;
+    }
     while let Some(t) = w.next() {
         if t == "dev" {
-            return w.next().map(String::from);
+            return w.next().filter(|d| *d != "lo").map(String::from);
         }
     }
     None
@@ -327,25 +332,32 @@ pub fn parse_resolv_conf(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Linux DNS from resolv.conf's servers. systemd-resolved's stub (127.0.0.53 or 127.0.0.54)
-/// counts through `resolved`, read only when the stub is listed; any other local stub (dnsmasq,
-/// unbound) has unknown upstreams, so the answer is None.
-pub fn linux_dns(
-    servers: Vec<String>,
-    resolved: impl FnOnce() -> Option<Vec<Dns>>,
-) -> Option<Vec<Dns>> {
+/// What systemd-resolved says, when it runs.
+#[derive(Debug, PartialEq)]
+pub enum Resolved {
+    /// Not running: resolv.conf is the whole answer.
+    Off,
+    /// Running, but its servers couldn't be read.
+    Unknown,
+    Links(Vec<Dns>),
+}
+
+/// Linux DNS: resolv.conf's servers, plus resolved's whenever it runs (glibc may ask it over
+/// nsswitch whatever resolv.conf says, and it sends a link's servers out of that link). Its stub
+/// (127.0.0.53 or .54) needs resolved; any other local stub (dnsmasq, unbound) has unknown
+/// upstreams. None when the servers can't be known.
+pub fn linux_dns(servers: Vec<String>, resolved: Resolved) -> Option<Vec<Dns>> {
     let stub = |s: &String| s == "127.0.0.53" || s == "127.0.0.54";
     let local = |s: &String| s.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback());
     if servers.iter().any(|s| local(s) && !stub(s)) {
         return None;
     }
-    let mut out: Vec<Dns> = servers
-        .iter()
-        .filter(|s| !stub(s))
-        .map(|s| Dns::routed(s))
-        .collect();
-    if servers.iter().any(stub) {
-        out.extend(resolved()?);
+    let plain = servers.iter().filter(|s| !stub(s)).map(|s| Dns::routed(s));
+    let mut out: Vec<Dns> = plain.collect();
+    match resolved {
+        Resolved::Links(links) => out.extend(links),
+        Resolved::Off if !servers.iter().any(stub) => {}
+        _ => return None,
     }
     Some(out)
 }
@@ -429,7 +441,17 @@ pub fn parse_interface_name(out: &str) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-/// macOS utun and ipsec; Linux tun, wg, or any TUN or WireGuard device by type (Proton, Nord).
+/// Linux: a WireGuard or kernel OpenVPN (`ovpn`, Linux 6.16) device, or a TUN device (IFF_TUN
+/// set, IFF_TAP clear in `tun_flags`); a bridged TAP (qemu's vnet0) or a device merely named wg0
+/// is not one.
+pub fn linux_tun(uevent: &str, tun_flags: Option<&str>) -> bool {
+    let flags =
+        tun_flags.and_then(|f| u32::from_str_radix(f.trim().trim_start_matches("0x"), 16).ok());
+    let typed = |l: &str| matches!(l.trim(), "DEVTYPE=wireguard" | "DEVTYPE=ovpn");
+    uevent.lines().any(typed) || flags.is_some_and(|f| f & 3 == 1)
+}
+
+/// macOS utun and ipsec by name; Linux by device type (`linux_tun`).
 pub fn tunnel_name(os: &str, name: &str, tun_device: bool) -> bool {
     let num = |p: &str| {
         name.strip_prefix(p)
@@ -437,12 +459,18 @@ pub fn tunnel_name(os: &str, name: &str, tun_device: bool) -> bool {
     };
     match os {
         "macos" => num("utun") || num("ipsec"),
-        "linux" => num("tun") || name.starts_with("wg") || tun_device,
+        "linux" => tun_device,
         _ => false,
     }
 }
 
 fn run(bin: &str, args: &[&str], stdin: Option<&str>) -> Option<String> {
+    run_within(bin, args, stdin, Duration::from_secs(5))
+}
+
+/// A tool's output, or None when it fails or runs past `limit` (then it is killed): a hung
+/// resolvectl must fail the check, not stall it on its last answer.
+fn run_within(bin: &str, args: &[&str], stdin: Option<&str>, limit: Duration) -> Option<String> {
     let mut child = Command::new(bin)
         .args(args)
         .stdin(Stdio::piped())
@@ -451,11 +479,26 @@ fn run(bin: &str, args: &[&str], stdin: Option<&str>) -> Option<String> {
         .spawn()
         .ok()?;
     let input = stdin.unwrap_or("").as_bytes();
-    child.stdin.take()?.write_all(input).ok()?;
-    let out = child.wait_with_output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    let wrote = child.stdin.take().map(|mut i| i.write_all(input));
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = vec![];
+        stdout.read_to_end(&mut buf).map(|_| buf)
+    });
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if start.elapsed() < limit => std::thread::sleep(Duration::from_millis(10)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let out = reader.join().ok()?.ok()?;
+    (wrote?.is_ok() && status?.success()).then(|| String::from_utf8_lossy(&out).into_owned())
 }
 
 fn ip_bin() -> Option<&'static str> {
@@ -464,17 +507,24 @@ fn ip_bin() -> Option<&'static str> {
     bins.into_iter().find(|p| Path::new(p).is_file())
 }
 
-fn resolvectl() -> Option<Vec<Dns>> {
+fn resolvectl() -> Resolved {
+    if !Path::new("/run/systemd/resolve").is_dir() {
+        return Resolved::Off;
+    }
     let bins = [
         "/usr/bin/resolvectl",
         "/bin/resolvectl",
         "/run/current-system/sw/bin/resolvectl",
     ];
-    let bin = bins.into_iter().find(|p| Path::new(p).is_file())?;
-    let dns = run(bin, &["dns"], None)?;
+    let Some(bin) = bins.into_iter().find(|p| Path::new(p).is_file()) else {
+        return Resolved::Unknown;
+    };
+    let Some(dns) = run(bin, &["dns"], None) else {
+        return Resolved::Unknown;
+    };
     let domains = run(bin, &["domain"], None).unwrap_or_default();
     let routes = run(bin, &["default-route"], None).unwrap_or_default();
-    Some(parse_resolved(&dns, &domains, &routes))
+    Resolved::Links(parse_resolved(&dns, &domains, &routes))
 }
 
 /// The real system: macOS route, netstat and scutil; Linux ip and resolv.conf.
@@ -521,7 +571,7 @@ impl Probe for System {
             );
         }
         let conf = std::fs::read_to_string("/etc/resolv.conf").ok()?;
-        linux_dns(parse_resolv_conf(&conf), resolvectl)
+        linux_dns(parse_resolv_conf(&conf), resolvectl())
     }
     fn addrs(&self, iface: &str) -> Vec<IpAddr> {
         let all = if_addrs::get_if_addrs().unwrap_or_default();
@@ -540,7 +590,8 @@ impl Probe for System {
     fn is_tunnel(&self, iface: &str) -> bool {
         let sys = Path::new("/sys/class/net").join(iface);
         let uevent = std::fs::read_to_string(sys.join("uevent")).unwrap_or_default();
-        let dev = uevent.contains("DEVTYPE=wireguard") || sys.join("tun_flags").exists();
+        let flags = std::fs::read_to_string(sys.join("tun_flags")).ok();
+        let dev = linux_tun(&uevent, flags.as_deref());
         tunnel_name(std::env::consts::OS, iface, dev)
     }
     fn mesh_service(&self, iface: &str) -> bool {
