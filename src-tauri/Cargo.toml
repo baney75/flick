@@ -26,6 +26,8 @@ percent-encoding = "2"
 # Shares this library with the person's other devices; embed-web serves them the Flick app too.
 flick-server = { path = "../server", features = ["embed-web"] }
 if-addrs = "0.15"
+# Checks the yt-dlp release binary against its published SHA2-256SUMS.
+sha2 = "0.10"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
