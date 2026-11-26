@@ -86,7 +86,7 @@ describe('the Photos set', () => {
     const groups = byMonth(set)
     expect(groups.map((g) => [g.key, g.items.length])).toEqual([['2026-11', 5]])
     // Newest first: the video from the 7th leads, and it is still a video for the rest of the library.
-    expect(groups[0].items[0]).toMatchObject({ kind: 'video', title: 'Img 5' })
+    expect(groups[0].items[0]).toMatchObject({ kind: 'video', title: 'IMG_5' })
   })
 
   it('a folder of movies has no Photos', () => {
@@ -96,17 +96,25 @@ describe('the Photos set', () => {
 
   it('a picture named after a video beside it is a poster, not a photo', () => {
     const list = ['/m/Heat (1995).mkv', '/m/Heat (1995).jpg', '/m/Heat (1995)-thumb.jpg', '/m/movie.jpg', '/m/default.jpg', '/m/cdart.png',
-      '/c/Clip.mp4', '/c/clip.JPG'].map((p) => _test.itemFromEntry({ path: p, name: p.split('/').pop()!, size: 1, mtime: 1 }, 'm')).filter(Boolean) as Item[]
+      '/s/Show.S01E01.mkv', '/s/Show.S01E01.jpg'].map((p) => _test.itemFromEntry({ path: p, name: p.split('/').pop()!, size: 1, mtime: 1 }, 'm')).filter(Boolean) as Item[]
     expect(photoSet(list)).toEqual([])
     // The same name in another folder is a photo.
-    expect(photoSet([...list, entry('/other/Clip.jpg')]).map((i) => i.title)).toEqual(['Clip'])
+    expect(photoSet([...list, entry('/other/Heat (1995).jpg')]).map((i) => i.title)).toEqual(['Heat (1995)'])
+  })
+
+  it('a Live Photo keeps its picture and its video, camera counters that look like years too', () => {
+    const list = ['/p/IMG_1234.HEIC', '/p/IMG_1234.MOV', '/p/IMG_2005.HEIC', '/p/IMG_2005.MOV', '/p/Wedding.mp4', '/p/Wedding-1.jpg'].map((p) => entry(p))
+    expect(photoSet(list).map((i) => i.title).sort()).toEqual(['IMG_1234', 'IMG_1234', 'IMG_2005', 'IMG_2005', 'Wedding', 'Wedding-1'])
+    const mov = entry('/p/IMG_2005.MOV')
+    expect([mov.kind, mov.title, mov.year]).toEqual(['video', 'IMG_2005', undefined])
   })
 
   it('a server poster named after its video is not a photo', () => {
     const s: Server = { id: 'srv', type: 'flick', name: 'NAS', url: 'https://nas.example', token: 't' }
     const e = (id: string, path: string, kind: 'photo' | 'video') => ({ id, folder: 'Movies', path, name: path.split('/').pop()!, kind, ext: '', size: 1, mtime: 1 })
-    const out = flickMap(s, { name: 'NAS', folders: ['Movies'], items: [e('v', 'Heat (1995)/Heat (1995).mkv', 'video'), e('p', 'Heat (1995)/Heat (1995).jpg', 'photo'), e('q', 'Trip/Heat (1995).jpg', 'photo')] })
-    expect(out.filter((i) => i.kind === 'photo').map((i) => i.dir)).toEqual(['srv:Movies/Trip'])
+    const out = flickMap(s, { name: 'NAS', folders: ['Movies'], items: [e('v', 'Heat (1995)/Heat (1995).mkv', 'video'), e('p', 'Heat (1995)/Heat (1995).jpg', 'photo'), e('q', 'Trip/Heat (1995).jpg', 'photo'),
+      e('lv', 'Trip/IMG_2005.MOV', 'video'), e('lp', 'Trip/IMG_2005.HEIC', 'photo')] })
+    expect(out.filter((i) => i.kind === 'photo').map((i) => i.dir)).toEqual(['srv:Movies/Trip', 'srv:Movies/Trip'])
   })
 
   it('takes home videos only from folders with photos, and never titled movies', () => {

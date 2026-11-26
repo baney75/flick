@@ -405,7 +405,8 @@ export function flickMap(s: Server, lib: FlickLibrary): Item[] {
   const paths = new Map<string, string>()
   // Server URLs carry no file name, so posters named after a video are told apart here, where the names are known.
   const dirOfEntry = (x: FlickEntry) => `${x.folder}/${x.path.replace(/\/?[^/]*$/, '')}`
-  const videos = new Set(lib.items.filter((x) => x.kind === 'video').map((x) => `${dirOfEntry(x)}\0${stem(x.name)}`))
+  const titled = (x: FlickEntry) => { const n = named(x.name, 'video'); return !!(n.year || n.show) }
+  const videos = new Set(lib.items.filter((x) => x.kind === 'video' && titled(x)).map((x) => `${dirOfEntry(x)}\0${stem(x.name)}`))
   const isPhoto = (x: FlickEntry) => x.kind === 'photo' && !isArtwork(x.name) && !isPosterOf(dirOfEntry(x), x.name, videos)
   const list = lib.items.filter((x) => x.kind === 'video' || x.kind === 'audio' || x.kind === 'book' || isPhoto(x)).map((x): Item => {
     const kind = ext(x.name) === 'm4b' ? 'audiobook' : x.kind

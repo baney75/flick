@@ -19,7 +19,7 @@ export function dirOf(i: Pick<Item, 'dir' | 'src'>): string {
   return ''
 }
 
-/** A video from a phone or camera (IMG_1234.MOV): no year and no episode in its name. Server URLs carry no file name, so the extension is not checked. */
+/** A video from a phone or camera (IMG_1234.MOV): no year and no episode in its name (camera counters are not years). Server URLs carry no file name, so the extension is not checked. */
 export const isHomeVideo = (i: Item) => i.kind === 'video' && !i.show && !i.year
 
 /**
@@ -27,7 +27,8 @@ export const isHomeVideo = (i: Item) => i.kind === 'video' && !i.show && !i.year
  * The videos stay videos everywhere else too.
  */
 export function photoSet(items: Item[]): Item[] {
-  const videos = new Set(items.filter((i) => i.kind === 'video').map((i) => `${dirOf(i)}\0${stem(srcName(i.src))}`))
+  // Only a titled video (a year or an episode) has a poster; a phone video beside its photo is a Live Photo.
+  const videos = new Set(items.filter((i) => i.kind === 'video' && !isHomeVideo(i)).map((i) => `${dirOf(i)}\0${stem(srcName(i.src))}`))
   const photos = items.filter((i) => i.kind === 'photo' && !isPosterOf(dirOf(i), srcName(i.src), videos))
   const dirs = new Set(photos.map(dirOf))
   return [...photos, ...items.filter((i) => dirs.size > 0 && isHomeVideo(i) && dirs.has(dirOf(i)))]
@@ -38,8 +39,8 @@ export function photoSet(items: Item[]): Item[] {
 export const stem = (name: string) => name.replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '').toLowerCase()
 
 /**
- * A picture named after a video in its folder (Heat (1995).jpg or Heat (1995)-thumb.jpg beside Heat (1995).mkv)
- * is that video's poster, not a photo. `videos` holds "folder\0stem" for each video.
+ * A picture named after a titled video in its folder (Heat (1995).jpg or Heat (1995)-thumb.jpg beside Heat (1995).mkv)
+ * is that video's poster, not a photo. `videos` holds "folder\0stem" for each titled video.
  */
 export function isPosterOf(dir: string, name: string, videos: Set<string>): boolean {
   const s = stem(name)

@@ -1,7 +1,7 @@
 // The library: folders, stored media, remote servers, all as one fast list of items.
 
 import * as db from './db'
-import { itemKindOf, parseName, parseBook, type Kind, SUB_EXT, ext } from './parse'
+import { itemKindOf, parseName, parseBook, isCameraName, type Kind, SUB_EXT, ext } from './parse'
 import { isDesktop, invoke, fileUrl, onDesktopEvent, type ScanEntry, type Probe } from './platform'
 import { kodiResolve } from './servers'
 import { localFor } from './downloads'
@@ -88,7 +88,7 @@ export function itemFromFile(file: File, src: Source, origin: Origin, folder?: s
 /** Title fields for a file: release-name parsing for media, "Author - Title" for books. */
 export function named(name: string, kind: Kind): Pick<Item, 'title' | 'show' | 'season' | 'episode' | 'year' | 'author'> {
   if (kind === 'book' || kind === 'audiobook') return parseBook(name)
-  if (kind === 'photo') return { title: name.replace(/\.[^.]+$/, '') }
+  if (kind === 'photo' || (kind === 'video' && isCameraName(name))) return { title: name.replace(/\.[^.]+$/, '') }
   const p = parseName(name)
   return { title: p.title, show: p.show, season: p.season, episode: p.episode, year: p.year }
 }
