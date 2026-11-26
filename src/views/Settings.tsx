@@ -3,6 +3,7 @@ import { settings, setSettings, notify, items, stremio, go } from '../lib/store'
 import { isDesktop, invoke } from '../lib/platform'
 import { formatBytes } from '../lib/parse'
 import { SyncPanel } from './Sync'
+import { SharePanel } from './Share'
 import { Icon } from '../components/icons'
 import { downloads, removeDownload } from '../lib/downloads'
 import { currentSetup, encodeSetup, validateSetup, SETUP_BASE } from '../lib/setup'
@@ -68,6 +69,8 @@ export function Settings() {
       </section>
 
       <SyncPanel />
+
+      {isDesktop && <SharePanel />}
 
       <section class="panel">
         <h3>Appearance</h3>

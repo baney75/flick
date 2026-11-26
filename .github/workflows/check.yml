@@ -36,3 +36,7 @@ jobs:
         with: { workspaces: server }
       - run: cargo clippy --manifest-path server/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path server/Cargo.toml
+      - name: embed-web builds (stub dist)
+        run: |
+          mkdir -p dist && [ -f dist/index.html ] || echo '<!doctype html>stub' > dist/index.html
+          cargo clippy --manifest-path server/Cargo.toml --features embed-web --all-targets -- -D warnings

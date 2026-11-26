@@ -14,3 +14,7 @@ serde_json = "1"
 sha2 = "0.10"
 tiny_http = "0.12"
 walkdir = "2"
+include_dir = { version = "0.7", optional = true }
+
+[features]
+embed-web = ["dep:include_dir"]

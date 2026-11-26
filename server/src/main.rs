@@ -1,21 +1,29 @@
-use flick_server::{access_code, setup_link, start, Config, DEFAULT_PORT, SETUP_BASE};
+use flick_server::{access_code, reach, start, Config, DEFAULT_PORT};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 const HELP: &str = "flick-server: share media folders with Flick
 
-Usage: flick-server [--media DIR]... [--port N] [--name NAME] [--lan | --local] [--config DIR] [--new-code]
+Usage: flick-server [--media DIR]... [--port N] [--name NAME] [--lan | --local] [--web DIR | --no-web]
+                    [--tailscale] [--cloudflare] [--public-url URL | --no-public-url] [--config DIR] [--new-code]
 
   --media DIR   share DIR (repeat for more folders)
   --port N      port to listen on (default 8740)
   --name NAME   name Flick shows for this server (default: the hostname)
   --lan         listen on all interfaces, not just this machine (remembered)
   --local       listen on this machine only again (the default)
+  --web DIR     serve the Flick web app from DIR (remembered; default: the built-in copy, if any)
+  --no-web      forget --web
+  --tailscale   reach this server at https://<machine>.<tailnet>.ts.net:<port> with Tailscale Serve
+  --cloudflare  open a Cloudflare quick tunnel (a new trycloudflare.com address each run)
+  --public-url URL  address of your own named tunnel or reverse proxy, for the setup link (remembered)
+  --no-public-url   forget --public-url
   --config DIR  settings folder (default: $FLICK_SERVER_CONFIG, else ~/.config/flick-server)
   --new-code    replace the access code
   --help        show this help
 
-Flags are saved, so plain `flick-server` starts with the last settings.";
+Flags marked remembered are saved, as are --media, --port and --name, so plain
+`flick-server` starts with the last settings. --tailscale and --cloudflare apply to one run.";
 
 #[derive(Serialize, Deserialize, Default)]
 struct Saved {
@@ -23,6 +31,10 @@ struct Saved {
     name: Option<String>,
     port: Option<u16>,
     lan: bool,
+    #[serde(default)]
+    web: Option<PathBuf>,
+    #[serde(default)]
+    public_url: Option<String>,
 }
 
 fn default_config_dir() -> PathBuf {
@@ -57,6 +69,7 @@ fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let (mut media, mut port, mut name, mut lan, mut dir, mut renew) =
         (vec![], None, None, None, None, false);
+    let (mut web, mut public_url, mut tailscale, mut cloudflare) = (None, None, false, false);
     while let Some(a) = args.next() {
         let mut val = || args.next().ok_or(format!("{a} needs a value"));
         match a.as_str() {
@@ -67,6 +80,12 @@ fn run() -> Result<(), String> {
             "--lan" => lan = Some(true),
             "--local" => lan = Some(false),
             "--new-code" => renew = true,
+            "--web" => web = Some(Some(PathBuf::from(val()?))),
+            "--no-web" => web = Some(None),
+            "--public-url" => public_url = Some(Some(val()?.trim_end_matches('/').to_string())),
+            "--no-public-url" => public_url = Some(None),
+            "--tailscale" => tailscale = true,
+            "--cloudflare" => cloudflare = true,
             "--help" | "-h" => {
                 println!("{HELP}");
                 return Ok(());
@@ -91,6 +110,17 @@ fn run() -> Result<(), String> {
     if let Some(l) = lan {
         saved.lan = l;
     }
+    if let Some(w) = web {
+        saved.web = w.map(|w| std::fs::canonicalize(&w).unwrap_or(w));
+    }
+    if let Some(u) = public_url {
+        saved.public_url = u;
+    }
+    if let Some(w) = &saved.web {
+        if !w.join("index.html").is_file() {
+            return Err(format!("{} has no index.html", w.display()));
+        }
+    }
     if saved.media.is_empty() {
         return Err(format!("no media folders yet: pass --media DIR\n\n{HELP}"));
     }
@@ -108,6 +138,7 @@ fn run() -> Result<(), String> {
         name: name.clone(),
         lan: saved.lan,
         config_dir: dir,
+        web: saved.web.clone(),
     };
     let handle = start(cfg)?;
     let mut urls = vec![handle.url()];
@@ -124,12 +155,45 @@ fn run() -> Result<(), String> {
     for m in &saved.media {
         println!("  {}", m.display());
     }
-    for u in &urls {
-        println!(
-            "\n{u}\n  Setup link: {}",
-            setup_link(SETUP_BASE, &name, u, handle.token())
-        );
+    if let Some(u) = &saved.public_url {
+        urls.push(u.clone());
     }
+    for u in &urls {
+        println!("\n{u}\n  Setup link: {}", handle.setup_link(u));
+    }
+    let port = handle.port();
+    if tailscale {
+        match reach::tailscale_serve(port) {
+            Ok(u) => {
+                println!(
+                    "\nTailscale (devices on your tailnet): {u}\n  Setup link: {}",
+                    handle.setup_link(&u)
+                );
+                let off = reach::serve_off_args(port).join(" ");
+                println!("  The mapping stays after you stop. Remove it with: tailscale {off}");
+            }
+            Err(e) => eprintln!("\nTailscale: {e}"),
+        }
+    }
+    let _tunnel = if cloudflare {
+        match reach::cloudflare_quick(port, std::time::Duration::from_secs(30)) {
+            Ok(t) => {
+                println!(
+                    "\nCloudflare quick tunnel: {}\n  Setup link: {}",
+                    t.url,
+                    handle.setup_link(&t.url)
+                );
+                println!("  The address changes each run. Anyone with the link and the code can reach this server.");
+                Some(t)
+            }
+            Err(e) => {
+                eprintln!("\nCloudflare: {e}\n  Still serving locally.");
+                None
+            }
+        }
+    } else {
+        None
+    };
     println!("\nPress Ctrl-C to stop.");
     let (tx, rx) = std::sync::mpsc::channel();
     ctrlc::set_handler(move || {
