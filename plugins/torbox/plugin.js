@@ -9,6 +9,9 @@ const API = 'https://api.torbox.app/v1/api'
 const PLANS = { 0: 'Free', 1: 'Essential', 2: 'Pro', 3: 'Standard' }
 const VIDEO = /\.(mkv|mp4|m4v|mov|avi|webm|ts|m2ts|wmv|mpg|mpeg|flv)$/i
 const KEEP_IDS = 200
+// Passing mylist failures in a row, per hash, before Flick treats the stored id as stale.
+const BUSY_TRIES = 5
+const busy = new Map()
 
 const auth = (ctx) => ({ Authorization: `Bearer ${ctx.settings.apiKey}` })
 
@@ -17,16 +20,22 @@ async function api(ctx, path, init = {}) {
   const r = await ctx.fetch(`${API}${path}`, { ...init, headers: { ...auth(ctx), ...init.headers } })
   let j = null
   try { j = await r.json() } catch { /* not JSON: reported below */ }
-  if (!j || j.success !== true) throw new Error(j?.detail || j?.error || `TorBox answered ${r.status}.`)
+  if (!j || j.success !== true) {
+    const e = new Error(j?.detail || j?.error || `TorBox answered ${r.status}.`)
+    e.status = r.status
+    throw e
+  }
   return j.data
 }
 
-/** The file to play: Stremio's fileIdx is the torrent's file order, which TorBox uses as the file id. */
+/** The file to play. Flick assumes TorBox's file ids follow the torrent's file order, like Stremio's
+ *  fileIdx. TorBox's docs do not say so, so a file whose name matches wins over the id. */
 export function pickFile(files, fileIdx, name) {
   if (!Array.isArray(files) || !files.length) return null
+  const fname = (x) => x.short_name || x.name || ''
+  if (name) { const f = files.find((x) => fname(x).endsWith(name)); if (f) return f }
   if (Number.isInteger(fileIdx)) { const f = files.find((x) => x.id === fileIdx); if (f) return f }
-  if (name) { const f = files.find((x) => (x.short_name || x.name || '').endsWith(name)); if (f) return f }
-  const videos = files.filter((x) => VIDEO.test(x.short_name || x.name || ''))
+  const videos = files.filter((x) => VIDEO.test(fname(x)))
   return (videos.length ? videos : files).reduce((a, b) => ((b.size ?? 0) > (a.size ?? 0) ? b : a))
 }
 
@@ -98,8 +107,21 @@ export default {
     let id = (await torrentIds(ctx))[hash]
     if (id == null) id = await addTorrent(ctx, hash)
     let t = null
-    try { t = await api(ctx, `/torrents/mylist?id=${encodeURIComponent(id)}&bypass_cache=true`) } catch { t = null }
-    // Removed from the TorBox list since: forget it, and the next call adds it again.
+    try { t = await api(ctx, `/torrents/mylist?id=${encodeURIComponent(id)}&bypass_cache=true`) } catch (e) {
+      const s = e.status
+      // A rate limit, a server error or a dropped connection: keep the id and ask again, a few times.
+      if ((s === undefined || s === 429 || s >= 500) && (busy.get(hash) ?? 0) < BUSY_TRIES) {
+        busy.set(hash, (busy.get(hash) ?? 0) + 1)
+        return { wait: { message: 'TorBox is busy, trying again' } }
+      }
+      busy.delete(hash)
+      // The key no longer works: say so now rather than wait.
+      if (s === 401 || s === 403) return { error: e.message }
+      // Any other answer means TorBox no longer has it under that id: forget it and add it again.
+      await rememberId(ctx, hash, null)
+      return { wait: { message: 'TorBox is adding it' } }
+    }
+    busy.delete(hash)
     if (!t) { await rememberId(ctx, hash, null); return { wait: { message: 'TorBox is adding it' } } }
     const state = String(t.download_state ?? '')
     if (/^(error|failed|missingFiles)/i.test(state)) { await rememberId(ctx, hash, null); return { error: `TorBox could not fetch this torrent (${state}).` } }

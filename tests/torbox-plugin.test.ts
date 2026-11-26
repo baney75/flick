@@ -80,10 +80,48 @@ describe('TorBox plugin', () => {
     expect(await ctx.store.get('ids')).toEqual({})
   })
 
-  it('picks the file: fileIdx, then the name, then the largest video', () => {
+  it('resolve: a passing TorBox error keeps the torrent, so it is never added twice', async () => {
+    const lists = [{ status: 500, body: { success: false, error: 'UNKNOWN_ERROR', detail: 'Something went wrong.', data: null } }, { status: 429, body: {} }, F.mylist_done]
+    const route = (r: Req): Reply => {
+      if (r.url.includes('/createtorrent')) return F.createtorrent
+      if (r.url.includes('/mylist')) return lists.shift() ?? F.mylist_done
+      if (r.url.includes('/requestdl')) return F.requestdl
+      return { status: 404, body: {} }
+    }
+    const ctx = fakeCtx({ apiKey: KEY }, route)
+    expect(await torbox.resolve(ctx, { infoHash: HASH })).toEqual({ wait: { message: 'TorBox is busy, trying again' } })
+    expect(await torbox.resolve(ctx, { infoHash: HASH })).toEqual({ wait: { message: 'TorBox is busy, trying again' } })
+    expect((await torbox.resolve(ctx, { infoHash: HASH })).url).toMatch(/^https:\/\/store-031/)
+    expect(ctx.requests.filter((r) => r.url.endsWith('/createtorrent'))).toHaveLength(1)
+    expect(await ctx.store.get('ids')).toEqual({ [HASH]: 4711 })
+  })
+
+  it('resolve: a revoked key is an error at once; a stale id is added again; endless 5xx gives up on the id', async () => {
+    let list: Reply = F.user_bad
+    const route = (r: Req): Reply => (r.url.includes('/createtorrent') ? F.createtorrent : r.url.includes('/mylist') ? list : { status: 404, body: {} })
+    const ctx = fakeCtx({ apiKey: KEY }, route)
+    const H2 = 'e'.repeat(40)
+    await ctx.store.set('ids', { [H2]: 7 })
+    expect(await torbox.resolve(ctx, { infoHash: H2 })).toEqual({ error: 'Your token is invalid or has expired. Please log in again or reset your token.' })
+    expect(await ctx.store.get('ids')).toEqual({ [H2]: 7 })
+    list = { status: 400, body: { success: false, error: 'BAD_REQUEST', detail: 'Invalid torrent id.', data: null } }
+    expect(await torbox.resolve(ctx, { infoHash: H2 })).toEqual({ wait: { message: 'TorBox is adding it' } })
+    expect(await ctx.store.get('ids')).toEqual({})
+    list = { status: 500, body: { success: false, error: 'DATABASE_ERROR', detail: 'Database error.', data: null } }
+    const seen: string[] = []
+    for (let i = 0; i < 6; i++) seen.push((await torbox.resolve(ctx, { infoHash: H2 })).wait.message)
+    expect(seen).toEqual([...Array(5).fill('TorBox is busy, trying again'), 'TorBox is adding it'])
+    // The 400 dropped the stale id, so the 500 run added it once; five busy answers later that id goes too.
+    expect(ctx.requests.filter((r) => r.url.endsWith('/createtorrent'))).toHaveLength(1)
+    expect(await ctx.store.get('ids')).toEqual({})
+  })
+
+  it('picks the file: the name, then fileIdx, then the largest video', () => {
     const files = (F.mylist_done.body as { data: { files: { id: number }[] } }).data.files
     expect(pickFile(files, 1).id).toBe(1)
     expect(pickFile(files, undefined, 'Show.S01E01.1080p.mkv').id).toBe(1)
+    // An id that points at another file loses to the name.
+    expect(pickFile(files, 2, 'Show.S01E01.1080p.mkv').id).toBe(1)
     expect(pickFile(files).id).toBe(2)
     expect(pickFile([], 0)).toBeNull()
   })
