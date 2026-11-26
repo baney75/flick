@@ -776,7 +776,7 @@ try {
   await np.getByRole('button', { name: 'Connect all' }).click()
   await np.getByText('Done').waitFor()
   await np.goto(`${BASE}/#/library`)
-  await np.getByRole('tab', { name: /Photos/ }).click()
+  check(await np.waitForFunction(() => document.querySelector('[role=tab][aria-selected=true]')?.textContent?.startsWith('Photos'), null, { timeout: 5000 }).then(() => true, () => false), 'a library of only photos opens on the Photos tab')
   await np.locator('.photo-tile img').first().waitFor({ timeout: 10000 })
   check(/2001/.test(await np.getByRole('tab', { name: /Photos/ }).innerText()), 'a flick-server share lists its photos')
   await np.waitForTimeout(500)
