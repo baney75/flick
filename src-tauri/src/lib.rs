@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 mod plugins;
+mod share;
 mod ytdlp;
 
 const VIDEO: &[&str] = &[
@@ -1290,6 +1291,7 @@ pub fn run() {
         .manage(KodiProxy::default())
         .manage(Downloads::default())
         .manage(plugins::PluginHosts::default())
+        .manage(share::Share::default())
         .manage(ytdlp::PluginTools::default())
         .register_asynchronous_uri_scheme_protocol("kodi", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
@@ -1315,6 +1317,10 @@ pub fn run() {
             make_default_player,
             plugins::plugin_hosts,
             plugins::plugin_fetch,
+            share::share_start,
+            share::share_stop,
+            share::share_status,
+            share::share_new_code,
             ytdlp::plugin_tools,
             ytdlp::plugin_tool,
             ytdlp::tool_open
@@ -1346,7 +1352,8 @@ pub fn run() {
                 .collect();
             queue_open(handle, paths);
         }
-        if let tauri::RunEvent::Exit = event {
+        if let tauri::RunEvent::Exit = &event {
+            share::stop_all(handle);
             ytdlp::stop_job(&handle.state::<ytdlp::PluginTools>());
         }
         let _ = (handle, event);

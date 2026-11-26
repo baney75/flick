@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'preact/hooks'
 import { go } from '../lib/store'
 import { fetchManifest } from '../lib/stremio'
 import { isDesktop } from '../lib/platform'
+import { needsLocalNetwork, LOCAL_NETWORK_HINT } from '../lib/servers'
 import { decodeSetup, applySetup, describeSettings, type Setup as Payload, type SetupResult } from '../lib/setup'
 import { Icon } from '../components/icons'
 
@@ -49,6 +50,7 @@ export function Setup({ code }: { code: string }) {
             <button class="btn primary" onClick={connect} disabled={busy || !lines.length}>{busy ? 'Connecting…' : 'Connect all'}</button>
             <button class="btn ghost" onClick={() => go('/')} disabled={busy}>Cancel</button>
           </div>
+          {busy && parsed.p.servers?.some((s) => needsLocalNetwork(s.url)) && <p class="small dim">{LOCAL_NETWORK_HINT}</p>}
         </div>
       )}
       {results && (

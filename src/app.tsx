@@ -11,12 +11,14 @@ import { Setup } from './views/Setup'
 import { Reader } from './views/Reader'
 import { Player } from './components/Player'
 import { Icon } from './components/icons'
+import { Logo } from './components/Logo'
 import { playFiles, playPaths } from './lib/actions'
 import { isDesktop, invoke, onDesktopEvent } from './lib/platform'
 import { kindOf } from './lib/parse'
 import { installSpatialNav } from './lib/spatial'
 import { resumeDownloads } from './lib/downloads'
 import { startOffline } from './lib/offline'
+import { startShare } from './lib/share'
 
 const NAV = [
   { path: '/', label: 'Home', icon: 'home' },
@@ -54,7 +56,7 @@ export function App() {
 
   useEffect(() => {
     installSpatialNav(() => !!nowPlaying.value)
-    Promise.all([reloadItems(), loadProgress()]).then(startSyncBinding).catch(() => {})
+    Promise.all([reloadItems(), loadProgress()]).then(startSyncBinding).catch(() => {}).then(startShare)
     loadStremio()
     resumeDownloads().catch(() => {})
     startOffline()
@@ -105,7 +107,7 @@ export function App() {
     <div class={`app ${isDesktop ? 'desktop' : ''}`}>
       {isDesktop && <div class="drag-strip" data-tauri-drag-region />}
       <nav class="sidebar" aria-label="Main">
-        <a class="brand" href="#/" aria-label="Flick home"><span class="brand-mark"><Icon name="play" size={14} /></span><span class="brand-name">Flick</span></a>
+        <a class="brand" href="#/" aria-label="Flick home"><Logo size={30} /><span class="brand-name">Flick</span></a>
         {NAV.map((n) => (
           <a href={`#${n.path}`} class={`nav-item ${current === n.path ? 'on' : ''}`} aria-current={current === n.path ? 'page' : undefined}
             onClick={(e) => { e.preventDefault(); go(n.path) }}>
