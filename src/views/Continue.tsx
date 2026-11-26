@@ -1,7 +1,7 @@
 // The Continue tab: every movie, episode, song or book left partway, wherever it plays from.
 
 import { useEffect, useMemo } from 'preact/hooks'
-import { progress, go } from '../lib/store'
+import { progress, items, go } from '../lib/store'
 import { Card } from '../components/Card'
 import { Icon } from '../components/icons'
 import { sources, libraries, loadLibrary, titlePath } from '../lib/plugins/use'
@@ -13,7 +13,8 @@ export function Continue() {
   const srcs = sources.value
   useEffect(() => { for (const rec of srcs) loadLibrary(rec) }, [srcs.map((r) => r.id).join()])
   const libs = useMemo(() => srcs.map((r) => ({ p: r.id, list: libraries.value[r.id] ?? [] })), [srcs, libraries.value])
-  const list = useMemo(() => continueEntries(progress.value, libs), [progress.value, libs])
+  const showOf = useMemo(() => { const m = new Map(items.value.map((i) => [i.id, i.show])); return (id: string) => m.get(id) }, [items.value])
+  const list = useMemo(() => continueEntries(progress.value, libs, showOf), [progress.value, libs, showOf])
   const nameOf = (p: string) => srcs.find((r) => r.id === p)?.manifest.name
 
   return (
