@@ -86,20 +86,51 @@ pub fn win_quote(s: &str) -> String {
     o + &"\\".repeat(slashes * 2) + "\""
 }
 
-/// `schtasks` arguments that create a logon task running `exe --config <config>`.
-pub fn schtasks_create_args(exe: &Path, config: &Path) -> Vec<String> {
-    let tr = format!(
-        "{} --config {}",
-        win_quote(&plain(exe).to_string_lossy()),
+/// Task Scheduler XML for a logon task of `user` running `exe --config <config>`. Unlike a plain
+/// `schtasks /Create`, it has no 72 hour run limit, keeps running on battery and restarts after a crash.
+pub fn task_xml(exe: &Path, config: &Path, user: &str) -> String {
+    let exe = xml(&plain(exe).to_string_lossy());
+    let args = xml(&format!(
+        "--config {}",
         win_quote(&plain(config).to_string_lossy())
-    );
-    [
-        "/Create", "/TN", TASK, "/SC", "ONLOGON", "/RL", "LIMITED", "/F", "/TR",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .chain([tr])
-    .collect()
+    ));
+    let user = xml(user);
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>Flick server: shares media folders with Flick</Description></RegistrationInfo>
+  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{user}</UserId></LogonTrigger></Triggers>
+  <Principals><Principal id="Author"><UserId>{user}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author"><Exec><Command>{exe}</Command><Arguments>{args}</Arguments></Exec></Actions>
+</Task>
+"#
+    )
+}
+
+/// UTF-16 LE with a byte order mark, the encoding `schtasks /XML` reads reliably.
+pub fn utf16le(s: &str) -> Vec<u8> {
+    [0xFF, 0xFE]
+        .into_iter()
+        .chain(s.encode_utf16().flat_map(|u| u.to_le_bytes()))
+        .collect()
+}
+
+/// `schtasks` arguments that create the task from the XML at `xml_path`, replacing an old one.
+pub fn schtasks_create_args(xml_path: &Path) -> Vec<String> {
+    ["/Create", "/TN", TASK, "/XML"]
+        .iter()
+        .map(|s| s.to_string())
+        .chain([plain(xml_path).to_string_lossy().into_owned(), "/F".into()])
+        .collect()
 }
 
 /// Drops the `\\?\` prefix Windows canonicalize adds, which schtasks and some programs reject.
@@ -189,11 +220,21 @@ pub fn install(exe: &Path, config: &Path) -> Result<Vec<String>, String> {
             lines.push(format!("Note: it stops when you log out. To keep it running after logout and start it at boot, run: sudo loginctl enable-linger {user}"));
         }
     } else if cfg!(windows) {
-        let args = schtasks_create_args(exe, config);
-        must(
+        let user = match (std::env::var("USERDOMAIN"), std::env::var("USERNAME")) {
+            (Ok(d), Ok(u)) => format!("{d}\\{u}"),
+            (_, Ok(u)) => u,
+            _ => return Err("USERNAME is not set, so the logon task has no user".into()),
+        };
+        let xml_path = config.join("flick-server-task.xml");
+        std::fs::write(&xml_path, utf16le(&task_xml(exe, config, &user)))
+            .map_err(|e| format!("{}: {e}", xml_path.display()))?;
+        let args = schtasks_create_args(&xml_path);
+        let made = must(
             "schtasks",
             &args.iter().map(String::as_str).collect::<Vec<_>>(),
-        )?;
+        );
+        let _ = std::fs::remove_file(&xml_path);
+        made?;
         let _ = run("schtasks", &["/End", "/TN", TASK]);
         must("schtasks", &["/Run", "/TN", TASK])?;
         lines.push(format!("Installed scheduled task {TASK} (runs at logon)"));

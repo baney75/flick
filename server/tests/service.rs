@@ -101,14 +101,26 @@ fn windows_quoting() {
         plain(Path::new(r"\\?\UNC\nas\share")),
         Path::new(r"\\nas\share")
     );
-    let args = schtasks_create_args(
-        Path::new(r"\\?\C:\Program Files\Flick\flick-server.exe"),
-        Path::new(r"C:\Users\A B\AppData\Roaming\flick-server"),
+    let exe = Path::new(r"\\?\C:\Program Files\Flick & Co\flick-server.exe");
+    let cfg = Path::new(r"C:\Users\A B\AppData\Roaming\flick-server\");
+    let x = task_xml(exe, cfg, r"PC\A B");
+    assert!(
+        x.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"),
+        "no 72 hour limit"
     );
+    assert!(x.contains("<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"));
+    assert!(x.contains("<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>"));
+    assert!(x.contains(r"<Command>C:\Program Files\Flick &amp; Co\flick-server.exe</Command>"));
+    assert!(x.contains(r#"<Arguments>--config &quot;"#) || x.contains(r#"<Arguments>--config ""#));
+    assert!(
+        x.contains(r#"AppData\Roaming\flick-server\\"</Arguments>"#),
+        "{x}"
+    );
+    assert!(x.contains(r"<UserId>PC\A B</UserId>"));
+    let bytes = utf16le("<a/>");
+    assert_eq!(&bytes[..4], &[0xFF, 0xFE, b'<', 0]);
     assert_eq!(
-        args[..9].join(" "),
-        "/Create /TN FlickServer /SC ONLOGON /RL LIMITED /F /TR"
+        schtasks_create_args(Path::new(r"\\?\C:\t\task.xml")).join(" "),
+        r"/Create /TN FlickServer /XML C:\t\task.xml /F"
     );
-    let tr = r#""C:\Program Files\Flick\flick-server.exe" --config "C:\Users\A B\AppData\Roaming\flick-server""#;
-    assert_eq!(args[9..], [tr]);
 }
