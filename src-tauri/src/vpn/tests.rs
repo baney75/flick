@@ -784,3 +784,54 @@ fn a_hold_that_passes_after_a_failure_outlives_that_failure() {
 
 /// Longer than the watch's one retry after a lost request.
 const RETRY_TEST: Duration = Duration::from_millis(1500);
+
+#[test]
+fn a_failure_during_a_recheck_stands_and_clears_the_pass() {
+    let sys = Live::new(vpn());
+    let (w, events) = watched(&sys);
+    let exits = Arc::clone(&sys.get().exits);
+    assert!(w.hold("player").ok);
+    *sys.delay.lock().unwrap() = Duration::from_millis(400);
+    sys.set(|f| *f = f.clone().addr("utun4", "10.2.0.9"));
+    w.round();
+    std::thread::sleep(Duration::from_millis(100));
+    sys.set(|f| *f = f.clone().route("1.1.1.1", "en0"));
+    w.round();
+    // The VPN comes back before the slow recheck answers; its pass is older than the drop.
+    sys.set(|f| *f = f.clone().route("1.1.1.1", "utun4"));
+    std::thread::sleep(Duration::from_millis(700));
+    assert_eq!(events.lock().unwrap()[..], [None, Some(Fail::NoVpn)]);
+    *sys.delay.lock().unwrap() = Duration::ZERO;
+    let n = exits.load(Ordering::SeqCst);
+    assert!(w.hold("player").ok);
+    assert_eq!(
+        exits.load(Ordering::SeqCst),
+        n + 1,
+        "the drop cleared the pass, so the next hold checks the exit again"
+    );
+}
+
+#[test]
+fn another_address_during_a_recheck_keeps_playing_and_checks_again() {
+    let sys = Live::new(vpn());
+    let (w, events) = watched(&sys);
+    let exits = Arc::clone(&sys.get().exits);
+    assert!(w.hold("player").ok);
+    *sys.delay.lock().unwrap() = Duration::from_millis(300);
+    sys.set(|f| *f = f.clone().addr("utun4", "10.2.0.9"));
+    w.round();
+    std::thread::sleep(Duration::from_millis(100));
+    sys.set(|f| *f = f.clone().addr("utun4", "10.2.0.10"));
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(events.lock().unwrap()[..], [None], "no stop");
+    assert_eq!(w.held(), ["player"]);
+    *sys.delay.lock().unwrap() = Duration::ZERO;
+    let n = exits.load(Ordering::SeqCst);
+    w.round();
+    wait_for(|| exits.load(Ordering::SeqCst) > n, Duration::from_secs(1));
+    assert_eq!(
+        exits.load(Ordering::SeqCst),
+        n + 1,
+        "the next round rechecked"
+    );
+}

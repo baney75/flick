@@ -182,6 +182,7 @@ impl Watch {
     /// The full gate: route checks, then the exit check when due, run outside the state lock so
     /// rounds go on meanwhile. `patient` retries once a failure without a verdict.
     fn check(&self, force: bool, patient: bool) -> (GateState, u64) {
+        let before = lock(&self.state).fails;
         let (iface, route) = match self.route() {
             Ok(r) => r,
             Err(f) => return self.publish(Err(f)),
@@ -192,42 +193,52 @@ impl Watch {
                 .plan(&iface, &route, Instant::now(), force)
         };
         if let Plan::Pass(ip) = plan() {
-            return self.publish(Ok((iface, ip)));
+            return self.pass_since(before, iface, ip);
         }
-        let _one = lock(&self.exiting);
-        let before = lock(&self.state).fails;
-        // Another caller may have just run it.
-        if let (false, Plan::Pass(ip)) = (force, plan()) {
-            return self.publish(Ok((iface, ip)));
-        }
-        let mut r = exit_check(&*self.probe);
-        if let (true, Err(f)) = (patient, r) {
-            if transient(f) {
-                std::thread::sleep(RETRY);
-                r = exit_check(&*self.probe);
+        let mut tries = if patient { 2 } else { 1 };
+        let ip = loop {
+            let one = lock(&self.exiting);
+            // Another caller may have just run it.
+            if let (false, Plan::Pass(ip)) = (force, plan()) {
+                return self.pass_since(before, iface, ip);
             }
-        }
-        let ip = match r {
-            Ok(ip) => ip,
-            Err(f) => return self.publish(Err(f)),
+            let r = exit_check(&*self.probe);
+            drop(one);
+            tries -= 1;
+            match r {
+                Ok(ip) => break ip,
+                Err(f) if tries > 0 && transient(f) => std::thread::sleep(RETRY),
+                Err(f) => return self.publish(Err(f)),
+            }
         };
         // The route may have changed during the exit check: pass only on the one it checked.
         match self.route() {
             Ok((i, r)) if i == iface && r == route => {}
+            // Another address on the same tunnel: the last answer stands and a round rechecks.
+            Ok((i, _)) if patient && i == iface => return self.current(),
             Ok(_) => return self.publish(Err(Fail::Unchecked)),
             Err(f) => return self.publish(Err(f)),
         }
         let mut g = lock(&self.state);
-        // A failure while the exit check ran (a dropped VPN that came back) stands.
         if g.fails != before {
-            let last = g
-                .last
-                .clone()
-                .unwrap_or_else(|| GateState::fail(Fail::Unchecked));
-            return (last, g.fails);
+            return current(&g);
         }
         g.sched.store(iface.clone(), route, Instant::now(), ip);
         self.record(&mut g, Ok((iface, ip)))
+    }
+
+    /// A pass seen since failure number `before`. A failure published meanwhile (a dropped VPN
+    /// that may have come back) stands, so the pass is dropped; failures are always published.
+    fn pass_since(&self, before: u64, iface: String, ip: IpAddr) -> (GateState, u64) {
+        let mut g = lock(&self.state);
+        if g.fails != before {
+            return current(&g);
+        }
+        self.record(&mut g, Ok((iface, ip)))
+    }
+
+    fn current(&self) -> (GateState, u64) {
+        current(&lock(&self.state))
     }
 
     /// The gate now. `force` reruns the exit check ("Check again").
@@ -265,6 +276,7 @@ impl Watch {
         if lock(&self.holders).is_empty() {
             return;
         }
+        let before = lock(&self.state).fails;
         let (s, fails) = match self.route() {
             Err(f) => self.publish(Err(f)),
             Ok((iface, route)) => {
@@ -272,10 +284,10 @@ impl Watch {
                     .sched
                     .plan(&iface, &route, Instant::now(), false);
                 match plan {
-                    Plan::Pass(ip) => self.publish(Ok((iface, ip))),
+                    Plan::Pass(ip) => self.pass_since(before, iface, ip),
                     Plan::Due(ip) => {
                         self.recheck();
-                        self.publish(Ok((iface, ip)))
+                        self.pass_since(before, iface, ip)
                     }
                     Plan::Check => {
                         let failed = self.publish(Err(Fail::Unchecked));
@@ -300,8 +312,8 @@ impl Watch {
         drop(g);
         let w = Arc::clone(self);
         std::thread::spawn(move || {
+            let _done = Rechecked(&w);
             let (s, fails) = w.check(false, true);
-            lock(&w.state).rechecking = false;
             if !s.ok {
                 w.drop_holds(fails);
             }
@@ -315,6 +327,24 @@ impl Watch {
             std::thread::sleep(every);
             w.round();
         });
+    }
+}
+
+/// The last answer, or `unchecked` before the first.
+fn current(g: &State) -> (GateState, u64) {
+    let last = g.last.clone();
+    (
+        last.unwrap_or_else(|| GateState::fail(Fail::Unchecked)),
+        g.fails,
+    )
+}
+
+/// Lets the next round start a recheck, even when this one panicked.
+struct Rechecked<'a>(&'a Watch);
+
+impl Drop for Rechecked<'_> {
+    fn drop(&mut self) {
+        lock(&self.0.state).rechecking = false;
     }
 }
 
