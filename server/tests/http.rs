@@ -52,6 +52,7 @@ fn setup() -> (flick_server::Handle, String, Vec<u8>, PathBuf) {
         name: "Test box".into(),
         lan: false,
         config_dir: base.join("cfg"),
+        web: None,
     };
     let h = start(cfg).unwrap();
     let id = flick_server::index::item_id("Movies", "clip.mp4");
