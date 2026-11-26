@@ -25,10 +25,12 @@ export function notify(text: string, ms = 3200) {
 
 // ---------- settings ----------
 /** theme is light or dark mode; look is an installed theme's id, or '' for Flick's own colors. */
-export interface Settings extends StreamPrefs { autoplayNext: boolean; speed: number; volume: number; skipSeconds: number; theme: 'system' | 'dark' | 'light'; look: string; removeWatched: boolean }
+export interface Settings extends StreamPrefs { autoplayNext: boolean; speed: number; volume: number; skipSeconds: number; theme: 'system' | 'dark' | 'light'; look: string; removeWatched: boolean
+  /** Debrid services' order, by plugin id; and whether they need the VPN gate too (SPEC-debrid rule 10). */
+  serviceOrder: string[]; debridNeedsVpn: boolean }
 /** Settings saved before a key existed load that key's default. */
 export function settingsFrom(raw: string | null, langs: readonly string[]): Settings {
-  const defaults: Settings = { autoplayNext: true, speed: 1, volume: 1, skipSeconds: 10, theme: 'system', look: '', removeWatched: false, ...defaultPrefs(langs) }
+  const defaults: Settings = { autoplayNext: true, speed: 1, volume: 1, skipSeconds: 10, theme: 'system', look: '', removeWatched: false, serviceOrder: [], debridNeedsVpn: false, ...defaultPrefs(langs) }
   try { return { ...defaults, ...JSON.parse(raw || '{}') } } catch { return defaults }
 }
 function loadSettings(): Settings {

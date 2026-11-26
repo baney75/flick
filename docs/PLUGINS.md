@@ -175,6 +175,10 @@ export default {
 }
 ```
 
+The user sets a service up in Settings > Streaming services, not Settings > Plugins: Flick runs
+`account()` with the key first and saves the key only when it answers `ok: true`. The key is the
+service's first `password` setting.
+
 - `account(ctx)` checks the key in `ctx.settings`: `{ ok: true, name, plan?, expires? }`, or
   `{ ok: false, message }` with the service's own words.
 - `cached(ctx, hashes)` gets at most 100 lowercase infoHashes and returns the ones already on the

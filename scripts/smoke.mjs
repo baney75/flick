@@ -293,6 +293,11 @@ try {
   await page.goto(`${BASE}/#/settings`)
   await page.getByRole('heading', { name: 'Sync across devices' }).waitFor()
   check(await page.getByText('Share this library').count() === 0, 'no Share this library section on the website')
+  // Debrid services run only in the desktop app; the website says so and its Plugins list never offers one.
+  await page.getByRole('heading', { name: 'Streaming services' }).waitFor()
+  check(await page.getByText('debrid services work in the Flick desktop app').count() === 1, 'Streaming services on the website says it is a desktop feature')
+  await page.getByText('From Flick', { exact: true }).waitFor({ timeout: 10000 })
+  check(await page.locator('.list-row', { hasText: /TorBox|Real-Debrid|AllDebrid|Premiumize/ }).count() === 0, 'the Plugins list offers no debrid service')
 
   // Books: store a PDF, read it, and reopen it in a fresh tab where the library loads after the reader mounts.
   await page.goto(`${BASE}/#/library`)
