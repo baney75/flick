@@ -47,6 +47,27 @@ It prints an address and a setup link for each way to reach it, then keeps runni
 saved, so next time plain `flick-server` is enough. The access code lives in the settings folder
 (`~/.config/flick-server` by default); `--new-code` replaces it and breaks old links.
 
+## Start at login
+
+To keep the server running after a reboot, install it as a background service with the settings you want:
+
+```sh
+flick-server --media /srv/Movies --name "Living room NAS" --lan --install
+```
+
+This saves the settings, then registers the binary to start at login with `--config <settings folder>` and
+starts it now. Run `--install` again after changing settings to restart it with them.
+
+- macOS: a LaunchAgent at `~/Library/LaunchAgents/com.dbaney.flick-server.plist`, logging to
+  `~/Library/Logs/flick-server.log`.
+- Linux: a systemd user unit, `~/.config/systemd/user/flick-server.service`; logs with
+  `journalctl --user -u flick-server`. User units stop at logout unless you run `sudo loginctl enable-linger $USER`.
+- Windows: a scheduled task, `FlickServer`, that runs at logon.
+
+`--install --tailscale` sets up Serve once; the mapping persists, so the installed server stays reachable there.
+Quick tunnels change address each run, so for Cloudflare use a named tunnel and `--public-url`.
+`flick-server --uninstall` stops and removes the service.
+
 ## Tailscale (recommended)
 
 Private to your tailnet, real HTTPS, and works on phones and TVs that run Tailscale.
