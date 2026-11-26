@@ -1,5 +1,5 @@
 // When Flick checks for updates and what it shows afterward. Pure: no Tauri, no timers, no storage,
-// so every rule here has a test. src/lib/updater.ts does the calls.
+// so every rule here has a test.
 
 export const DAY = 24 * 60 * 60 * 1000
 
@@ -26,8 +26,11 @@ export type CheckResult =
 /** The desktop apps update themselves; the website reloads and phones use their stores. */
 export const updaterEnabled = (desktop: boolean, mobile: boolean) => desktop && !mobile
 
-/** A check is due at launch (the caller runs one) and then once 24 hours have passed since the last. */
-export const isDue = (now: number, lastCheck: number) => now - lastCheck >= DAY
+/**
+ * A check is due at launch (the caller runs one) and then once 24 hours have passed since the last.
+ * A last check in the future (the clock was set ahead, then fixed) is due now.
+ */
+export const isDue = (now: number, lastCheck: number) => now < lastCheck || now - lastCheck >= DAY
 
 export function isOffline(error: unknown, online: boolean): boolean {
   if (!online) return true
@@ -45,7 +48,7 @@ export function afterCheck(s: UpdateState, r: CheckResult, now: number): UpdateS
       // Offline or a refused download: keep running this version and try again in 24 hours.
       if (isOffline(r.error, r.online)) return { ...next, status: 'Could not reach GitHub. Flick tries again in 24 hours.' }
       const msg = r.error instanceof Error ? r.error.message : String(r.error)
-      return { ...next, status: `The update did not install: ${msg}` }
+      return { ...next, status: `The update check failed: ${msg}` }
     }
   }
 }
