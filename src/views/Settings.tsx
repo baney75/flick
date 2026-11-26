@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'preact/hooks'
-import { settings, setSettings, notify, items, go } from '../lib/store'
+import { settings, setSettings, notify, items, go, route } from '../lib/store'
 import { isDesktop, invoke } from '../lib/platform'
 import { formatBytes } from '../lib/parse'
 import { SyncPanel } from './Sync'
 import { SharePanel } from './Share'
 import { Icon } from '../components/icons'
 import { downloads, removeDownload } from '../lib/downloads'
+import { playSaved, badgeFor } from '../lib/offline'
 import { currentSetup, encodeSetup, validateSetup, SETUP_BASE } from '../lib/setup'
 import { PluginsPanel, ThemePicker } from './Plugins'
 import { UpdatesPanel } from './Updates'
+import { ServersPanel } from './Servers'
 
 async function shareSetup() {
   const link = SETUP_BASE + encodeSetup(await currentSetup())
@@ -40,6 +42,9 @@ export function Settings() {
     navigator.storage?.estimate?.().then(setUsage).catch(() => {})
     if (isDesktop) invoke<{ ffmpeg: string | null }>('ffmpeg_status').then((r) => setFf(r.ffmpeg)).catch(() => setFf(null))
   }, [])
+  // `#/servers` and `#/settings/servers` open Settings at the Servers panel.
+  const toServers = /^\/(servers|settings\/servers)\b/.test(route.value)
+  useEffect(() => { if (toServers) document.getElementById('servers')?.scrollIntoView({ block: 'start' }) }, [toServers])
 
   const makeDefault = async () => {
     try {
@@ -53,6 +58,8 @@ export function Settings() {
   return (
     <div class="page narrow">
       <header class="page-head"><h1>Settings</h1></header>
+
+      <ServersPanel />
 
       <section class="panel">
         <h3>Playback</h3>
@@ -130,6 +137,8 @@ function Downloads() {
   const rows = [...downloads.value.values()]
   const done = rows.filter((d) => d.state === 'done')
   const active = rows.filter((d) => d.state === 'queued' || d.state === 'downloading')
+  // Plugin titles have no library card, so they are listed here, where they play offline.
+  const saved = rows.filter((d) => d.saved && !(d.state === 'failed' && d.error === 'Canceled' && !d.part)).sort((a, b) => b.at - a.at)
   const [space, setSpace] = useState<{ used: number; free: number | null } | null>(null)
   useEffect(() => {
     if (isDesktop) invoke<{ used: number; free: number | null }>('downloads_space').then(setSpace).catch(() => {})
@@ -144,11 +153,23 @@ function Downloads() {
     <section class="panel">
       <h3>Downloads</h3>
       <p class="dim small">
-        {done.length ? `${done.length} saved for offline` : 'Nothing saved yet. Open an item\'s menu, or a show, and choose Download.'}
+        {done.length ? `${done.length} saved for offline` : 'Nothing saved yet. Open an item\'s menu, a show, or a plugin title\'s streams, and choose Download.'}
         {active.length ? ` · ${active.length} downloading` : ''}
         {space && space.used ? ` · ${formatBytes(space.used)} used` : ''}
         {space?.free != null ? ` · ${formatBytes(space.free)} free` : ''}
       </p>
+      {saved.length > 0 && (
+        <div class="saved-list">
+          {saved.map((d) => (
+            <div class="saved-row">
+              <span class="t">{d.saved!.title}{d.saved!.subtitle ? ` · ${d.saved!.subtitle}` : ''}</span>
+              <span class="dim small">{d.state === 'failed' ? (d.error === 'Canceled' ? 'Canceled' : 'Failed') : badgeFor(d)}</span>
+              {d.state === 'done' && <button class="btn sm" onClick={() => playSaved(d)}>Play</button>}
+              <button class="btn ghost sm" onClick={() => removeDownload(d.id)} aria-label={`Remove ${d.saved!.title}`}>Remove</button>
+            </div>
+          ))}
+        </div>
+      )}
       <label class="toggle"><input type="checkbox" checked={s.removeWatched} onChange={(e) => setSettings({ removeWatched: (e.target as HTMLInputElement).checked })} /> Remove a download after I watch it</label>
       {rows.length > 0 && <button class="btn ghost sm" onClick={clear}>Remove all downloads</button>}
     </section>

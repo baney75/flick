@@ -1,11 +1,16 @@
 import 'fake-indexeddb/auto'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { download, cancelDownload, removeDownload, getDownload, downloads, pickExt, BROWSER_BLOCKED, _test } from '../src/lib/downloads'
+import { download, downloadStream, savedId, resumeDownloads, localFor, cancelDownload, removeDownload, getDownload, downloads, pickExt, BROWSER_BLOCKED, _test, type Saved } from '../src/lib/downloads'
+import { playSaved, watchedDownloads } from '../src/lib/offline'
+import { nowPlaying } from '../src/lib/store'
+import * as db from '../src/lib/db'
 import { resolve, type Item } from '../src/lib/library'
 import { saveServer } from '../src/lib/servers'
 
 // The shell, faked. `desktop` switches between the apps and the website.
 const shell = vi.hoisted(() => ({
+  // The store (playSaved) reads the route at import.
+  _: Object.assign(globalThis, { location: { hash: '', href: 'http://localhost/', search: '' }, addEventListener: () => {}, removeEventListener: () => {} }),
   desktop: false,
   calls: [] as [string, any][],
   listeners: new Map<string, (p: any) => void>(),
@@ -25,6 +30,10 @@ vi.mock('../src/lib/platform', async (orig) => ({
     if (cmd === 'download') {
       shell.listeners.get('download-progress')?.({ id: args.id, done: 5, total: 10, part: `/data/downloads/${args.id}.${args.ext}.part` })
       return `/data/downloads/${args.id}.${args.ext}`
+    }
+    if (cmd === 'tool_download') {
+      shell.listeners.get('download-progress')?.({ id: args.id, done: 3, total: 9, part: '' })
+      return `/data/downloads/${args.id}.mp4`
     }
     if (cmd === 'download_exists') return shell.exists
     if (cmd === 'probe') return { playable: shell.playable }
@@ -276,5 +285,102 @@ describe('books', () => {
     const r = await resolve({ t: 'path', path: '/Books/Dune.pdf' }, undefined, undefined, true)
     expect(r.url).toBe(`asset://localhost/${encodeURIComponent('/Books/Dune.pdf')}`)
     expect(shell.calls.map(([c]) => c)).toEqual([])
+  })
+})
+
+// SPEC P4: plugin streams use the same queue, play from the saved file and keep their progress key.
+describe('plugin stream downloads', () => {
+  const ref = { t: 'plugin' as const, p: 'org.archive', type: 'movie', id: 'night', videoId: 'night' }
+  // Each case its own title: finished rows stay in IndexedDB between cases.
+  let n = 0
+  const saved = (url: string, more: Partial<Saved> = {}): Saved => ({ key: `pl:org.archive:night${++n}`, plugin: 'org.archive', title: 'Night of the Living Dead', kind: 'video', url, ref, ...more })
+  const ia = 'https://archive.org/download/night/night.mp4'
+  const yt = 'flick-tool:ytdlp/0123456789abcdef0123456789abcdef'
+
+  it('names a title by a hash of its progress key, the same every time', async () => {
+    const id = await savedId('pl:org.archive:night')
+    expect(id).toMatch(/^pl-[0-9a-f]{32}$/)
+    expect(await savedId('pl:org.archive:night')).toBe(id)
+    expect(await savedId('pl:org.archive:other')).not.toBe(id)
+  })
+
+  it('saves an Internet Archive file on the website and plays it with no network, under its progress key', async () => {
+    const data = bytes(3000)
+    vi.stubGlobal('fetch', serve(data))
+    const id = await downloadStream(saved(ia))
+    await _test.idle()
+    const d = await getDownload(id)
+    expect(d).toMatchObject({ state: 'done', local: { t: 'opfs', dir: 'downloads', name: `${id}.mp4` }, saved: { url: ia } })
+    expect((await dlFiles()).get(`${id}.mp4`)).toEqual(data)
+    vi.stubGlobal('fetch', async () => { throw new TypeError('offline') })
+    expect(await playSaved(d!)).toBe(true)
+    const req = nowPlaying.value!
+    expect(req).toMatchObject({ key: d!.saved!.key, src: { t: 'opfs', name: `${id}.mp4` }, ref })
+    expect(req.url).toBeUndefined()
+    expect((await resolve(req.src!)).url).toMatch(/^blob:/)
+  })
+
+  it('drops the bytes of a stream canceled partway when the viewer saves another stream of the title', async () => {
+    const a = bytes(8000, 3), b = bytes(3000, 5)
+    const s = saved(ia)
+    vi.stubGlobal('fetch', serve(a, { chunks: 20, delay: 10 }))
+    const id = await downloadStream(s)
+    await sleep(60)
+    await cancelDownload(id)
+    expect((await dlFiles()).get(`${id}.mp4`)!.length).toBeGreaterThan(0)
+    net.ranges = []
+    vi.stubGlobal('fetch', serve(b))
+    await downloadStream({ ...s, url: 'https://archive.org/download/night/night-512kb.mp4' })
+    await _test.idle()
+    expect(net.ranges).toEqual([null])
+    expect((await dlFiles()).get(`${id}.mp4`)).toEqual(b)
+    expect(await getDownload(id)).toMatchObject({ state: 'done', total: 3000, saved: { url: 'https://archive.org/download/night/night-512kb.mp4' } })
+  })
+
+  it('saves a yt-dlp stream with the desktop tool and reports its progress', async () => {
+    shell.desktop = true
+    const id = await downloadStream(saved(yt, { key: 'pl:com.youtube:https://www.youtube.com/watch?v=a', plugin: 'com.youtube' }))
+    await _test.idle()
+    expect(shell.calls.find(([c]) => c === 'tool_download')?.[1]).toEqual({ id, plugin: 'com.youtube', url: yt })
+    expect(shell.calls.some(([c]) => c === 'download')).toBe(false)
+    // The total came only from the tool's progress event.
+    expect(await getDownload(id)).toMatchObject({ state: 'done', total: 9, local: { t: 'path', path: `/data/downloads/${id}.mp4` } })
+  })
+
+  it('never runs a yt-dlp stream on the website', async () => {
+    const f = vi.fn()
+    vi.stubGlobal('fetch', f)
+    const id = await downloadStream(saved(yt))
+    await _test.idle()
+    expect(await getDownload(id)).toMatchObject({ state: 'failed', error: BROWSER_BLOCKED })
+    expect(f).not.toHaveBeenCalled()
+  })
+
+  it('removing a finished download deletes the file, so the title streams again', async () => {
+    shell.desktop = true
+    const id = await downloadStream(saved(yt, { plugin: 'com.youtube' }))
+    await _test.idle()
+    expect(await localFor(id)).toEqual({ t: 'path', path: `/data/downloads/${id}.mp4` })
+    await removeDownload(id)
+    expect(shell.calls).toContainEqual(['download_remove', { path: `/data/downloads/${id}.mp4` }])
+    expect(shell.calls).toContainEqual(['tool_download_clean', { id }])
+    expect(await getDownload(id)).toBeUndefined()
+    expect(await localFor(id)).toBeNull()
+  })
+
+  it('resumes a saved stream after a restart, though it is no library item', async () => {
+    const s = saved(ia)
+    const id = await savedId(s.key)
+    await db.put('downloads', id, { id, state: 'downloading', done: 0, total: 0, at: 1, saved: s })
+    vi.stubGlobal('fetch', serve(bytes(500)))
+    await resumeDownloads()
+    await _test.idle()
+    expect(await getDownload(id)).toMatchObject({ state: 'done', total: 500, saved: { url: ia } })
+  })
+
+  it('counts a plugin title as watched by its progress key', () => {
+    const d = { id: 'pl-x', state: 'done' as const, done: 1, total: 1, at: 10, saved: saved(ia, { key: 'pl:org.archive:night' }) }
+    expect(watchedDownloads(new Map([['pl-x', d]]), { 'pl:org.archive:night': { pos: 95, dur: 100, at: 20 } })).toEqual(['pl-x'])
+    expect(watchedDownloads(new Map([['pl-x', d]]), { 'pl-x': { pos: 95, dur: 100, at: 20 } })).toEqual([])
   })
 })

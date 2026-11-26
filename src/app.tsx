@@ -2,7 +2,6 @@ import { useEffect, useState } from 'preact/hooks'
 import { route, go, toast, nowPlaying, settings, reloadItems, loadProgress, notify } from './lib/store'
 import { Home } from './views/Home'
 import { Library, ShowPage } from './views/Library'
-import { Servers } from './views/Servers'
 import { Settings } from './views/Settings'
 import { PairPage } from './views/Sync'
 import { startSyncBinding } from './lib/sync/bind'
@@ -10,6 +9,7 @@ import { Setup } from './views/Setup'
 import { Reader } from './views/Reader'
 import { Listen } from './views/Listen'
 import { Player } from './components/Player'
+import { SourceSheet } from './components/Titles'
 import { Icon } from './components/icons'
 import { Logo } from './components/Logo'
 import { playFiles, playPaths } from './lib/actions'
@@ -19,8 +19,9 @@ import { installSpatialNav } from './lib/spatial'
 import { resumeDownloads } from './lib/downloads'
 import { startOffline } from './lib/offline'
 import { startShare } from './lib/share'
-import { PluginPage, PluginTitle, PluginIcon, SourcesPage } from './views/Plugin'
-import { sources, themes, startPlugins } from './lib/plugins/use'
+import { PluginPage, PluginTitle, SourcesPage } from './views/Plugin'
+import { themes, startPlugins } from './lib/plugins/use'
+import { tabOf } from './lib/nav'
 import { applyTheme } from './lib/plugins/themes'
 import { migrateStremio } from './lib/plugins/migrate'
 import type { BookLink } from './views/Reader'
@@ -39,7 +40,6 @@ function bookLink(qs: URLSearchParams): BookLink | undefined {
 const NAV = [
   { path: '/', label: 'Home', icon: 'home' },
   { path: '/library', label: 'Library', icon: 'library' },
-  { path: '/servers', label: 'Servers', icon: 'server' },
   { path: '/settings', label: 'Settings', icon: 'settings' },
 ]
 
@@ -56,7 +56,7 @@ function View() {
   if (parts[0] === 'sources') return <SourcesPage />
   if (parts[0] === 'listen' && parts[1]) return <Listen key={parts[1]} id={decodeURIComponent(parts[1])} />
   if (parts[0] === 'show' && parts[1]) return <ShowPage name={decodeURIComponent(parts[1])} />
-  if (parts[0] === 'servers') return <Servers />
+  if (parts[0] === 'servers') return <Settings />
   if (parts[0] === 'settings') return <Settings />
   if (parts[0] === 'pair') return <PairPage k={qs.get('k')} />
   if (parts[0] === 'setup') return <Setup key={r} code={qs.get('c') ?? ''} />
@@ -66,7 +66,7 @@ function View() {
 export function App() {
   const [drag, setDrag] = useState(false)
   const theme = settings.value.theme
-  const current = '/' + (route.value.split('?')[0].split('/').filter(Boolean)[0] ?? '')
+  const current = tabOf(route.value)
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme === 'system' ? '' : theme
@@ -140,28 +140,13 @@ export function App() {
             <Icon name={n.icon} size={20} /><span>{n.label}</span>
           </a>
         ))}
-        {/* A phone bar holds five items: with more than one source, one Sources item stands in for them. */}
-        {sources.value.length > 1 && (
-          <a href="#/sources" class={`nav-item phone-only ${current === '/sources' || current === '/p' ? 'on' : ''}`} aria-current={current === '/sources' ? 'page' : undefined}
-            onClick={(e) => { e.preventDefault(); go('/sources') }}>
-            <Icon name="plug" size={20} /><span>Sources</span>
-          </a>
-        )}
-        {sources.value.map((p) => {
-          const path = `/p/${encodeURIComponent(p.id)}`
-          const on = route.value.split('?')[0] === path || route.value.startsWith(path + '/')
-          return (
-            <a href={`#${path}`} class={`nav-item ${sources.value.length > 1 ? 'phone-hide' : ''} ${on ? 'on' : ''}`} aria-current={on ? 'page' : undefined} onClick={(e) => { e.preventDefault(); go(path) }}>
-              <PluginIcon rec={p} size={20} /><span>{p.manifest.name}</span>
-            </a>
-          )
-        })}
       </nav>
       <main class="main" id="main">
         <UpdateBanner />
         <View />
       </main>
       <Player />
+      <SourceSheet />
       {drag && <div class="dropzone"><div><Icon name="play" size={40} /><p>Drop to play</p></div></div>}
       {toast.value && <div class="toast" role="status" key={toast.value.id}>{toast.value.text}</div>}
     </div>
