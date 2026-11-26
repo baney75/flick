@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from 'preact/hooks'
 import type { ComponentChildren } from 'preact'
-import { go, play, notify } from '../lib/store'
+import { go, play, notify, progress } from '../lib/store'
 import { Card, Row } from '../components/Card'
 import { Icon } from '../components/icons'
 import { isDesktop } from '../lib/platform'
@@ -12,6 +12,8 @@ import { installed } from '../lib/plugins/registry'
 import { sources, sourceById, searchAll, titlePath, progressKey, libraries, loadLibrary, continueOf, type Source, type Found } from '../lib/plugins/use'
 import type { CatalogDef, Meta, Stream, Video } from '../lib/plugins/validate'
 import { sections, best, qualityOf, hdrOf, sizeOf } from '../lib/plugins/streams'
+import { resumeOf, unfinished } from '../lib/plugins/resume'
+import { formatTime } from '../lib/parse'
 
 const shape = (m: Meta) => (m.posterShape === 'landscape' ? 'wide' : m.posterShape === 'square' ? 'square' : 'poster')
 
@@ -150,9 +152,13 @@ export function PluginTitle({ p, type, id, videoId }: { p: string; type: string;
     callPlugin(rec, 'meta', [{ type, id }]).then((m) => {
       setMeta(m)
       const vids = m.videos ?? []
+      // With no episode asked for, open where the user left off.
+      const back = videoId ? null : resumeOf(progress.value, rec.id, id, vids)
+      const pick = videoId ?? back?.videoId
       if (vids.length > 1) {
-        const cur = videoId ? vids.find((v) => v.id === videoId) : null
+        const cur = pick ? vids.find((v) => v.id === pick) : null
         setSeason(cur?.season ?? vids.find((v) => (v.season ?? 0) > 0)?.season ?? vids[0].season ?? 0)
+        if (back) setVid(back.videoId)
       } else if (!videoId) setVid(vids[0]?.id ?? id)
     }).catch((e) => { setErr((e as Error).message); setMeta(null) })
   }, [rec?.sha256, type, id])
@@ -223,7 +229,9 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   const shown = (list ?? []).filter((s) => group === 'all' || s.group === group)
   const ref = { t: 'plugin' as const, p: rec.id, type: meta.type, id: meta.id, videoId }
 
-  const start = async (s: Stream) => {
+  const saved = progress.value[progressKey(rec.id, videoId)]
+  const resumeAt = unfinished(saved) ? saved.pos : 0
+  const start = async (s: Stream, startAt?: number) => {
     if (s.external) { window.open(s.url, '_blank', 'noopener'); return }
     if (s.url.startsWith('flick-tool:')) { notify('This stream needs a desktop tool this Flick does not have yet.'); return }
     if (s.kind === 'book') {
@@ -244,6 +252,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       poster: video?.thumbnail ?? meta.background ?? meta.poster,
       subs: subs.slice(0, 12).map((x) => ({ label: x.label ?? x.lang, lang: x.lang, url: x.url })),
       ref,
+      startAt,
       onSave: rec.manifest.has.progress ? (pos, dur) => {
         // Tell the source at most every 30 seconds; the player saves locally every 5.
         if (Date.now() - sent < 30_000) return
@@ -279,7 +288,8 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       <div class="row-head">
         <h2>Streams{video ? ` · ${epLabel(video) || video.title}` : ''}</h2>
         {list === null && <span class="spinner sm" />}
-        {top && <button class="btn primary play-best" onClick={() => start(top)}><Icon name="play" size={16} /> Play{qualityOf(top) !== 'Other' ? ` ${qualityOf(top)}` : ''}</button>}
+        {top && <button class="btn primary play-best" onClick={() => start(top)}><Icon name="play" size={16} /> {resumeAt ? `Resume ${formatTime(resumeAt)}` : `Play${qualityOf(top) !== 'Other' ? ` ${qualityOf(top)}` : ''}`}</button>}
+        {top && resumeAt > 0 && <button class="btn ghost start-over" onClick={() => start(top, 0)}>Start over</button>}
       </div>
       {groups.length > 1 && (
         <div class="chips">
