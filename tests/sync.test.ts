@@ -147,4 +147,11 @@ describe('sync keys', () => {
     expect(JSON.parse(snap.get('x:https://a.example/plugin.js')!)).toEqual({ on: true, settings: { lang: 'en' } })
     expect([...snap.values()].join()).not.toContain('abc123')
   })
+
+  it('syncs a bundled plugin by its /plugins/ path, so the app and the website share one key', () => {
+    const rec = (id: string, url: string) => ({ id, kind: 'source', url, enabled: true, manifest: { settings: [] }, settings: {} }) as unknown as Installed
+    const snap = pluginSnapshot([rec('org.flick.template', '/plugins/template.js'), rec('org.local.dev', 'http://127.0.0.1:5173/p.js')])
+    // A localhost plugin only works on the device that has it, so it does not sync.
+    expect([...snap.keys()]).toEqual(['x:/plugins/template.js'])
+  })
 })

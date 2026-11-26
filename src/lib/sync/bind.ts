@@ -9,7 +9,7 @@ import { items, progress, settings, setSettings, reloadItems, saveStremio, strem
 import { getServers, saveServer, removeServer, syncServer, type Server } from '../servers'
 import type { Item } from '../library'
 import { contentIndex, localProgressKeys, progressDocKey, pluginSnapshot } from './keys'
-import { installed, prepare, install, remove, setEnabled, setPluginSettings, isSecret, absolute } from '../plugins/registry'
+import { installed, prepare, install, remove, setEnabled, setPluginSettings, isSecret, portable } from '../plugins/registry'
 import { startSync, publish, docValue, docKeys } from './engine'
 import { bus } from './bus'
 
@@ -166,7 +166,9 @@ async function applyPlugins() {
     for (const k of docKeys('x:')) {
       const url = k.slice(2)
       const v = docValue(k) as { on: boolean; settings: Record<string, unknown> } | null
-      const local = installed.value.find((p) => p.url && absolute(p.url) === url)
+      // Only addresses every device can use: a bundled /plugins/ path or https.
+      if (portable(url) !== url) continue
+      const local = installed.value.find((p) => p.url && portable(p.url) === url)
       if (v == null) { if (local) await remove(local.id); continue }
       let rec = local
       // Installed on another of this person's devices: fetch it here too. A failure waits for the next change.

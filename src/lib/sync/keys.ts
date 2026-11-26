@@ -12,7 +12,7 @@
 
 import type { Item } from '../library'
 import type { Progress } from '../store'
-import { absolute, publicSettings, type Installed } from '../plugins/registry'
+import { portable, publicSettings, type Installed } from '../plugins/registry'
 
 const LOCAL = new Set(['local', 'stored'])
 
@@ -46,7 +46,10 @@ export function localProgressKeys(docKey: string, byContent: Map<string, string[
 
 /** What syncs for each installed plugin: by URL, on or off, non-secret settings. File installs stay local. */
 export function pluginSnapshot(list: Installed[]): Map<string, string> {
-  return new Map(list.filter((p) => p.url).map((p) => [`x:${absolute(p.url!)}`, JSON.stringify({ on: p.enabled, settings: publicSettings(p) })]))
+  return new Map(list.flatMap((p) => {
+    const url = p.url ? portable(p.url) : null
+    return url ? [[`x:${url}`, JSON.stringify({ on: p.enabled, settings: publicSettings(p) })] as [string, string]] : []
+  }))
 }
 
 export function contentIndex(items: Item[]): Map<string, string[]> {

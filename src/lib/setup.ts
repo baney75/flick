@@ -6,7 +6,7 @@ import { CINEMETA, OPENSUBS, fetchManifest, normalizeAddonUrl } from './stremio'
 import { getServers, saveServer, syncServer, plexManual, flickConnect, type Server } from './servers'
 import { isDesktop } from './platform'
 import { addFolderPath } from './actions'
-import { installed, prepare, install, absolute, type Candidate } from './plugins/registry'
+import { installed, install, portable, type Candidate } from './plugins/registry'
 
 export const SETUP_BASE = 'https://flick-player.pages.dev/#/setup?c='
 const MAX_ADDONS = 50
@@ -141,12 +141,14 @@ async function toServer(s: SetupServer): Promise<Server> {
   return { id: `jf-${info.Id}`, type: 'jellyfin', name: s.name ?? info.ServerName ?? 'Jellyfin', url: s.url, token: s.token, userId: s.userId }
 }
 
-/** Apply a validated setup. Each item succeeds or fails on its own. Plugins read for the review are reused. */
+/** Apply a validated setup. Each item succeeds or fails on its own. A plugin installs only as the review showed it. */
 export async function applySetup(p: Setup, reviewed: Record<string, Candidate> = {}): Promise<SetupResult[]> {
   const out: SetupResult[] = []
   for (const u of p.plugins ?? []) {
+    const c = reviewed[u]
+    if (!c) { out.push({ label: `Plugin at ${u}`, ok: false, detail: 'It could not be read for the review, so it was not installed.' }); continue }
     try {
-      const rec = await install(reviewed[u] ?? (await prepare({ url: u })))
+      const rec = await install(c)
       out.push({ label: `Plugin: ${rec.manifest.name} ${rec.manifest.version}`, ok: true })
     } catch (e) {
       out.push({ label: `Plugin at ${u}`, ok: false, detail: (e as Error).message })
@@ -206,7 +208,7 @@ export async function currentSetup(addonUrls: string[]): Promise<Setup> {
   const servers = (await getServers()).filter((s): s is Server & { type: SetupServer['type'] } => s.type !== 'kodi').slice(0, MAX_SERVERS).map(({ type, name, url, token, userId }) => (userId ? { type, name, url, token, userId } : { type, name, url, token }))
   const out: Setup = { v: 1, settings: { ...settings.value } }
   if (urls.length) out.stremioAddons = urls
-  const plugins = installed.value.filter((x) => x.url).map((x) => absolute(x.url!)).slice(0, MAX_PLUGINS)
+  const plugins = installed.value.flatMap((x) => (x.url ? [portable(x.url)] : [])).filter((u): u is string => !!u).slice(0, MAX_PLUGINS)
   if (plugins.length) out.plugins = plugins
   if (servers.length) out.servers = servers
   return out

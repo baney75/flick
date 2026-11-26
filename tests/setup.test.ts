@@ -58,3 +58,16 @@ describe('setup payloads', () => {
     expect(() => S.validateSetup({ v: 1, plugins: Array.from({ length: 21 }, (_, i) => `https://p${i}.example/p.js`) })).toThrow(/at most 20/)
   })
 })
+
+describe('applying a setup', () => {
+  it('installs a plugin only as the review showed it, never fetching one it did not show', async () => {
+    const calls: string[] = []
+    const real = globalThis.fetch
+    globalThis.fetch = (async (u: RequestInfo | URL) => { calls.push(String(u)); throw new Error('no network in this test') }) as typeof fetch
+    try {
+      const out = await S.applySetup({ v: 1, plugins: ['https://plugins.example/late.js'] }, {})
+      expect(out).toEqual([{ label: 'Plugin at https://plugins.example/late.js', ok: false, detail: 'It could not be read for the review, so it was not installed.' }])
+      expect(calls).toEqual([])
+    } finally { globalThis.fetch = real }
+  })
+})
