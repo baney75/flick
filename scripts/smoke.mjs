@@ -267,7 +267,14 @@ try {
   await page.getByRole('button', { name: 'Larger text' }).click()
   await page.getByRole('button', { name: 'Larger text' }).click()
   check(await page.waitForFunction((b) => { const t = document.querySelector('.reader-page')?.textContent; return t && t !== b }, before2, { timeout: 5000 }).then(() => true, () => false), 'larger text repaginates the chapter')
+  await page.emulateMedia({ colorScheme: 'light' })
   await page.getByRole('button', { name: 'Night', exact: true }).click()
+  const chrome = await page.evaluate(() => {
+    const lum = (c) => { const [r, g, b] = c.match(/\d+/g).map(Number); return (r * 299 + g * 587 + b * 114) / 1000 }
+    const r = document.querySelector('.reader'), t = document.querySelector('.reader-title .t1')
+    return { bg: lum(getComputedStyle(r).backgroundColor), fg: lum(getComputedStyle(t).color) }
+  })
+  check(chrome.bg < 40 && chrome.fg > 180, `Night darkens the reader toolbar in light mode (bg ${Math.round(chrome.bg)}, text ${Math.round(chrome.fg)})`)
   await page.screenshot({ path: 'test-media/shots/epub.png' })
   const epubUrl = page.url()
   const fresh2 = await page.context().newPage()

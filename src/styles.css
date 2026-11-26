@@ -372,6 +372,9 @@ html.tv .hrow { grid-auto-columns: 300px; padding: 10px 6px 14px; }
 .reader-page input { width: 4.5em; height: 32px; text-align: center; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); }
 .reader-stage { flex: 1; min-height: 0; display: grid; place-items: center; padding: 16px; padding-bottom: max(16px, env(safe-area-inset-bottom)); cursor: pointer; user-select: none; }
 .reader-stage canvas { box-shadow: var(--shadow); background: #fff; border-radius: 2px; }
+/* Night covers the whole reader, toolbar included, even when the app is in light mode. */
+.reader.night { --bg: #121212; --bg-2: #18181a; --surface: #1c1c1f; --surface-2: #26262a; --line: #2c2c31; --text: #e8e6e3; --dim: #a29f9a; --faint: #77746f; color-scheme: dark; }
+.reader { color: var(--text); }
 .reader.night .reader-stage canvas { filter: invert(.92) hue-rotate(180deg); }
 .reader.epub .reader-stage { position: relative; padding: 0; display: flex; justify-content: center; align-items: stretch; }
 .epub-frame { width: min(100%, 760px); border: 0; background: #fbfaf7; }
