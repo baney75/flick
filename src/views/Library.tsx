@@ -53,6 +53,8 @@ export function Library() {
   // Photos have their own tab and are in no other (All, Movies, Shows, Music).
   const all = useMemo(() => items.value.filter((i) => i.kind !== 'photo'), [items.value])
   const photos = useMemo(() => photoSet(items.value), [items.value])
+  // A library of only photos opens on them, not on an empty All.
+  useEffect(() => { if (tab === 'all' && !all.length && photos.length) setTab('photos') }, [all.length, photos.length])
   const dl = downloads.value
   const libs = useMemo(() => sources.value.filter((r) => r.manifest.has.library)
     .map((r) => ({ p: r.id, pname: r.manifest.name, list: libraries.value[r.id] ?? [] })), [sources.value, libraries.value])

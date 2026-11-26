@@ -124,6 +124,9 @@ export function PhotoViewer({ list, at, onMove, onClose }: { list: Item[]; at: n
   const src = got?.id === it.id ? got.url : null
   const bad = badId === it.id
   const down = useRef<number | null>(null)
+  const close = useRef<HTMLButtonElement>(null)
+  // Focus moves into the viewer, so screen readers and keys start there, not on the tile behind it.
+  useEffect(() => { close.current?.focus() }, [])
   const move = (d: number) => { const n = at + d; if (n >= 0 && n < list.length) onMove(n) }
 
   useEffect(() => {
@@ -155,12 +158,12 @@ export function PhotoViewer({ list, at, onMove, onClose }: { list: Item[]; at: n
       onPointerUp={(e) => { const dx = down.current === null ? 0 : e.clientX - down.current; down.current = null; if (Math.abs(dx) > 50) move(dx < 0 ? 1 : -1) }}>
       <div class="photo-viewer-bar">
         <span>{at + 1} of {list.length} · {dateOf(it)}</span>
-        <button class="btn ghost sm" onClick={onClose} aria-label="Close"><Icon name="close" size={18} /></button>
+        <button ref={close} class="btn ghost sm" onClick={onClose} aria-label="Close"><Icon name="close" size={18} /></button>
       </div>
       <div class="photo-viewer-stage">
         {bad ? <FileTile it={it} />
           : !src ? null
-          : it.kind === 'video' ? <video key={it.id} src={src} controls autoplay playsInline />
+          : it.kind === 'video' ? <video key={it.id} src={src} controls autoplay playsInline onError={() => setBadId(it.id)} />
           : <img key={it.id} src={src} alt={it.title} draggable={false} onError={() => setBadId(it.id)} />}
       </div>
       {at > 0 && <button class="photo-nav prev" onClick={() => move(-1)} aria-label="Previous"><Icon name="left" size={26} /></button>}
