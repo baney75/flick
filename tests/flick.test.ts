@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto'
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { flickConnect, flickMap, FLICK_UNREACHABLE, type Server, type FlickLibrary } from '../src/lib/servers'
+import { flickConnect, flickMap, FLICK_UNREACHABLE, isLocalHost, needsLocalNetwork, type Server, type FlickLibrary } from '../src/lib/servers'
 import { hash } from '../src/lib/library'
 
 const g = globalThis as Record<string, unknown>
@@ -92,5 +92,17 @@ describe('flick setup links', () => {
     expect(() => S.validateSetup({ v: 1, servers: [{ ...srv, token: 'short' }] })).toThrow('access code')
     expect(() => S.validateSetup({ v: 1, servers: [{ ...srv, token: 'has spaces and + signs/ in it!!' }] })).toThrow('access code')
     expect(() => S.validateSetup({ v: 1, servers: [{ ...srv, token: 'x'.repeat(129) }] })).toThrow('access code')
+  })
+})
+
+describe('local network addresses', () => {
+  it('knows which hosts only a local network or tailnet reaches', () => {
+    for (const h of ['nas.tail1234.ts.net', '100.107.206.73', '192.168.1.5', '10.0.0.2', '172.20.1.1', 'nas.local', 'localhost', '127.0.0.1', '[fd7a:115c:a1e0::1]', '169.254.3.4']) expect(isLocalHost(h), h).toBe(true)
+    for (const h of ['nas.example', 'flick-player.pages.dev', '8.8.8.8', '100.128.0.1', '172.32.0.1', 'quiet-river.trycloudflare.com']) expect(isLocalHost(h), h).toBe(false)
+  })
+  it('asks for local network access only from a public page', () => {
+    expect(needsLocalNetwork('https://nas.tail1234.ts.net:8740', { hostname: 'flick-player.pages.dev' })).toBe(true)
+    expect(needsLocalNetwork('https://quiet-river.trycloudflare.com', { hostname: 'flick-player.pages.dev' })).toBe(false)
+    expect(needsLocalNetwork('https://nas.tail1234.ts.net:8740', { hostname: 'nas.tail1234.ts.net' })).toBe(false)
   })
 })

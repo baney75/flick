@@ -179,6 +179,11 @@ try {
     && await page.getByText('Stremio addon in the Stremio plugin: https://v3-cinemeta.strem.io/manifest.json').isVisible(), 'old setup link with Stremio addons offers the Stremio plugin')
   check(await page.evaluate(() => new Promise((res) => { const r = indexedDB.open('flick'); r.onsuccess = () => { const q = r.result.transaction('plugins').objectStore('plugins').count(); q.onsuccess = () => res(q.result === 0) } })), 'and installs nothing before the tap')
 
+  // Sharing this library is a desktop feature: the website has no server to run.
+  await page.goto(`${BASE}/#/settings`)
+  await page.getByRole('heading', { name: 'Sync across devices' }).waitFor()
+  check(await page.getByText('Share this library').count() === 0, 'no Share this library section on the website')
+
   // Books: store a PDF, read it, and reopen it in a fresh tab where the library loads after the reader mounts.
   await page.goto(`${BASE}/#/library`)
   const bookChooser = page.waitForEvent('filechooser')

@@ -1,0 +1,11 @@
+.git
+node_modules
+dist
+target
+**/target
+src-tauri
+test-media
+relay
+.wrangler
+*.log
+.DS_Store
