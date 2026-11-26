@@ -62,14 +62,19 @@ pub enum Slot {
 }
 
 /// What `tailscale serve status --json` maps on HTTPS `port` of `host`.
-pub fn parse_serve_status(json: &str, host: &str, port: u16) -> Slot {
-    let v: Value = serde_json::from_str(json).unwrap_or(Value::Null);
+/// Empty output means no mappings; anything else that isn't JSON is an error, so nothing is changed blind.
+pub fn parse_serve_status(json: &str, host: &str, port: u16) -> Result<Slot, String> {
+    if json.trim().is_empty() {
+        return Ok(Slot::Free);
+    }
+    let v: Value =
+        serde_json::from_str(json).map_err(|e| format!("tailscale serve status: {e}"))?;
     let target = local_target(port);
     let web = &v["Web"][format!("{host}:{port}")]["Handlers"];
     if let Some(h) = web.as_object() {
         let proxy = h.get("/").and_then(|x| x["Proxy"].as_str());
         if h.len() == 1 && proxy.map(|p| p.trim_end_matches('/')) == Some(target.as_str()) {
-            return Slot::Ours;
+            return Ok(Slot::Ours);
         }
         let what: Vec<String> = h
             .iter()
@@ -84,16 +89,16 @@ pub fn parse_serve_status(json: &str, host: &str, port: u16) -> Slot {
                 )
             })
             .collect();
-        return Slot::Taken(what.join(", "));
+        return Ok(Slot::Taken(what.join(", ")));
     }
-    match &v["TCP"][port.to_string()] {
+    Ok(match &v["TCP"][port.to_string()] {
         Value::Null => Slot::Free,
         t => Slot::Taken(
             t["TCPForward"]
                 .as_str()
                 .map_or("a TCP mapping".into(), |f| format!("TCP forward to {f}")),
         ),
-    }
+    })
 }
 
 fn local_target(port: u16) -> String {
@@ -115,8 +120,16 @@ pub fn serve_off_args(port: u16) -> Vec<String> {
     vec!["serve".into(), format!("--https={port}"), "off".into()]
 }
 
-/// Runs a command with stdin closed, killing it after `limit`. Returns (success, stdout, stderr).
-fn run(cli: &Path, args: &[String], limit: Duration) -> Result<(bool, String, String), String> {
+/// What a command left behind. `ok` is `None` when it ran past its time limit and was killed.
+pub struct Ran {
+    pub ok: Option<bool>,
+    pub out: String,
+    pub err: String,
+}
+
+/// Runs a command with stdin closed, killing it after `limit`. Output is read while it runs, so a
+/// command that prints more than a pipe holds can't stall, and a killed command keeps what it printed.
+pub fn run_capture(cli: &Path, args: &[String], limit: Duration) -> Result<Ran, String> {
     let mut child = Command::new(cli)
         .args(args)
         .stdin(Stdio::null())
@@ -124,28 +137,72 @@ fn run(cli: &Path, args: &[String], limit: Duration) -> Result<(bool, String, St
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("{}: {e}", cli.display()))?;
+    type Buf = std::sync::Arc<std::sync::Mutex<Vec<u8>>>;
+    fn drain<R: Read + Send + 'static>(r: Option<R>) -> (Buf, std::thread::JoinHandle<()>) {
+        let buf: Buf = Default::default();
+        let b = buf.clone();
+        let h = std::thread::spawn(move || {
+            let Some(mut r) = r else { return };
+            let mut chunk = [0u8; 8192];
+            while let Ok(n) = r.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                b.lock().unwrap().extend_from_slice(&chunk[..n]);
+            }
+        });
+        (buf, h)
+    }
+    let (out, out_h) = drain(child.stdout.take());
+    let (err, err_h) = drain(child.stderr.take());
     let start = Instant::now();
-    let status = loop {
+    let ok = loop {
         if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {
-            break s;
+            break Some(s.success());
         }
         if start.elapsed() > limit {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!(
-                "{} {} did not finish in {}s",
-                cli.display(),
-                args.join(" "),
-                limit.as_secs()
-            ));
+            break None;
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    let mut out = String::new();
-    let mut err = String::new();
-    child.stdout.take().map(|mut o| o.read_to_string(&mut out));
-    child.stderr.take().map(|mut e| e.read_to_string(&mut err));
-    Ok((status.success(), out, err))
+    if ok.is_some() {
+        // Exited: the pipes close unless a child of it still holds them, so wait a little for the rest.
+        let until = Instant::now() + Duration::from_secs(2);
+        while !(out_h.is_finished() && err_h.is_finished()) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    let text = |b: &Buf| String::from_utf8_lossy(&b.lock().unwrap()).into_owned();
+    Ok(Ran {
+        ok,
+        out: text(&out),
+        err: text(&err),
+    })
+}
+
+fn run(cli: &Path, args: &[String], limit: Duration) -> Result<(bool, String, String), String> {
+    let r = run_capture(cli, args, limit)?;
+    match r.ok {
+        Some(ok) => Ok((ok, r.out, r.err)),
+        None => Err(format!(
+            "{} {} did not finish in {}s",
+            cli.display(),
+            args.join(" "),
+            limit.as_secs()
+        )),
+    }
+}
+
+/// The page Tailscale prints when Serve is not yet enabled for the tailnet, if `text` has one.
+pub fn serve_enable_url(text: &str) -> Option<String> {
+    let i = text.find("https://login.tailscale.com/")?;
+    let url: String = text[i..]
+        .chars()
+        .take_while(|c| !c.is_whitespace())
+        .collect();
+    Some(url.trim_end_matches(['.', ',', ')']).to_string())
 }
 
 /// Maps `https://<dnsname>:<port>` to `http://127.0.0.1:<port>` with Tailscale Serve and returns that URL.
@@ -160,8 +217,14 @@ pub fn tailscale_serve(port: u16) -> Result<String, String> {
     }
     let host = parse_status(&out)?;
     let url = format!("https://{host}:{port}");
-    let (_, out, _) = run(&cli, &["serve".into(), "status".into(), "--json".into()], t)?;
-    match parse_serve_status(&out, &host, port) {
+    let (ok, out, err) = run(&cli, &["serve".into(), "status".into(), "--json".into()], t)?;
+    if !ok {
+        return Err(format!(
+            "tailscale serve status failed, so Flick changed nothing: {}",
+            err.trim()
+        ));
+    }
+    match parse_serve_status(&out, &host, port)? {
         Slot::Ours => return Ok(url),
         Slot::Taken(what) => {
             return Err(format!(
@@ -171,9 +234,23 @@ pub fn tailscale_serve(port: u16) -> Result<String, String> {
         Slot::Free => {}
     }
     let args = serve_args(port);
-    let (ok, out, err) = run(&cli, &args, t)?;
-    if ok {
+    let r = run_capture(&cli, &args, t)?;
+    if r.ok == Some(true) {
         return Ok(url);
+    }
+    let (out, err) = (r.out, r.err);
+    if let Some(page) = serve_enable_url(&format!("{out}\n{err}")) {
+        return Err(format!(
+            "Tailscale Serve is off for this tailnet. Turn it on here, then run this again: {page}"
+        ));
+    }
+    if r.ok.is_none() {
+        return Err(format!(
+            "{} {} did not finish in {}s",
+            cli.display(),
+            args.join(" "),
+            t.as_secs()
+        ));
     }
     let mut msg = format!(
         "tailscale serve failed: {}\nRun it yourself to see more: {} {}\n\
