@@ -2,6 +2,7 @@
 //! The library keeps no process-global state and never prints, so the desktop app can embed it.
 pub mod index;
 pub mod reach;
+pub mod service;
 pub mod web;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
@@ -137,6 +138,11 @@ pub fn access_code(dir: &Path, renew: bool) -> Result<String, String> {
 pub fn setup_link(base: &str, name: &str, url: &str, token: &str) -> String {
     let s = serde_json::json!({"v":1,"servers":[{"type":"flick","name":name,"url":url.trim_end_matches('/'),"token":token}]});
     format!("{base}/#/setup?c={}", B64.encode(s.to_string()))
+}
+
+/// True when a server started with this `web` setting would serve the Flick web app itself.
+pub fn serves_web(web: Option<PathBuf>) -> bool {
+    web::Web::new(web).available()
 }
 
 pub fn start(cfg: Config) -> Result<Handle, String> {
