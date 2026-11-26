@@ -39,5 +39,12 @@
       { "ext": ["mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "aiff", "aif", "wma"], "name": "Audio", "role": "Viewer", "rank": "Default" }
     ],
     "macOS": { "minimumSystemVersion": "12.0" }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU2RTBDODM0MTYwMUY1RUQKUldUdDlRRVdOTWpnVm1ITGNPMkpjYVZQTUFqMTQzRlRpSnNsdUpvUVZsSWxhYWRjSDdkcU5EVmoK",
+      "endpoints": ["https://github.com/baney75/flick/releases/latest/download/latest.json"],
+      "requireSignedVersion": true
+    }
   }
 }

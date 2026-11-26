@@ -7,7 +7,8 @@ import { isDesktop } from '../lib/platform'
 import { online } from '../lib/offline'
 import { downloads } from '../lib/downloads'
 import { sources, searchAll, openPluginRef, libraries, loadLibrary, continueOf, type Found } from '../lib/plugins/use'
-import { MetaCard, PluginIcon } from './Plugin'
+import { MetaCard, PluginIcon, CatalogRow, useCatalogs } from './Plugin'
+import { HOME_ROWS_PER_SOURCE } from '../lib/nav'
 
 function ResumeCard({ k, p }: { k: string; p: Progress }) {
   const ref = p.ref
@@ -33,7 +34,7 @@ export function Home() {
   const showList = [...shows.value.values()].slice(0, 20)
   const srcs = sources.value
   const plCont = srcs.map((rec) => ({ rec, list: continueOf(libraries.value[rec.id] ?? []).slice(0, 20) })).filter((x) => x.list.length)
-  const empty = !all.length && !cont.length && !plCont.length
+  const empty = !all.length && !cont.length && !plCont.length && !srcs.length
   useEffect(() => { for (const rec of srcs) loadLibrary(rec) }, [srcs.map((r) => r.id).join()])
 
   const saved = [...downloads.value.values()].filter((d) => d.state === 'done').length
@@ -61,7 +62,7 @@ export function Home() {
             <button class="btn primary lg" onClick={openFiles}><Icon name="file" size={18} /> Open a file</button>
             <button class="btn lg" onClick={addFolder}><Icon name="folder" size={18} /> Add a folder</button>
             <button class="btn lg" onClick={() => go('/settings')}><Icon name="plug" size={18} /> Add plugins</button>
-            <button class="btn lg" onClick={() => go('/servers')}><Icon name="server" size={18} /> Connect Plex or Jellyfin</button>
+            <button class="btn lg" onClick={() => go('/servers')}><Icon name="server" size={18} /> Connect a server</button>
           </div>
           <form class="url-form" onSubmit={(e) => { e.preventDefault(); openUrl(url) }}>
             <Icon name="link" size={16} />
@@ -100,9 +101,24 @@ export function Home() {
           {music.length > 0 && (
             <Row title="Music">{music.map((it) => <ItemCard it={it} onClick={() => playItem(it)} />)}</Row>
           )}
+          {srcs.map((rec) => <SourceRows key={`${rec.id}|${rec.sha256}`} rec={rec} />)}
         </>
       )}
     </div>
+  )
+}
+
+/** A source plugin's first catalogs on Home, each titled "<Plugin> · <Catalog>" with See all to its page. */
+function SourceRows({ rec }: { rec: import('../lib/plugins/use').Source }) {
+  const path = `/p/${encodeURIComponent(rec.id)}`
+  const rows = useCatalogs(rec) ?? []
+  const see = <a class="link" href={`#${path}`} onClick={(e) => { e.preventDefault(); go(path) }}>See all</a>
+  return (
+    <>
+      {rows.slice(0, HOME_ROWS_PER_SOURCE).map((c) => (
+        <CatalogRow key={`${c.type}|${c.id}`} rec={rec} c={c} title={`${rec.manifest.name} · ${c.name}`} action={see} />
+      ))}
+    </>
   )
 }
 

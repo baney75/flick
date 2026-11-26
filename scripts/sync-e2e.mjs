@@ -53,7 +53,7 @@ try {
   // A plugin installed on one device shows up on the other, with its review done on the first.
   await a.locator('.list-row', { hasText: 'Internet Archive' }).getByRole('button', { name: 'Install' }).click()
   await a.getByRole('dialog').getByRole('button', { name: 'Install' }).click()
-  check(await until(() => b.locator('.nav-item', { hasText: 'Internet Archive' }).isVisible()), 'a plugin installed on one device appears on the other')
+  check(await until(() => b.getByRole('link', { name: 'Open Internet Archive' }).isVisible()), 'a plugin installed on one device appears on the other')
 
   // A device that was offline catches up when it reconnects.
   await b.reload()
