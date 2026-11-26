@@ -1,3 +1,5 @@
+<p><img src="public/icon.svg" width="88" alt="Flick"></p>
+
 # Flick
 
 A fast media player and library. It plays your videos and music the moment you open them, builds a library from your folders, and links to Stremio, Plex and Jellyfin. It runs as a website and as a native app for Mac, Windows, Linux, iOS, Android and Android TV, all from one codebase.
