@@ -951,9 +951,11 @@ dependencies = [
  "getrandom 0.3.4",
  "if-addrs",
  "percent-encoding",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "socket2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -962,6 +964,7 @@ dependencies = [
  "tiny_http",
  "ureq",
  "walkdir",
+ "webpki-roots",
 ]
 
 [[package]]
