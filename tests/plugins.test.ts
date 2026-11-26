@@ -185,6 +185,13 @@ describe('plugin isolation', () => {
     await h('fetch', ['https://example.org/x', { method: 'post', hosts: ['*'], id: 'org.other.one', body: 'q' }])
     expect(calls).toEqual([['plugin_fetch', { id: 'org.mine.one', url: 'https://example.org/x', method: 'POST', headers: {}, body: 'q' }]])
   })
+  it('sends desktop tool calls with the bound id, and needs the desktop app', async () => {
+    const calls: [string, Record<string, unknown>][] = []
+    const h = ctxHandler('org.mine.one', true, async (cmd, args) => { calls.push([cmd, args!]); return 'flick-tool:ytdlp/abc' as never })
+    expect(await h('tool', ['ytdlp', 'resolve', ['https://www.youtube.com/watch?v=x'], 'org.other.one'])).toBe('flick-tool:ytdlp/abc')
+    expect(calls).toEqual([['plugin_tool', { id: 'org.mine.one', tool: 'ytdlp', op: 'resolve', args: ['https://www.youtube.com/watch?v=x'] }]])
+    await expect(ctxHandler('org.mine.one')('tool', ['ytdlp', 'search', ['x']])).rejects.toThrow(/desktop app/)
+  })
   it('refuses requests it does not know', async () => {
     const h = ctxHandler('org.mine.one')
     await expect(h('db.get', ['progress'])).rejects.toThrow(/does not know/)
