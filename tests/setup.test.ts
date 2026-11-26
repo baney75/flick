@@ -70,4 +70,14 @@ describe('applying a setup', () => {
       expect(calls).toEqual([])
     } finally { globalThis.fetch = real }
   })
+  it('adds old Stremio addons only into a Stremio plugin the review showed', async () => {
+    const calls: string[] = []
+    const real = globalThis.fetch
+    globalThis.fetch = (async (u: RequestInfo | URL) => { calls.push(String(u)); throw new Error('no network in this test') }) as typeof fetch
+    try {
+      const out = await S.applySetup({ v: 1, stremioAddons: ['https://torrentio.strem.fun/manifest.json'] }, {})
+      expect(out[0]).toMatchObject({ ok: false, detail: 'The Stremio plugin could not be read for the review, so it was not installed.' })
+      expect(calls).toEqual([])
+    } finally { globalThis.fetch = real }
+  })
 })

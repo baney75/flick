@@ -1,3 +1,3 @@
-// Changes stored outside signals announce themselves here: 'servers', 'addons' and 'plugins'.
+// Changes stored outside signals announce themselves here: 'servers' and 'plugins'.
 export const bus = new EventTarget()
-export const announce = (what: 'servers' | 'addons' | 'plugins') => bus.dispatchEvent(new Event(what))
+export const announce = (what: 'servers' | 'plugins') => bus.dispatchEvent(new Event(what))

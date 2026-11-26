@@ -1,6 +1,7 @@
 {
   "api": 1,
   "plugins": [
+    { "url": "/plugins/stremio.js", "name": "Stremio", "kind": "source", "description": "Your Stremio addons, library and Continue Watching, or Cinemeta and OpenSubtitles without an account." },
     { "url": "/plugins/archive.js", "name": "Internet Archive", "kind": "source", "description": "Public domain films, classic TV, audiobooks, old-time radio and books from archive.org." }
   ]
 }

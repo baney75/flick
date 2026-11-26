@@ -1,7 +1,7 @@
 // How app state maps onto synced keys.
 //   p:i:<content key>  watch progress for a library item
-//   p:k:<key>          watch progress for anything else (Stremio, URLs), keyed as on every device
-//   a:<addon url>      a Stremio addon added by URL (true, or null once removed)
+//   p:k:<key>          watch progress for anything else (plugins, URLs), keyed as on every device
+//   a:<addon url>      retired: Stremio addons before the Stremio plugin; read once by the migration
 //   x:<plugin url>     an installed plugin or theme: { on, settings } with secret settings left out, or null once removed
 //   v:<server id>      a Plex or Jellyfin server connection
 //   s:settings         player settings

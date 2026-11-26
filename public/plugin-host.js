@@ -101,7 +101,7 @@
     settings: function (sets) { settings = Object.freeze(plain(sets || {})) },
     call: function (fn, args) {
       if (!plugin) throw new Error('No plugin loaded.')
-      if (['catalog', 'meta', 'streams', 'subtitles', 'library', 'action', 'progress'].indexOf(fn) < 0 || typeof plugin[fn] !== 'function') {
+      if (['userCatalogs', 'catalog', 'meta', 'streams', 'subtitles', 'library', 'action', 'progress'].indexOf(fn) < 0 || typeof plugin[fn] !== 'function') {
         throw new Error('The plugin has no ' + fn + '() function.')
       }
       return Promise.resolve(plugin[fn].apply(plugin, [ctx].concat(args || []))).then(plain)
