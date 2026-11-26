@@ -218,9 +218,21 @@ try {
     storage: (() => { try { return typeof localStorage.length } catch { return 'blocked' } })(),
   }))
   const pwned = await page.evaluate(() => [window.__pwned, localStorage.getItem('pwned')])
+  const frameUrl = page.frames().find((f) => f !== page.mainFrame()).url()
+  check(frameUrl === 'about:srcdoc', `EPUB markup cannot navigate the frame away (frame at ${frameUrl})`)
   check(sandbox === 'allow-scripts' && inFrame.storage === 'blocked', `EPUB frame is sandboxed without same-origin (${sandbox}, storage ${inFrame.storage})`)
   check(pwned[0].length === 0 && pwned[1] === null && inFrame.scripts === 1 && !inFrame.handlers && !inFrame.frames,
     `scripts in an EPUB never run (ran: ${pwned[0].join(', ') || 'none'}; ${inFrame.scripts} script, handlers ${inFrame.handlers}, frames ${inFrame.frames})`)
+  for (let i = 0; i < 30; i++) {
+    const [p, n] = (await pageNo.innerText()).match(/\d+/g).map(Number)
+    if (p === n) break
+    await page.keyboard.press('ArrowRight')
+    await pageNo.filter({ hasText: new RegExp(`^Page ${p + 1} of`) }).waitFor({ timeout: 3000 })
+  }
+  for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight')
+  await page.waitForTimeout(1500)
+  const landed = await page.locator('.reader-title .t2').innerText()
+  check(landed === 'Chapter Two', `quick turns past a chapter's end land in the next chapter (${landed})`)
   await page.getByRole('button', { name: 'Contents' }).click()
   await page.locator('.epub-toc').getByText('Chapter Two').click()
   await page.locator('.reader-title .t2', { hasText: 'Chapter Two' }).waitFor({ timeout: 5000 })

@@ -21,6 +21,8 @@ export function EpubReader({ it }: { it: Item }) {
   const [night, setNight] = useState(() => pref('flick.reader.night', '0') === '1')
   const [toc, setToc] = useState(false)
   const frame = useRef<HTMLIFrameElement>(null)
+  // Each layout gets a number the frame echoes back, so a frame that is being replaced can't move the place.
+  const gen = useRef(0)
 
   useEffect(() => {
     let live = true
@@ -48,7 +50,8 @@ export function EpubReader({ it }: { it: Item }) {
   useEffect(() => {
     if (!book) return
     let live = true
-    chapterPage(book, at.chapter, { start: at.start, size, night }).then((h) => live && setDoc(h), (e) => live && setErr((e as Error).message))
+    const g = ++gen.current
+    chapterPage(book, at.chapter, { start: at.start, size, night, gen: g }).then((h) => live && setDoc(h), (e) => live && setErr((e as Error).message))
     return () => { live = false }
   }, [book, at, size, night])
 
@@ -69,7 +72,7 @@ export function EpubReader({ it }: { it: Item }) {
   // Messages from the chapter frame. Only that frame's window is listened to, and only known shapes.
   useEffect(() => {
     const m = (e: MessageEvent) => {
-      if (!book || e.source !== frame.current?.contentWindow || typeof e.data !== 'object' || !e.data) return
+      if (!book || e.source !== frame.current?.contentWindow || typeof e.data !== 'object' || !e.data || e.data.g !== gen.current) return
       const d = e.data as { t: string; page?: number; pages?: number; d?: number; key?: string; shift?: boolean; href?: string }
       if (d.t === 'pos' && Number.isInteger(d.page) && Number.isInteger(d.pages)) {
         setPos({ page: d.page!, pages: d.pages! })

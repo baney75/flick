@@ -31,7 +31,10 @@ export const EVIL = `<script>parent.postMessage({pwned:'script'},'*');try{localS
 <img src="missing.png" onerror="parent.postMessage({pwned:'onerror'},'*')" alt=""/>
 <svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><script>parent.postMessage({pwned:'svg'},'*')</script></svg>
 <iframe src="data:text/html,&lt;script&gt;parent.parent.postMessage({pwned:'iframe'},'*')&lt;/script&gt;"></iframe>
-<p><a id="evil" href="javascript:parent.postMessage({pwned:'link'},'*')">A link that runs a script</a></p>`
+<p><a id="evil" href="javascript:parent.postMessage({pwned:'link'},'*')">A link that runs a script</a></p>
+<META http-equiv="refresh" content="0;url=http://127.0.0.1:9/upper-meta"/><SCRIPT>parent.postMessage({pwned:'upper-script'},'*')</SCRIPT>
+<xmp>&lt;/xmp&gt;&lt;meta http-equiv="refresh" content="0;url=http://127.0.0.1:9/xmp"&gt;</xmp>
+<noembed>&lt;/noembed&gt;&lt;meta http-equiv="refresh" content="0;url=http://127.0.0.1:9/noembed"&gt;</noembed>`
 
 const para = (i) => `<p>Paragraph ${i}. ${'The quick brown fox jumps over the lazy dog while the reader turns another page. '.repeat(6)}</p>`
 
@@ -51,7 +54,7 @@ ${chapters.map((_, i) => `<item id="c${i + 1}" href="text/ch${i + 1}.xhtml" medi
     ['META-INF/container.xml', '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>'],
     ['OEBPS/content.opf', opf],
     ncx ? ['OEBPS/toc.ncx', toc] : ['OEBPS/nav.xhtml', nav],
-    ['OEBPS/style.css', '@import url("https://example.com/track.css"); h1 { text-align: center; } body { background: url("https://example.com/pixel.png"); }'],
+    ['OEBPS/style.css', '@import url("https://example.com/track.css"); h1 { text-align: center; } body { background: url("https://example.com/pixel.png"); } p::after { content: "</sty</stylele><meta http-equiv=refresh content=0;url=http://127.0.0.1:9/css>"; }'],
     ...(cover ? [['OEBPS/images/cover.png', cover, true]] : []),
     ...ch,
   ])

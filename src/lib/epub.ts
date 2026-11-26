@@ -112,11 +112,30 @@ async function safeCss(b: Book, css: string, base: string): Promise<string> {
   return css.replace(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi, () => `url("${data[i++]}")`)
 }
 
-const DROP = 'script,iframe,frame,frameset,object,embed,applet,base,meta,link,form,noscript,template,style,title,portal,audio,video,animate,set'
+// Only these elements survive, compared by lowercased local name so XHTML case tricks don't slip by.
+// Anything else is unwrapped (its text kept, escaped) unless it is in GONE, which goes with its content.
+// No raw-text element (style, script, xmp, noembed, noframes, plaintext, noscript, iframe) is ever
+// kept, so nothing in the book's text can become markup when the page is written out and read back.
+const KEEP = new Set(('a abbr address article aside b bdi bdo big blockquote br caption center cite code col colgroup dd del details dfn div dl dt em figcaption figure font footer h1 h2 h3 h4 h5 h6 header hgroup hr i img ins kbd li main mark nav ol p pre q rp rt ruby s samp section small span strike strong sub summary sup table tbody td tfoot th thead time tr tt u ul var wbr ' +
+  'svg g path rect circle ellipse line polyline polygon text tspan textpath image use defs symbol lineargradient radialgradient stop clippath mask pattern marker desc ' +
+  'math mi mo mn ms mtext mrow msup msub msubsup mfrac msqrt mroot mspace mtable mtr mtd mstyle mover munder munderover mpadded mphantom menclose semantics').split(' '))
+const GONE = new Set('script style iframe frame frameset object embed applet base meta link form noscript template title portal audio video animate set xmp noembed noframes plaintext textarea select button input head foreignobject annotation-xml'.split(' '))
+
+function clean(node: Node) {
+  for (const n of [...node.childNodes]) {
+    if (n.nodeType === Node.TEXT_NODE) continue
+    if (n.nodeType === Node.CDATA_SECTION_NODE) { n.replaceWith(n.ownerDocument!.createTextNode(n.textContent ?? '')); continue }
+    if (n.nodeType !== Node.ELEMENT_NODE) { n.remove(); continue }
+    const name = (n as Element).localName.toLowerCase()
+    if (KEEP.has(name)) clean(n)
+    else if (GONE.has(name)) n.remove()
+    else { clean(n); (n as Element).replaceWith(...n.childNodes) }
+  }
+}
 const LINKS = ['href', 'xlink:href']
 const RES = ['src', 'poster', 'data']
 
-export interface PageOpts { start: number | 'end' | string; size: number; night: boolean }
+export interface PageOpts { start: number | 'end' | string; size: number; night: boolean; gen: number }
 
 /** One chapter as a self-contained, script-free HTML page plus Flick's pager. */
 export async function chapterPage(b: Book, index: number, o: PageOpts): Promise<string> {
@@ -126,7 +145,7 @@ export async function chapterPage(b: Book, index: number, o: PageOpts): Promise<
   if (d.getElementsByTagName('parsererror').length || !d.body) d = new DOMParser().parseFromString(src, 'text/html')
   const out = document.implementation.createHTMLDocument('')
   const sheets = await Promise.all([...d.querySelectorAll('style, link')].map(async (s) => {
-    if (s.localName === 'style') return safeCss(b, s.textContent ?? '', path)
+    if (s.localName.toLowerCase() === 'style') return safeCss(b, s.textContent ?? '', path)
     const href = s.getAttribute('href') ?? ''
     if (!/\bstylesheet\b/i.test(s.getAttribute('rel') ?? '') || href.includes(':')) return ''
     const p = resolvePath(path, href)
@@ -134,18 +153,18 @@ export async function chapterPage(b: Book, index: number, o: PageOpts): Promise<
   }))
   for (const k of ['class', 'id', 'lang', 'dir']) { const v = d.body?.getAttribute(k); if (v) out.body.setAttribute(k, v) }
   out.body.append(...[...(d.body?.childNodes ?? [])].map((n) => out.importNode(n, true)))
-  for (const el of out.body.querySelectorAll(DROP)) el.remove()
+  clean(out.body)
   const jobs: Promise<void>[] = []
   for (const el of out.body.querySelectorAll('*')) {
     for (const a of [...el.attributes]) {
       const n = a.name.toLowerCase()
       if (n === 'style') { const v = a.value; el.removeAttribute(a.name); jobs.push(safeCss(b, v, path).then((c) => el.setAttribute('style', c))) }
-      else if (LINKS.includes(n) && el.localName === 'a') {
+      else if (LINKS.includes(n) && el.localName.toLowerCase() === 'a') {
         el.removeAttribute(a.name)
         if (!a.value.includes(':')) el.setAttribute('data-href', a.value.startsWith('#') ? `${path}${a.value}` : `${resolvePath(path, a.value)}#${a.value.split('#')[1] ?? ''}`)
       } else if (LINKS.includes(n) || RES.includes(n)) {
         el.removeAttribute(a.name)
-        if (a.value.startsWith('#') && el.localName === 'use') el.setAttribute('href', a.value)
+        if (a.value.startsWith('#') && el.localName.toLowerCase() === 'use') el.setAttribute('href', a.value)
         else if (!a.value.includes(':')) jobs.push(dataUrl(b, resolvePath(path, a.value)).then((u) => { if (u) el.setAttribute(n === 'xlink:href' ? 'href' : n, u) }))
       } else if (n.startsWith('on') || n === 'srcset' || n.endsWith('action') || n === 'ping' || n === 'target') el.removeAttribute(a.name)
     }
@@ -154,8 +173,8 @@ export async function chapterPage(b: Book, index: number, o: PageOpts): Promise<
   const nonce = [...crypto.getRandomValues(new Uint8Array(16))].map((x) => x.toString(16).padStart(2, '0')).join('')
   const csp = `default-src 'none'; img-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'`
   const head = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}">` +
-    sheets.map((s) => `<style>${s.replace(/<\/style/gi, '')}</style>`).join('') + `<style>${readerCss(o)}</style>`
-  const body = out.body.outerHTML.replace(/<\/body>$/, `<script nonce="${nonce}">(${pager})(${JSON.stringify(o.start)})</script></body>`)
+    sheets.map((s) => `<style>${s.replace(/</g, '\\3c ')}</style>`).join('') + `<style>${readerCss(o)}</style>`
+  const body = out.body.outerHTML.replace(/<\/body>$/, `<script nonce="${nonce}">(${pager})(${JSON.stringify(o.start)}, ${o.gen | 0})</script></body>`)
   return `<!doctype html><html><head>${head}</head>${body}</html>`
 }
 
@@ -169,9 +188,9 @@ ${o.night ? 'body *{color:inherit!important;background-color:transparent!importa
 }
 
 /** Runs inside the sandboxed chapter: lays out pages, turns them, and reports where the reader is. */
-function pager(start: number | 'end' | string) {
+function pager(start: number | 'end' | string, gen: number) {
   const se = document.scrollingElement as HTMLElement
-  const say = (m: object) => parent.postMessage(m, '*')
+  const say = (m: object) => parent.postMessage({ ...m, g: gen }, '*')
   let page = 0
   let pages = 1
   const count = () => { pages = Math.max(1, Math.round(se.scrollWidth / innerWidth)) }
