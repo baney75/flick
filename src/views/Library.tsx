@@ -67,7 +67,7 @@ export function Library() {
         if (tab === 'downloads' && !isSaved(dl.get(i.id))) return false
         return true
       })
-    if (needle) l = l.filter((x) => norm(isTitle(x) ? `${x.name} ${x.year ?? ''}` : `${x.title} ${x.show ?? ''} ${x.author ?? ''} ${x.year ?? ''} ${x.folder ?? ''}`).includes(needle))
+    if (needle) l = l.filter((x) => norm(isTitle(x) ? `${x.name} ${x.year ?? ''} ${x.srcs.map((s) => s.t === 'item' ? s.it.folder ?? '' : '').join(' ')}` : `${x.title} ${x.show ?? ''} ${x.author ?? ''} ${x.year ?? ''} ${x.folder ?? ''}`).includes(needle))
     const ep = (x: Entry) => isTitle(x) ? [0, 0] : [x.season ?? 0, x.episode ?? 0]
     const by: Record<Sort, (a: Entry, b: Entry) => number> = {
       added: (a, b) => b.addedAt - a.addedAt,
