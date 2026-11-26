@@ -54,17 +54,6 @@ export async function playSaved(d: Download, extra: Partial<PlayRequest> = {}): 
   return true
 }
 
-/** Whether the website may fetch a file from this address (CORS), checked once per site with a 1-byte Range. */
-const reach = new Map<string, Promise<boolean>>()
-export function browserCanFetch(url: string): Promise<boolean> {
-  let origin: string
-  try { origin = new URL(url).origin } catch { return Promise.resolve(false) }
-  if (!reach.has(origin)) {
-    reach.set(origin, fetch(url, { headers: { Range: 'bytes=0-0' } }).then((r) => { r.body?.cancel().catch(() => {}); return r.ok }, () => false))
-  }
-  return reach.get(origin)!
-}
-
 export const online = signal(typeof navigator === 'undefined' ? true : navigator.onLine)
 
 const WATCHED = 0.93

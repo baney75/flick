@@ -8,7 +8,7 @@ import { Card, Row } from '../components/Card'
 import { Icon } from '../components/icons'
 import { isDesktop, isMobileApp } from '../lib/platform'
 import { downloads, savedId, cancelDownload, removeDownload, type Saved } from '../lib/downloads'
-import { saveStream, playSaved, browserCanFetch, badgeFor } from '../lib/offline'
+import { saveStream, playSaved, badgeFor } from '../lib/offline'
 import { callPlugin } from '../lib/plugins/runtime'
 import { installed } from '../lib/plugins/registry'
 import { sources, sourceById, searchAll, titlePath, progressKey, libraries, loadLibrary, continueOf, type Source, type Found } from '../lib/plugins/use'
@@ -220,14 +220,8 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   const [group, setGroup] = useState('all')
   const [opened, setOpened] = useState<string[]>([])
   const [dlId, setDlId] = useState<string | null>(null)
-  // On the website a file saves only where the browser may fetch it; by stream URL.
-  const [reach, setReach] = useState<Record<string, boolean>>({})
   useEffect(() => {
-    callPlugin(rec, 'streams', [{ type: meta.type, id: meta.id, videoId }]).then((l) => {
-      setList(l)
-      if (isDesktop) return
-      for (const s of l) if (dlKind(s) === 'file') browserCanFetch(s.url).then((ok) => setReach((r) => ({ ...r, [s.url]: ok })))
-    }).catch((e) => { setErr((e as Error).message); setList([]) })
+    callPlugin(rec, 'streams', [{ type: meta.type, id: meta.id, videoId }]).then(setList).catch((e) => { setErr((e as Error).message); setList([]) })
   }, [videoId])
   const key = progressKey(rec.id, videoId)
   useEffect(() => { savedId(key).then(setDlId) }, [key])
@@ -281,7 +275,9 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   const row = (s: Stream) => {
     const q = qualityOf(s), hdr = hdrOf(s), size = sizeOf(s)
     const how = dlKind(s)
-    const canSave = free && (how === 'tool' || (how === 'file' && (isDesktop || reach[s.url] === true)))
+    // On the website no stream host is contacted before a tap (a debrid link acts on the account);
+    // a host that refuses the browser fails the download with the message to use the Flick app.
+    const canSave = free && how !== null
     return (
       <div class="stream-item">
         <button class="stream" onClick={() => start(s)}>
@@ -294,8 +290,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
             {s.kind === 'book' && <span>Book</span>}
             {s.external && <span>Opens in your browser</span>}
             {s.needsDesktop && !isDesktop && <span class="warn">May need the desktop app</span>}
-            {how === 'file' && !isDesktop && reach[s.url] === false && <span>Download in the Flick app</span>}
-          </div>
+            </div>
           <Icon name={s.external ? 'external' : 'play'} size={18} class="stream-go" />
         </button>
       {canSave && <button class="btn ghost sm stream-dl" onClick={() => save(s)} aria-label={`Download ${s.title ?? meta.name}`}><Icon name="download" size={16} /> Download</button>}
@@ -312,9 +307,9 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
           ? <button class="btn primary play-best" onClick={() => playSaved(dl, { onSave })}><Icon name="play" size={16} /> Play downloaded</button>
           : top && <button class="btn primary play-best" onClick={() => start(top)}><Icon name="play" size={16} /> Play{qualityOf(top) !== 'Other' ? ` ${qualityOf(top)}` : ''}</button>}
       </div>
-      {dl && !(dl.state === 'failed' && dl.error === 'Canceled') && (
+      {dl && !(dl.state === 'failed' && dl.error === 'Canceled' && !dl.part) && (
         <p class="dl-status small">
-          {dl.state === 'done' ? 'Downloaded. Plays offline.' : dl.state === 'failed' ? `Download failed: ${dl.error}` : dl.state === 'queued' ? 'Waiting to download' : `Downloading ${badgeFor(dl)}`}
+          {dl.state === 'done' ? 'Downloaded. Plays offline.' : dl.error === 'Canceled' ? 'Download canceled. Download again to resume.' : dl.state === 'failed' ? `Download failed: ${dl.error}` : dl.state === 'queued' ? 'Waiting to download' : `Downloading ${badgeFor(dl)}`}
           {dl.state === 'done' || dl.state === 'failed'
             ? <button class="btn ghost sm" onClick={async () => { await removeDownload(dl.id); notify('Download removed.') }}>Remove download</button>
             : <button class="btn ghost sm" onClick={() => cancelDownload(dl.id)}>Cancel</button>}

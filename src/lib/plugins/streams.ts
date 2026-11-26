@@ -52,6 +52,8 @@ export function best(list: Stream[]): Stream | null {
  *  HLS and DASH playlists are many files, a book opens in the reader, and an external link is not Flick's. */
 export function downloadable(s: Stream, app: { desktop: boolean; mobile: boolean }): 'file' | 'tool' | null {
   if (s.external || s.kind === 'book') return null
+  // MKV, AVI and the like play only where the desktop app converts them.
+  if (s.needsDesktop && !app.desktop) return null
   if (s.url.startsWith('flick-tool:ytdlp/')) return app.desktop && !app.mobile ? 'tool' : null
   let u: URL
   try { u = new URL(s.url) } catch { return null }

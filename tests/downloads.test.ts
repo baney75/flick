@@ -320,6 +320,23 @@ describe('plugin stream downloads', () => {
     expect((await resolve(req.src!)).url).toMatch(/^blob:/)
   })
 
+  it('drops the bytes of a stream canceled partway when the viewer saves another stream of the title', async () => {
+    const a = bytes(8000, 3), b = bytes(3000, 5)
+    const s = saved(ia)
+    vi.stubGlobal('fetch', serve(a, { chunks: 20, delay: 10 }))
+    const id = await downloadStream(s)
+    await sleep(60)
+    await cancelDownload(id)
+    expect((await dlFiles()).get(`${id}.mp4`)!.length).toBeGreaterThan(0)
+    net.ranges = []
+    vi.stubGlobal('fetch', serve(b))
+    await downloadStream({ ...s, url: 'https://archive.org/download/night/night-512kb.mp4' })
+    await _test.idle()
+    expect(net.ranges).toEqual([null])
+    expect((await dlFiles()).get(`${id}.mp4`)).toEqual(b)
+    expect(await getDownload(id)).toMatchObject({ state: 'done', total: 3000, saved: { url: 'https://archive.org/download/night/night-512kb.mp4' } })
+  })
+
   it('saves a yt-dlp stream with the desktop tool and reports its progress', async () => {
     shell.desktop = true
     const id = await downloadStream(saved(yt, { key: 'pl:com.youtube:https://www.youtube.com/watch?v=a', plugin: 'com.youtube' }))

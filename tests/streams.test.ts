@@ -66,5 +66,7 @@ describe('downloadable', () => {
     ['an external link', { url: 'https://www.youtube.com/watch?v=x', external: true }, desktop, null],
     ['a book', { url: 'https://archive.org/download/x/x.pdf', kind: 'book' as const }, desktop, null],
     ['another tool', { url: 'flick-tool:other/abc' }, desktop, null],
+    ['a file only the desktop app converts, on the website', { url: 'https://archive.org/download/x/x.avi', needsDesktop: true }, web, null],
+    ['a file only the desktop app converts, on the desktop app', { url: 'https://archive.org/download/x/x.avi', needsDesktop: true }, desktop, 'file'],
   ])('%s', (_, st, app, want) => expect(downloadable(st, app)).toBe(want))
 })

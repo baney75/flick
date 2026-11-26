@@ -135,7 +135,7 @@ function Downloads() {
   const done = rows.filter((d) => d.state === 'done')
   const active = rows.filter((d) => d.state === 'queued' || d.state === 'downloading')
   // Plugin titles have no library card, so they are listed here, where they play offline.
-  const saved = rows.filter((d) => d.saved && !(d.state === 'failed' && d.error === 'Canceled')).sort((a, b) => b.at - a.at)
+  const saved = rows.filter((d) => d.saved && !(d.state === 'failed' && d.error === 'Canceled' && !d.part)).sort((a, b) => b.at - a.at)
   const [space, setSpace] = useState<{ used: number; free: number | null } | null>(null)
   useEffect(() => {
     if (isDesktop) invoke<{ used: number; free: number | null }>('downloads_space').then(setSpace).catch(() => {})
@@ -160,7 +160,7 @@ function Downloads() {
           {saved.map((d) => (
             <div class="saved-row">
               <span class="t">{d.saved!.title}{d.saved!.subtitle ? ` · ${d.saved!.subtitle}` : ''}</span>
-              <span class="dim small">{d.state === 'failed' ? 'Failed' : badgeFor(d)}</span>
+              <span class="dim small">{d.state === 'failed' ? (d.error === 'Canceled' ? 'Canceled' : 'Failed') : badgeFor(d)}</span>
               {d.state === 'done' && <button class="btn sm" onClick={() => playSaved(d)}>Play</button>}
               <button class="btn ghost sm" onClick={() => removeDownload(d.id)} aria-label={`Remove ${d.saved!.title}`}>Remove</button>
             </div>

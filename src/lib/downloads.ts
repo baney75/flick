@@ -121,9 +121,16 @@ export async function downloadStream(saved: Saved): Promise<string> {
 }
 
 async function enqueue(job: Job) {
-  const cur = await getDownload(job.id)
+  let cur = await getDownload(job.id)
   if (active.has(job.id) || cur?.state === 'done') return
   active.add(job.id)
+  // Another stream of the same title: its unfinished bytes are a different file, so they go, never resume.
+  if (cur?.saved && cur.saved.url !== job.saved?.url) {
+    const part = cur.part ?? (isDesktop ? undefined : { t: 'opfs' as const, dir: DIR, name: `${job.id}.${pickExt(cur.saved.url)}` })
+    if (part) await deleteLocal(part).catch(() => {})
+    if (isDesktop && isTool(cur.saved.url)) await invoke('tool_download_clean', { id: job.id }).catch(() => {})
+    cur = undefined
+  }
   await set({ id: job.id, state: 'queued', done: cur?.done ?? 0, total: cur?.total ?? 0, at: Date.now(), part: cur?.part, ...(job.saved && { saved: job.saved }) }, true)
   queue.push(job)
   pump()
