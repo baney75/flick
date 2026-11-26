@@ -15,7 +15,7 @@ const MAX_CODE = 2 * 1024 * 1024
 export const installed = signal<Installed[]>([])
 
 export interface Candidate {
-  kind: 'source' | 'theme'
+  kind: 'source' | 'service' | 'theme'
   url: string | null
   code: string
   sha256: string
@@ -38,7 +38,7 @@ async function fetchText(url: string): Promise<string> {
 const live: Deps = { fetchText, inspect: sandboxInspect }
 
 export function isSecret(rec: Pick<Installed, 'kind' | 'manifest'>, key: string): boolean {
-  if (rec.kind !== 'source') return false
+  if (rec.kind === 'theme') return false
   return (rec.manifest as V.PluginManifest).settings.some((f) => f.key === key && f.secret)
 }
 
@@ -53,7 +53,7 @@ function defaults(m: V.PluginManifest | V.ThemeManifest): Record<string, unknown
 }
 
 // ---------- the official list ----------
-export interface OfficialEntry { url: string; name: string; description?: string; kind?: 'source' | 'theme' }
+export interface OfficialEntry { url: string; name: string; description?: string; kind?: 'source' | 'service' | 'theme' }
 let official: Promise<OfficialEntry[]> | null = null
 export function officialList(): Promise<OfficialEntry[]> {
   official ??= fetch(OFFICIAL_INDEX).then((r) => r.json()).then((j) => (Array.isArray(j?.plugins) ? j.plugins : [])).catch(() => { official = null; return [] })
@@ -99,7 +99,9 @@ export async function prepare(src: { url?: string; text?: string }, deps: Deps =
     manifest = V.validateTheme(json)
   } else {
     const r = await deps.inspect(code)
-    manifest = V.validateManifest(r.manifest, r.fns)
+    const m = V.validateManifest(r.manifest, r.fns)
+    kind = m.kind
+    manifest = m
   }
   const replaces = installed.value.find((p) => p.id === manifest.id)
   return { kind, url, code, sha256: await sha256(code), manifest, official: await isOfficial(url), replaces }
@@ -180,7 +182,8 @@ export async function checkUpdates(now = Date.now(), deps: Deps = live, force = 
       if (sum === rec.sha256 || sum === rec.pending?.sha256) { await save({ ...rec, checkedAt: now }); continue }
       const c = await prepare({ url: rec.url, text: code }, deps)
       if (c.manifest.id !== rec.id) throw new Error('the new code has a different id')
-      const added = c.kind === 'source' && rec.kind === 'source' ? V.addedPermissions(rec.manifest as V.PluginManifest, c.manifest as V.PluginManifest) : []
+      if (c.kind !== rec.kind) throw new Error('the new code is a different kind of plugin')
+      const added = c.kind !== 'theme' ? V.addedPermissions(rec.manifest as V.PluginManifest, c.manifest as V.PluginManifest) : []
       if (added.length) {
         await save({ ...rec, checkedAt: now, pending: { code, sha256: sum, manifest: c.manifest, added } })
         notes.push(`${rec.manifest.name} has an update that asks to ${added.join(', ')}.`)

@@ -103,6 +103,8 @@ export interface ServicePlugin {
   hosts: string[]
   /** The hosts its download links come from; each also in `hosts`. A stream on one of these needs the VPN gate. */
   debridHosts: string[]
+  /** True when playback is only an https download from the service's own servers, so it may play with no VPN. */
+  vpnOptional?: boolean
   platforms?: Platform[]
   settings?: Field[]
   actions?: Action[]

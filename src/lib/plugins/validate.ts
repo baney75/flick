@@ -37,6 +37,8 @@ export interface PluginManifest {
   /** A service plugin: what it provides, and the hosts its download links come from (all also in `hosts`). */
   provides: string[]
   debridHosts: string[]
+  /** A service whose downloads come over https from its own servers, so no peer sees the user: it may play with no VPN. */
+  vpnOptional: boolean
   /** Optional functions the plugin has. */
   has: { library: boolean; action: boolean; progress: boolean; subtitles: boolean; userCatalogs: boolean }
 }
@@ -143,6 +145,8 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
   const kind = x.kind ?? 'source'
   if (!(KINDS as readonly unknown[]).includes(kind)) fail(`Flick has no plugin kind called "${String(kind)}".`)
   let catalogs: CatalogDef[] = [], provides: string[] = [], debridHosts: string[] = []
+  if (x.vpnOptional !== undefined && typeof x.vpnOptional !== 'boolean') fail('vpnOptional must be true or false.')
+  if (x.vpnOptional !== undefined && kind !== 'service') fail('Only a service plugin can set vpnOptional.')
   if (kind === 'service') {
     provides = list(x.provides, 'provides', 10).map((p) => str(p, 'A provides entry', true, 40))
     if (!provides.length) fail('A service plugin must say what it provides, like provides: ["debrid"].')
@@ -180,6 +184,7 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
     catalogs,
     provides,
     debridHosts: [...new Set(debridHosts)],
+    vpnOptional: x.vpnOptional === true,
     has: { library: fns.includes('library'), action: fns.includes('action'), progress: fns.includes('progress'), subtitles: fns.includes('subtitles'), userCatalogs: fns.includes('userCatalogs') },
   }
   const icon = imgUrl(x.icon)
@@ -199,11 +204,17 @@ export function validateCatalogDefs(x: unknown): CatalogDef[] {
   })
 }
 
-/** Permissions the new manifest asks for that the installed one did not have. Empty means a quiet update. */
-export function addedPermissions(old: Pick<PluginManifest, 'hosts' | 'tools'>, next: Pick<PluginManifest, 'hosts' | 'tools'>): string[] {
+type Perms = Pick<PluginManifest, 'hosts' | 'tools'> & { debridHosts?: string[]; vpnOptional?: boolean }
+/**
+ * Permissions the new manifest asks for that the installed one did not have. Empty means a quiet update.
+ * A service dropping a debrid host, or newly saying it plays with no VPN, counts too.
+ */
+export function addedPermissions(old: Perms, next: Perms): string[] {
   return [
     ...next.hosts.filter((h) => !old.hosts.includes(h)).map((h) => `reach ${h}`),
     ...next.tools.filter((t) => !old.tools.includes(t)).map((t) => `use ${t}`),
+    ...(old.debridHosts ?? []).filter((h) => !(next.debridHosts ?? []).includes(h)).map((h) => `stop treating ${h} as a debrid host`),
+    ...(next.vpnOptional && !old.vpnOptional ? ['play with no VPN'] : []),
   ]
 }
 

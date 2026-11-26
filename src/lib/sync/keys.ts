@@ -45,10 +45,13 @@ export function localProgressKeys(docKey: string, byContent: Map<string, string[
   return []
 }
 
-/** What syncs for each installed plugin: by URL, on or off, non-secret settings. File installs stay local. */
+/**
+ * What syncs for each installed plugin: by URL, on or off, non-secret settings. File installs stay local,
+ * and so do service plugins: one is no use without its key, and the key never leaves the device.
+ */
 export function pluginSnapshot(list: Installed[]): Map<string, string> {
   return new Map(list.flatMap((p) => {
-    const url = p.url ? portable(p.url) : null
+    const url = p.url && p.kind !== 'service' ? portable(p.url) : null
     if (!url) return []
     const m = p.manifest as Partial<PluginManifest>
     const v: SyncedPlugin = { on: p.enabled, settings: publicSettings(p), sha256: p.sha256, hosts: m.hosts ?? [], tools: m.tools ?? [] }
@@ -64,8 +67,9 @@ export interface SyncedPlugin { on: boolean; settings: Record<string, unknown>; 
  * code that was reviewed there, or new code that asks for no host or tool beyond what was reviewed.
  */
 export function mayInstallSynced(v: SyncedPlugin, c: Candidate): boolean {
+  if (c.kind === 'service') return false
   if (v.sha256 && c.sha256 === v.sha256) return true
-  if (c.kind !== 'source') return true
+  if (c.kind === 'theme') return true
   return addedPermissions({ hosts: v.hosts ?? [], tools: v.tools ?? [] }, c.manifest as PluginManifest).length === 0
 }
 
