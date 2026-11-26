@@ -1,5 +1,9 @@
+use super::watch::{Schedule, Watch};
 use super::*;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::time::Instant;
 
 /// A system whose routes, interfaces, DNS and trace answers are set by the test.
 #[derive(Clone)]
@@ -14,6 +18,8 @@ struct Fake {
     tun: bool,
     physical: Result<Option<String>, Fail>,
     traces: HashMap<(bool, Option<String>), Result<IpAddr, TraceErr>>,
+    /// How many IPv4 traces went through the tunnel: one per exit check.
+    exits: Arc<AtomicUsize>,
 }
 
 impl Probe for Fake {
@@ -42,6 +48,9 @@ impl Probe for Fake {
         self.v6
     }
     fn trace(&self, v6: bool, bind: Option<&str>) -> Result<IpAddr, TraceErr> {
+        if !v6 && bind.is_none() {
+            self.exits.fetch_add(1, Ordering::SeqCst);
+        }
         let key = (v6, bind.map(String::from));
         self.traces.get(&key).copied().unwrap_or(Err(TraceErr::Net))
     }
@@ -79,6 +88,7 @@ fn vpn() -> Fake {
         tun: false,
         physical: Ok(Some("en0".into())),
         traces: HashMap::new(),
+        exits: Arc::default(),
     };
     f.route("1.1.1.1", "utun4")
         .route("198.51.100.1", "utun4")
@@ -88,6 +98,11 @@ fn vpn() -> Fake {
         .addr("en0", "192.168.1.5")
         .trace(false, None, Ok("185.65.134.20"))
         .trace(false, Some("en0"), Ok("73.12.4.9"))
+}
+
+/// Every check of rule 25 once, as at the first torrent after launch.
+fn decide(p: &dyn Probe) -> GateState {
+    Schedule::default().tick(p, Instant::now(), false)
 }
 
 fn fails(p: &Fake) -> Option<Fail> {
@@ -494,7 +509,7 @@ fn names_tunnels_per_os() {
 #[test]
 #[ignore]
 fn live() {
-    println!("{:?}", check(&System));
+    println!("{:?}", decide(&System));
 }
 
 /// The exit check alone on this computer (TLS and interface binding): with no VPN on, it says
@@ -523,4 +538,114 @@ fn a_hung_tool_fails_the_check_instead_of_stalling_it() {
     );
     let quick = run_within("/bin/echo", &["hi"], None, Duration::from_secs(5));
     assert_eq!(quick.as_deref(), Some("hi\n"));
+}
+
+#[test]
+fn the_exit_check_reruns_after_5_minutes_a_route_change_or_check_again() {
+    let p = vpn();
+    let mut sched = Schedule::default();
+    let t0 = Instant::now();
+    let runs = || p.exits.load(Ordering::SeqCst);
+    assert!(sched.tick(&p, t0, false).ok);
+    assert_eq!(runs(), 1, "before the first torrent");
+    assert!(sched.tick(&p, t0 + Duration::from_secs(2), false).ok);
+    assert_eq!(runs(), 1, "the 2 second rounds are route checks only");
+    sched.tick(&p, t0 + Duration::from_secs(301), false);
+    assert_eq!(runs(), 2, "every 5 minutes");
+    sched.tick(&p, t0 + Duration::from_secs(303), true);
+    assert_eq!(runs(), 3, "Check again");
+    let moved = p.clone().addr("utun4", "10.2.0.9");
+    sched.tick(&moved, t0 + Duration::from_secs(305), false);
+    assert_eq!(runs(), 4, "the tunnel's addresses changed");
+    let down = p.clone().route("1.1.1.1", "en0");
+    assert!(!sched.tick(&down, t0 + Duration::from_secs(307), false).ok);
+    assert!(sched.tick(&p, t0 + Duration::from_secs(309), false).ok);
+    assert_eq!(runs(), 5, "the VPN came back");
+}
+
+/// A system the test changes while the watch runs.
+struct Live(Mutex<Fake>);
+
+impl Live {
+    fn get(&self) -> Fake {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl Probe for Arc<Live> {
+    fn route(&self, ip: &str) -> Option<String> {
+        self.get().route_to(ip)
+    }
+    fn physical(&self) -> Result<Option<String>, Fail> {
+        self.get().physical
+    }
+    fn dns(&self) -> Option<Vec<Dns>> {
+        self.get().dns
+    }
+    fn addrs(&self, iface: &str) -> Vec<IpAddr> {
+        Probe::addrs(&self.get(), iface)
+    }
+    fn is_tunnel(&self, iface: &str) -> bool {
+        tunnel_name("macos", iface, false)
+    }
+    fn mesh_service(&self, _: &str) -> bool {
+        false
+    }
+    fn global_v6(&self) -> bool {
+        false
+    }
+    fn trace(&self, v6: bool, bind: Option<&str>) -> Result<IpAddr, TraceErr> {
+        Probe::trace(&self.get(), v6, bind)
+    }
+}
+
+impl Fake {
+    fn route_to(&self, ip: &str) -> Option<String> {
+        Probe::route(self, ip)
+    }
+}
+
+#[test]
+fn a_vpn_that_drops_mid_play_stops_everything_within_a_round() {
+    let sys = Arc::new(Live(Mutex::new(vpn())));
+    let events = Arc::new(Mutex::new(vec![]));
+    let seen = Arc::clone(&events);
+    let on_change = Box::new(move |s: &GateState| seen.lock().unwrap().push(s.reason));
+    let w = Arc::new(Watch::new(Box::new(Arc::clone(&sys)), true, on_change));
+    let heard = || events.lock().unwrap().clone();
+    assert!(w.hold("player").ok);
+    w.spawn(Duration::from_millis(20));
+    sys.0.lock().unwrap().addrs.remove("utun4");
+    let start = Instant::now();
+    while heard().len() < 2 && start.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        heard(),
+        [None, Some(Fail::NoVpn)],
+        "the player heard the drop"
+    );
+    *sys.0.lock().unwrap() = vpn();
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(heard().len(), 2, "nothing is held now, so the rounds stop");
+}
+
+#[test]
+fn nothing_holds_the_gate_while_it_fails_or_where_it_cannot_check() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let n = Arc::clone(&count);
+    let on_change = Box::new(move |_: &GateState| {
+        n.fetch_add(1, Ordering::SeqCst);
+    });
+    let off = Watch::new(Box::new(vpn().route("1.1.1.1", "en0")), true, on_change);
+    assert_eq!(off.hold("player").reason, Some(Fail::NoVpn));
+    off.round();
+    off.round();
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        1,
+        "the refused stream is not watched"
+    );
+    let windows = Watch::new(Box::new(vpn()), false, Box::new(|_| {}));
+    assert_eq!(windows.now(false).reason, Some(Fail::Unchecked));
 }
