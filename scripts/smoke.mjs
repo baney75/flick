@@ -437,64 +437,6 @@ try {
   const appNet = await ownFetch('/plugin-host-app.html')
   check(webNet === 'reached' && appNet === 'blocked', `in the apps a plugin's own fetch is refused (app page ${appNet}, website page ${webNet})`)
 
-  // Plugin sandbox: the real host page, framed the way the runtime frames it (sandbox="allow-scripts"),
-  // loads plugin code over a MessagePort and cannot reach Flick's storage, page or remote modules.
-  const probe = await page.evaluate(async () => {
-    const code = `
-      const r = {}
-      const t = async (k, f) => { try { await f(); r[k] = 'reached' } catch { r[k] = 'blocked' } }
-      await t('indexedDB', () => new Promise((ok, no) => { const q = indexedDB.open('flick'); q.onsuccess = ok; q.onerror = () => no(q.error) }))
-      await t('localStorage', () => localStorage.getItem('flick.settings'))
-      await t('cookie', () => document.cookie)
-      await t('parent page', () => parent.document.title)
-      await t('parent storage', () => parent.localStorage.length)
-      await t('remote module', () => import('https://esm.sh/preact'))
-      export default { api: 1, id: 'org.smoke.probe', name: 'Probe', version: '1', probe: r, catalogs: [], catalog() {}, meta() {}, streams() {} }`
-    const f = document.createElement('iframe')
-    f.setAttribute('sandbox', 'allow-scripts')
-    f.hidden = true
-    f.src = '/plugin-host.html'
-    await new Promise((r) => { f.onload = r; document.body.appendChild(f) })
-    const ch = new MessageChannel()
-    f.contentWindow.postMessage({ flick: 'port' }, '*', [ch.port2])
-    const reply = await new Promise((resolve) => {
-      ch.port1.onmessage = (e) => { if (e.data.re === 1) resolve(e.data) }
-      ch.port1.postMessage({ id: 1, m: 'load', a: [code, 'web', {}] })
-      setTimeout(() => resolve({ ok: false, e: 'no answer in 10 s' }), 10000)
-    })
-    f.remove()
-    return reply
-  })
-  check(probe.ok, `plugin host loads plugin code in the sandbox${probe.ok ? '' : `: ${probe.e}`}`)
-  const reached = Object.entries(probe.v?.manifest?.probe ?? {}).filter(([, v]) => v !== 'blocked').map(([k]) => k)
-  check(probe.ok && Object.keys(probe.v.manifest.probe).length === 6 && reached.length === 0, `a plugin cannot reach Flick's storage, page or remote modules${reached.length ? `: reached ${reached.join(', ')}` : ''}`)
-
-  // In the apps a plugin's only network is ctx.fetch: its own fetch to a CORS-open local server is
-  // refused by the app host page. The website page, as the control, reaches the same server.
-  const ownFetch = (host) => page.evaluate(async ([host, target]) => {
-    const code = `
-      let r = 'blocked'
-      try { await fetch(${JSON.stringify(target)}); r = 'reached' } catch {}
-      export default { api: 1, id: 'org.smoke.net', name: 'Net', version: '1', net: r, catalogs: [], catalog() {}, meta() {}, streams() {} }`
-    const f = document.createElement('iframe')
-    f.setAttribute('sandbox', 'allow-scripts')
-    f.hidden = true
-    f.src = host
-    await new Promise((r) => { f.onload = r; document.body.appendChild(f) })
-    const ch = new MessageChannel()
-    f.contentWindow.postMessage({ flick: 'port' }, '*', [ch.port2])
-    const reply = await new Promise((resolve) => {
-      ch.port1.onmessage = (e) => { if (e.data.re === 1) resolve(e.data) }
-      ch.port1.postMessage({ id: 1, m: 'load', a: [code, 'desktop', {}] })
-      setTimeout(() => resolve({ ok: false }), 10000)
-    })
-    f.remove()
-    return reply.ok ? reply.v.manifest.net : 'no answer'
-  }, [host, `${FLICK_URL}/api/library`])
-  const webNet = await ownFetch('/plugin-host.html')
-  const appNet = await ownFetch('/plugin-host-app.html')
-  check(webNet === 'reached' && appNet === 'blocked', `in the apps a plugin's own fetch is refused (app page ${appNet}, website page ${webNet})`)
-
   // Phone layout.
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(`${BASE}/#/library`)
