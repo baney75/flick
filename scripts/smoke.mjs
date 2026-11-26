@@ -228,6 +228,8 @@ try {
   await page.getByRole('button', { name: 'Sleep' }).click()
   const sleepItems = await page.locator('.listen-pop button').allInnerTexts()
   check(['15 minutes', '30 minutes', '45 minutes', '60 minutes', 'End of chapter'].every((s) => sleepItems.includes(s)), `sleep timer menu (${sleepItems.join(', ')})`)
+  const popFits = await page.evaluate(() => { const r = document.querySelector('.listen-pop').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight })
+  check(popFits, 'sleep menu opens fully inside the window')
   await page.screenshot({ path: 'test-media/shots/audiobook.png' })
   await page.locator('.listen-pop button', { hasText: 'End of chapter' }).click()
   // Play fast so timeupdates land past the chapter's end, the way a slow phone does.
@@ -241,7 +243,13 @@ try {
   await page.goto(`${BASE}/#/library`)
   await page.getByText('Test Audiobook').first().click()
   check(await page.getByRole('button', { name: 'Speed' }).filter({ hasText: '1.5×' }).waitFor({ timeout: 5000 }).then(() => true, () => false), 'audiobook speed is remembered for the book')
+  check(await page.locator('.listen-book', { hasText: /left at 1\.5×/ }).waitFor({ timeout: 3000 }).then(() => true, () => false), 'time left counts the book speed')
   check(await page.locator('.listen-chapter', { hasText: 'The Middle' }).waitFor({ timeout: 5000 }).then(() => true, () => false), 'audiobook resumes in the chapter it stopped in')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.waitForTimeout(200)
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'audiobook player fits a phone without sideways scroll')
+  await page.screenshot({ path: 'test-media/shots/phone-audiobook.png' })
+  await page.setViewportSize({ width: 1280, height: 800 })
   // EPUB: store one, see its cover, page through it, use the contents, and prove the book's scripts never run.
   await page.goto(`${BASE}/#/library`)
   await page.evaluate(() => { window.__pwned = []; addEventListener('message', (e) => { if (e.data?.pwned) window.__pwned.push(e.data.pwned) }) })

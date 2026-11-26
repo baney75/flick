@@ -12,6 +12,15 @@ import { Icon } from '../components/icons'
 const SPEEDS = [0.75, 1, 1.1, 1.2, 1.3, 1.5, 1.75, 2, 2.5, 3]
 const SLEEPS: (number | 'chapter')[] = [15, 30, 45, 60, 'chapter']
 
+// "1 h 4 min", "12 min", "40 s": how long is left, in words a listener reads at a glance.
+export function spoken(sec: number) {
+  const s = Math.max(0, Math.round(sec))
+  if (s < 60) return `${s} s`
+  if (s < 3600) return `${Math.round(s / 60)} min`
+  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60)
+  return m ? `${h} h ${m} min` : `${h} h`
+}
+
 const measure = (url: string) => new Promise<number>((done) => {
   const a = new Audio()
   a.preload = 'metadata'
@@ -142,10 +151,12 @@ function Book({ it }: { it: Item }) {
   saveRef.current = save
   useEffect(() => () => saveRef.current(), [])
   // Wall-clock timers fire even while paused between timeupdates.
+  const [, tick] = useState(0)
   useEffect(() => {
     if (!sleep || !('until' in sleep)) return
     const k = setTimeout(() => { audio.current?.pause(); setSleep(null) }, sleep.until - Date.now())
-    return () => clearTimeout(k)
+    const every = setInterval(() => tick((n) => n + 1), 1000) // the countdown on the Sleep button
+    return () => { clearTimeout(k); clearInterval(every) }
   }, [sleep])
 
   const toggle = () => { const a = audio.current; if (a) a.paused ? a.play().catch(() => {}) : a.pause() }
@@ -173,8 +184,11 @@ function Book({ it }: { it: Item }) {
     return () => removeEventListener('keydown', k)
   })
 
+  const chStart = chapters[cur]?.start ?? 0
   const chEnd = chapters[cur + 1]?.start ?? total
-  const sleepLabel = !sleep ? 'Sleep' : 'at' in sleep ? 'End of chapter' : `${Math.ceil((sleep.until - Date.now()) / 60000)} min`
+  const sleepLabel = !sleep ? 'Sleep' : 'at' in sleep ? 'Sleep: end of chapter' : `Sleep ${formatTime(Math.max(0, (sleep.until - Date.now()) / 1000))}`
+  // Times left are real listening time, so they shrink when the book plays faster.
+  const bookLeft = `${spoken((total - t) / speed)} left${speed !== 1 ? ` at ${speed}×` : ''}`
   return (
     <div class="listen" onClick={() => menu && setMenu(null)}>
       <header class="reader-bar">
@@ -186,14 +200,19 @@ function Book({ it }: { it: Item }) {
         {status ? <p class="dim">{status === 'Loading' ? <span class="spinner" aria-label="Loading" /> : status}</p> : (
           <>
             <div class="listen-chapter">{chapters[cur]?.title}</div>
-            <input class="listen-scrub" type="range" min={0} max={total} step={1} value={t} aria-label="Position" onInput={(e) => seek(Number((e.target as HTMLInputElement).value))} />
-            <div class="listen-times small dim"><span>{formatTime(t - chapters[cur].start)}</span><span>-{formatTime(chEnd - t)} in chapter</span><span>{formatTime(total - t)} left</span></div>
+            <input class="listen-scrub" type="range" min={chStart} max={chEnd} step={0.5} value={t} aria-label="Position in chapter"
+              style={{ '--fill': `${chEnd > chStart ? ((t - chStart) / (chEnd - chStart)) * 100 : 0}%` }} onInput={(e) => seek(Number((e.target as HTMLInputElement).value))} />
+            <div class="listen-times small dim"><span>{formatTime(t - chStart)}</span><span>{chEnd - t >= 1 ? "-" : ""}{formatTime((chEnd - t) / speed)}</span></div>
             <div class="listen-controls">
               <button class="icon-btn" onClick={prevChapter} aria-label="Previous chapter"><Icon name="left" /></button>
               <button class="icon-btn" onClick={() => seek(t - 30)} aria-label="Back 30 seconds"><Icon name="back10" /><span class="tiny">30</span></button>
-              <button class="icon-btn big" onClick={toggle} aria-label={playing ? 'Pause' : 'Play'}><Icon name={playing ? 'pause' : 'play'} size={30} /></button>
+              <button class="icon-btn big listen-play" onClick={toggle} aria-label={playing ? 'Pause' : 'Play'}><Icon name={playing ? 'pause' : 'play'} size={30} /></button>
               <button class="icon-btn" onClick={() => seek(t + 30)} aria-label="Forward 30 seconds"><Icon name="fwd10" /><span class="tiny">30</span></button>
               <button class="icon-btn" onClick={nextChapter} disabled={!chapters[cur + 1]} aria-label="Next chapter"><Icon name="next" /></button>
+            </div>
+            <div class="listen-book small dim">
+              <div class="listen-bookbar" aria-hidden="true"><div style={{ width: `${total ? (t / total) * 100 : 0}%` }} /></div>
+              <span>{chapters.length > 1 ? `Chapter ${cur + 1} of ${chapters.length} · ` : ''}{bookLeft}</span>
             </div>
             <div class="listen-menus" onClick={(e) => e.stopPropagation()}>
               <button class="btn sm" onClick={() => setMenu(menu === 'chapters' ? null : 'chapters')} aria-expanded={menu === 'chapters'}>Chapters ({chapters.length})</button>
@@ -201,7 +220,7 @@ function Book({ it }: { it: Item }) {
               <button class="btn sm" onClick={() => setMenu(menu === 'speed' ? null : 'speed')} aria-label="Speed">{speed}×</button>
               {menu && (
                 <div class="pop listen-pop" role="menu">
-                  {menu === 'chapters' && chapters.map((c, i) => <button class={i === cur ? 'on' : ''} onClick={() => { seek(c.start); setMenu(null) }}>{c.title}<span class="dim">{formatTime(c.start)}</span></button>)}
+                  {menu === 'chapters' && chapters.map((c, i) => <button class={i === cur ? 'on' : ''} onClick={() => { seek(c.start); setMenu(null) }}>{c.title}<span class="dim">{formatTime((chapters[i + 1]?.start ?? total) - c.start)}</span></button>)}
                   {menu === 'sleep' && [...SLEEPS.map((s) => <button onClick={() => { setSleep(startSleep(s, Date.now(), t, chapters, total)); setMenu(null) }}>{s === 'chapter' ? 'End of chapter' : `${s} minutes`}</button>),
                     sleep && <button onClick={() => { setSleep(null); setMenu(null) }}>Turn off</button>]}
                   {menu === 'speed' && SPEEDS.map((s) => <button class={s === speed ? 'on' : ''} onClick={() => rate(s)}>{s}×</button>)}
