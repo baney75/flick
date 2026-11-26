@@ -2,6 +2,7 @@
 // episodes, streams). Everything shown came through the sandbox and the validator.
 
 import { useEffect, useState } from 'preact/hooks'
+import type { ComponentChildren } from 'preact'
 import { go, play, notify } from '../lib/store'
 import { Card, Row } from '../components/Card'
 import { Icon } from '../components/icons'
@@ -57,12 +58,8 @@ function Missing({ id }: { id: string }) {
   )
 }
 
-export function PluginPage({ id }: { id: string }) {
-  const rec = sourceById(id)
-  const [q, setQ] = useState('')
-  const [results, setResults] = useState<Found[] | null>(null)
-  const [searching, setSearching] = useState(false)
-  useEffect(() => { if (rec) loadLibrary(rec) }, [rec?.id])
+/** A source's browsable catalogs: its manifest's plus any it lists at run time. null while loading. */
+export function useCatalogs(rec: Source | undefined): CatalogDef[] | null {
   const [rows, setRows] = useState<CatalogDef[] | null>(null)
   useEffect(() => {
     if (!rec) return
@@ -70,6 +67,16 @@ export function PluginPage({ id }: { id: string }) {
     if (!rec.manifest.has.userCatalogs) { setRows(fixed); return }
     callPlugin(rec, 'userCatalogs', []).then((l) => setRows([...fixed, ...l.filter((c) => !c.search)])).catch(() => setRows(fixed))
   }, [rec?.sha256, JSON.stringify(rec?.settings)])
+  return rows
+}
+
+export function PluginPage({ id }: { id: string }) {
+  const rec = sourceById(id)
+  const [q, setQ] = useState('')
+  const [results, setResults] = useState<Found[] | null>(null)
+  const [searching, setSearching] = useState(false)
+  useEffect(() => { if (rec) loadLibrary(rec) }, [rec?.id])
+  const rows = useCatalogs(rec)
   if (!rec) return <Missing id={id} />
   const name = rec.manifest.name
   const canSearch = rec.manifest.catalogs.some((c) => c.search)
@@ -118,12 +125,12 @@ export function PluginPage({ id }: { id: string }) {
   )
 }
 
-function CatalogRow({ rec, c }: { rec: Source; c: CatalogDef }) {
+export function CatalogRow({ rec, c, title, action }: { rec: Source; c: CatalogDef; title?: string; action?: ComponentChildren }) {
   const [items, setItems] = useState<Meta[] | null>(null)
   useEffect(() => { callPlugin(rec, 'catalog', [{ id: c.id, type: c.type, skip: 0 }]).then((r) => setItems(r.items)).catch(() => setItems([])) }, [])
   if (items && !items.length) return null
   return (
-    <Row title={c.name}>
+    <Row title={title ?? c.name} action={action}>
       {items ? items.map((m) => <MetaCard rec={rec} m={m} />) : Array.from({ length: 8 }, () => <div class="card poster skeleton"><div class="art" /></div>)}
     </Row>
   )

@@ -4,7 +4,8 @@ import * as Srv from '../lib/servers'
 import { Icon } from '../components/icons'
 import { isDesktop } from '../lib/platform'
 
-export function Servers() {
+/** Servers live in Settings, as its first panel. `#/servers` scrolls here. */
+export function ServersPanel() {
   const [list, setList] = useState<Srv.Server[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [here, setHere] = useState<Srv.FlickInfo | null>(null)
@@ -29,13 +30,13 @@ export function Servers() {
   }
 
   return (
-    <div class="page">
-      <header class="page-head"><h1>Servers</h1></header>
-      <p class="dim lead">Connect a media server and everything on it joins your Flick library, searchable next to your own files.</p>
+    <section class="panel servers-panel" id="servers">
+      <h3>Servers</h3>
+      <p class="dim small">Connect a media server and everything on it joins your Flick library, searchable next to your own files.</p>
 
       {list.length > 0 && (
-        <div class="panel">
-          <h3>Connected</h3>
+        <div class="connected">
+          <h4 class="small dim">Connected</h4>
           {list.map((s) => (
             <div class="list-row">
               <Icon name="server" size={18} />
@@ -58,7 +59,7 @@ export function Servers() {
       </div>
       {!isDesktop && <p class="small dim">Kodi works in the Flick apps.</p>}
       <p class="small dim">Flick talks to your server directly from this device. If the website cannot reach a server on your home network, use the desktop app, or put the server behind HTTPS.</p>
-    </div>
+    </section>
   )
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
-import { settings, setSettings, notify, items, go } from '../lib/store'
+import { settings, setSettings, notify, items, go, route } from '../lib/store'
 import { isDesktop, invoke } from '../lib/platform'
 import { formatBytes } from '../lib/parse'
 import { SyncPanel } from './Sync'
@@ -9,6 +9,7 @@ import { downloads, removeDownload } from '../lib/downloads'
 import { playSaved, badgeFor } from '../lib/offline'
 import { currentSetup, encodeSetup, validateSetup, SETUP_BASE } from '../lib/setup'
 import { PluginsPanel, ThemePicker } from './Plugins'
+import { ServersPanel } from './Servers'
 
 async function shareSetup() {
   const link = SETUP_BASE + encodeSetup(await currentSetup())
@@ -40,6 +41,9 @@ export function Settings() {
     navigator.storage?.estimate?.().then(setUsage).catch(() => {})
     if (isDesktop) invoke<{ ffmpeg: string | null }>('ffmpeg_status').then((r) => setFf(r.ffmpeg)).catch(() => setFf(null))
   }, [])
+  // `#/servers` and `#/settings/servers` open Settings at the Servers panel.
+  const toServers = /^\/(servers|settings\/servers)\b/.test(route.value)
+  useEffect(() => { if (toServers) document.getElementById('servers')?.scrollIntoView({ block: 'start' }) }, [toServers])
 
   const makeDefault = async () => {
     try {
@@ -53,6 +57,8 @@ export function Settings() {
   return (
     <div class="page narrow">
       <header class="page-head"><h1>Settings</h1></header>
+
+      <ServersPanel />
 
       <section class="panel">
         <h3>Playback</h3>

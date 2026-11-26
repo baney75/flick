@@ -1326,8 +1326,13 @@ fn queue_open(app: &tauri::AppHandle, paths: Vec<String>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app = tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    // Desktop builds update themselves from GitHub Releases; phones update through their stores.
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
+    let app = builder
         .manage(Opened::default())
         .manage(KodiProxy::default())
         .manage(Downloads::default())
