@@ -10,9 +10,12 @@ use std::io::Write;
 use std::net::IpAddr;
 use std::process::{Command, Stdio};
 
-// Cloudflare's resolver addresses. The route checks only ask the system how it would reach them.
+// Addresses whose routes stand for "all traffic": Cloudflare's resolver, and documentation ranges
+// nobody routes on purpose, so a split tunnel that carries only some destinations fails. The route
+// checks only ask the system how it would reach them.
 const PROBE_V4: &str = "1.1.1.1";
-const PROBE_V6: &str = "2606:4700:4700::1111";
+const ROUTES_V4: [&str; 3] = [PROBE_V4, "198.51.100.1", "203.0.113.1"];
+const ROUTES_V6: [&str; 2] = ["2606:4700:4700::1111", "2001:db8::1"];
 
 /// Why the gate fails; Settings > Privacy shows the message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -20,6 +23,7 @@ const PROBE_V6: &str = "2606:4700:4700::1111";
 pub enum Fail {
     NoVpn,
     Mesh,
+    Split,
     Ipv6Leak,
     Dns,
     Unchecked,
@@ -32,6 +36,7 @@ impl Fail {
             Fail::Mesh => {
                 "Tailscale and other mesh networks don't hide you. Turn on a privacy VPN."
             }
+            Fail::Split => "Your VPN carries only some of your traffic. Turn on its full tunnel.",
             Fail::Ipv6Leak => {
                 "IPv6 traffic goes around your VPN. Turn on its IPv6 leak protection."
             }
@@ -74,7 +79,14 @@ pub fn route_check(p: &dyn Probe) -> Result<String, Fail> {
     if addrs.iter().any(|a| is_mesh_addr(*a)) || p.mesh_service(&iface) {
         return Err(Fail::Mesh);
     }
-    if p.global_v6() && p.route(PROBE_V6).is_some_and(|i| i != iface) {
+    if ROUTES_V4
+        .iter()
+        .any(|ip| p.route(ip).as_deref() != Some(&iface))
+    {
+        return Err(Fail::Split);
+    }
+    let v6_around = |ip: &&str| p.route(ip).is_some_and(|i| i != iface);
+    if p.global_v6() && ROUTES_V6.iter().any(v6_around) {
         return Err(Fail::Ipv6Leak);
     }
     let dns = p.dns().unwrap_or_default();
@@ -118,6 +130,11 @@ pub fn check(p: &dyn Probe) -> GateState {
     if !cfg!(target_os = "macos") {
         return GateState::fail(Fail::Unchecked);
     }
+    decide(p)
+}
+
+/// The checks themselves, on any system (tests run them everywhere).
+pub fn decide(p: &dyn Probe) -> GateState {
     match route_check(p) {
         Ok(iface) => GateState::pass(iface),
         Err(f) => GateState::fail(f),

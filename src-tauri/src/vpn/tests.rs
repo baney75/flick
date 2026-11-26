@@ -57,18 +57,20 @@ fn vpn() -> Fake {
         v6: false,
     };
     f.route("1.1.1.1", "utun4")
+        .route("198.51.100.1", "utun4")
+        .route("203.0.113.1", "utun4")
         .route("10.2.0.1", "utun4")
         .addr("utun4", "10.2.0.2")
         .addr("en0", "192.168.1.5")
 }
 
 fn fails(p: &Fake) -> Option<Fail> {
-    check(p).reason
+    decide(p).reason
 }
 
 #[test]
 fn a_full_tunnel_vpn_passes() {
-    let s = check(&vpn());
+    let s = decide(&vpn());
     assert!(s.ok, "{s:?}");
     assert_eq!(s.iface.as_deref(), Some("utun4"));
 }
@@ -99,6 +101,16 @@ fn tailscale_is_a_mesh_not_a_vpn() {
 }
 
 #[test]
+fn a_split_tunnel_fails() {
+    // A profile that routes only 1.1.1.1/32 (and DNS to it) through the tunnel.
+    let p = vpn().route("203.0.113.1", "en0");
+    assert_eq!(fails(&p), Some(Fail::Split));
+    let mut gone = vpn();
+    gone.routes.remove("198.51.100.1");
+    assert_eq!(fails(&gone), Some(Fail::Split));
+}
+
+#[test]
 fn dns_outside_the_tunnel_fails() {
     let mut lan = vpn().route("192.168.1.1", "en0");
     lan.dns = Some(vec!["10.2.0.1".into(), "192.168.1.1".into()]);
@@ -117,15 +129,15 @@ fn dns_outside_the_tunnel_fails() {
 
 #[test]
 fn an_ipv6_route_around_the_tunnel_fails() {
-    let mut route = vpn().route("2606:4700:4700::1111", "en0");
+    let mut route = vpn().route("2001:db8::1", "en0");
     route.v6 = true;
     assert_eq!(fails(&route), Some(Fail::Ipv6Leak));
     let mut blocked = vpn().route("2606:4700:4700::1111", "utun4");
     blocked.v6 = true;
-    assert!(check(&blocked).ok, "a tunnel that takes IPv6 too");
+    assert!(decide(&blocked).ok, "a tunnel that takes IPv6 too");
     let mut no_route = vpn();
     no_route.v6 = true;
-    assert!(check(&no_route).ok, "IPv6 with no route goes nowhere");
+    assert!(decide(&no_route).ok, "IPv6 with no route goes nowhere");
 }
 
 // Taken from this Mac: Tailscale on utun19 (not an exit node), the router's DNS on en0.
