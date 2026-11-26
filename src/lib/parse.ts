@@ -3,11 +3,12 @@
 export const VIDEO_EXT = ['mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', 'wmv', 'flv', 'ts', 'm2ts', 'mts', 'mpg', 'mpeg', 'ogv', '3gp']
 export const AUDIO_EXT = ['mp3', 'm4a', 'aac', 'flac', 'wav', 'ogg', 'opus', 'alac', 'aiff', 'aif', 'wma']
 export const SUB_EXT = ['srt', 'vtt', 'ass', 'ssa']
-export const BOOK_EXT = ['pdf']
+export const BOOK_EXT = ['pdf', 'epub']
+export const AUDIOBOOK_EXT = ['m4b']
 
-/** What the player plays. Library items can also be books, which open in the reader. */
+/** What the player plays. Library items can also be books, which open in the reader, and audiobooks. */
 export type Playable = 'video' | 'audio'
-export type Kind = Playable | 'book'
+export type Kind = Playable | 'book' | 'audiobook'
 
 export function ext(name: string): string {
   const i = name.lastIndexOf('.')
@@ -21,15 +22,16 @@ export function kindOf(name: string): Playable | null {
   return null
 }
 
-/** The library kind of a file: playable media or a book. */
+/** The library kind of a file: playable media, a book or an audiobook. */
 export function itemKindOf(name: string): Kind | null {
-  return kindOf(name) ?? (BOOK_EXT.includes(ext(name)) ? 'book' : null)
+  const e = ext(name)
+  return AUDIOBOOK_EXT.includes(e) ? 'audiobook' : kindOf(name) ?? (BOOK_EXT.includes(e) ? 'book' : null)
 }
 
 /** Clamps a page number to the book. */
 export const clampPage = (n: number, pages: number) => Math.min(Math.max(1, Math.round(n) || 1), Math.max(1, pages))
 
-/** "Author - Title.pdf" or "Title (2019).pdf" to a clean title, author and year. */
+/** "Author - Title.epub" or "Title (2019).pdf" to a clean title, author and year. */
 export function parseBook(name: string): { title: string; author?: string; year?: number } {
   let base = name.replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ').trim()
   const y = base.match(/[([]((?:1[5-9]|20)\d\d)[)\]]/)
