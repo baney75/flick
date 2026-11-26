@@ -62,6 +62,8 @@ describe('capture date', () => {
     expect(exifTaken(new Uint8Array([0xff, 0xd8, 0xff, 0xda, 0, 2]).buffer)).toBeUndefined()
     expect(exifTaken(new TextEncoder().encode('not a photo').buffer)).toBeUndefined()
     expect(exifTaken(jpegWithDate('2024:06:01 10:20:30').slice(0, 30))).toBeUndefined()
+    // An APP1 segment whose length is too short to hold its own header.
+    expect(exifTaken(new Uint8Array([0xff, 0xd8, 0xff, 0xe1, 0, 4, 0x45, 0x78, 0x69, 0x66, 0, 0, 0xff, 0xda]).buffer)).toBeUndefined()
   })
 
   it('parses the flick-server form', () => {
@@ -90,6 +92,21 @@ describe('the Photos set', () => {
   it('a folder of movies has no Photos', () => {
     const list = ['/m/Heat (1995).mkv', '/m/Dune.2021.mp4', '/m/Heat (1995)-poster.jpg', '/m/fanart.jpg'].map((p) => _test.itemFromEntry({ path: p, name: p.split('/').pop()!, size: 1, mtime: 1 }, 'm')).filter(Boolean) as Item[]
     expect(photoSet(list)).toEqual([])
+  })
+
+  it('a picture named after a video beside it is a poster, not a photo', () => {
+    const list = ['/m/Heat (1995).mkv', '/m/Heat (1995).jpg', '/m/Heat (1995)-thumb.jpg', '/m/movie.jpg', '/m/default.jpg', '/m/cdart.png',
+      '/c/Clip.mp4', '/c/clip.JPG'].map((p) => _test.itemFromEntry({ path: p, name: p.split('/').pop()!, size: 1, mtime: 1 }, 'm')).filter(Boolean) as Item[]
+    expect(photoSet(list)).toEqual([])
+    // The same name in another folder is a photo.
+    expect(photoSet([...list, entry('/other/Clip.jpg')]).map((i) => i.title)).toEqual(['Clip'])
+  })
+
+  it('a server poster named after its video is not a photo', () => {
+    const s: Server = { id: 'srv', type: 'flick', name: 'NAS', url: 'https://nas.example', token: 't' }
+    const e = (id: string, path: string, kind: 'photo' | 'video') => ({ id, folder: 'Movies', path, name: path.split('/').pop()!, kind, ext: '', size: 1, mtime: 1 })
+    const out = flickMap(s, { name: 'NAS', folders: ['Movies'], items: [e('v', 'Heat (1995)/Heat (1995).mkv', 'video'), e('p', 'Heat (1995)/Heat (1995).jpg', 'photo'), e('q', 'Trip/Heat (1995).jpg', 'photo')] })
+    expect(out.filter((i) => i.kind === 'photo').map((i) => i.dir)).toEqual(['srv:Movies/Trip'])
   })
 
   it('takes home videos only from folders with photos, and never titled movies', () => {

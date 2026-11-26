@@ -25,7 +25,7 @@ export function kindOf(name: string): Playable | null {
 
 // Pictures that media folders hold for players (Kodi, Plex and Jellyfin posters, fan art, album covers),
 // named alone ("poster.jpg", "backdrop2.jpg") or after the media ("Heat (1995)-fanart.jpg").
-const ARTWORK = /^(?:.+-)?(?:poster|fanart|folder|cover|banner|clearlogo|clearart|landscape|logo|thumb|backdrop|background|art|disc|discart|keyart|season\d*(?:-poster|-fanart|-banner|-landscape)?|season-all(?:-poster|-fanart|-banner)?)\d*$|^(?:front|back|albumart\w*)$/i
+const ARTWORK = /^(?:.+-)?(?:poster|fanart|folder|cover|default|movie|show|cdart|banner|clearlogo|clearart|landscape|logo|thumb|backdrop|background|art|disc|discart|keyart|season\d*(?:-poster|-fanart|-banner|-landscape)?|season-all(?:-poster|-fanart|-banner)?)\d*$|^(?:front|back|albumart\w*)$/i
 
 /** True for a poster, fan art or album cover file that players read next to media. */
 export const isArtwork = (name: string) => ARTWORK.test(name.replace(/\.[^.]+$/, ''))

@@ -4,6 +4,7 @@ import type { Item, Source } from './library'
 import { hash, named, prepared, thumbUrl, KODI_IMG } from './library'
 import { groupAudiobooks } from './audiobook'
 import { ext, isArtwork } from './parse'
+import { stem, isPosterOf } from './photos'
 import { wallClock } from './exif'
 import * as db from './db'
 import { announce } from './sync/bus'
@@ -402,7 +403,11 @@ export async function flickConnect(url: string, code: string): Promise<Server> {
 /** Maps a flick-server library to Items, titled from file names like local files. Pure, for tests. */
 export function flickMap(s: Server, lib: FlickLibrary): Item[] {
   const paths = new Map<string, string>()
-  const list = lib.items.filter((x) => x.kind === 'video' || x.kind === 'audio' || x.kind === 'book' || (x.kind === 'photo' && !isArtwork(x.name))).map((x): Item => {
+  // Server URLs carry no file name, so posters named after a video are told apart here, where the names are known.
+  const dirOfEntry = (x: FlickEntry) => `${x.folder}/${x.path.replace(/\/?[^/]*$/, '')}`
+  const videos = new Set(lib.items.filter((x) => x.kind === 'video').map((x) => `${dirOfEntry(x)}\0${stem(x.name)}`))
+  const isPhoto = (x: FlickEntry) => x.kind === 'photo' && !isArtwork(x.name) && !isPosterOf(dirOfEntry(x), x.name, videos)
+  const list = lib.items.filter((x) => x.kind === 'video' || x.kind === 'audio' || x.kind === 'book' || isPhoto(x)).map((x): Item => {
     const kind = ext(x.name) === 'm4b' ? 'audiobook' : x.kind
     paths.set(hash(`${s.id}:${x.id}`), `${x.folder}/${x.path}`)
     const t = encodeURIComponent(s.token)
@@ -410,7 +415,7 @@ export function flickMap(s: Server, lib: FlickLibrary): Item[] {
     const photo = kind === 'photo' ? { poster: `${s.url}/thumb/${x.id}?t=${t}&v=${x.mtime}`, taken: wallClock(x.taken) } : {}
     return {
     ...photo,
-    dir: `${s.id}:${x.folder}/${x.path.replace(/\/?[^/]*$/, '')}`,
+    dir: `${s.id}:${dirOfEntry(x)}`,
     id: hash(`${s.id}:${x.id}`),
     kind,
     ...named(x.name, kind),

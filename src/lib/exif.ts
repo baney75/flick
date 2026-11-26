@@ -21,7 +21,8 @@ export function exifTaken(buf: ArrayBuffer): number | undefined {
     const marker = v.getUint8(at + 1)
     const len = v.getUint16(at + 2)
     if (marker === 0xda || marker === 0xd9) return undefined
-    if (marker === 0xe1 && at + 10 <= v.byteLength && v.getUint32(at + 4) === 0x45786966 && v.getUint16(at + 8) === 0) {
+    if (len < 2) return undefined
+    if (marker === 0xe1 && len >= 8 && at + 10 <= v.byteLength && v.getUint32(at + 4) === 0x45786966 && v.getUint16(at + 8) === 0) {
       return tiffTaken(new DataView(buf, at + 10, Math.min(len - 8, v.byteLength - at - 10)))
     }
     at += 2 + len

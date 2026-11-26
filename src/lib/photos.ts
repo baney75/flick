@@ -2,6 +2,7 @@
 // Everything here is pure, for tests. Nothing about photos ever syncs or uploads.
 
 import type { Item, Source } from './library'
+import { srcName } from './library'
 
 /** When a photo or home video was taken: its capture date when known, else the file's mtime. */
 export const takenAt = (i: Pick<Item, 'taken' | 'mtime'>) => i.taken ?? i.mtime
@@ -26,9 +27,23 @@ export const isHomeVideo = (i: Item) => i.kind === 'video' && !i.show && !i.year
  * The videos stay videos everywhere else too.
  */
 export function photoSet(items: Item[]): Item[] {
-  const dirs = new Set(items.filter((i) => i.kind === 'photo').map(dirOf))
-  return items.filter((i) => i.kind === 'photo' || (dirs.size > 0 && isHomeVideo(i) && dirs.has(dirOf(i))))
+  const videos = new Set(items.filter((i) => i.kind === 'video').map((i) => `${dirOf(i)}\0${stem(srcName(i.src))}`))
+  const photos = items.filter((i) => i.kind === 'photo' && !isPosterOf(dirOf(i), srcName(i.src), videos))
+  const dirs = new Set(photos.map(dirOf))
+  return [...photos, ...items.filter((i) => dirs.size > 0 && isHomeVideo(i) && dirs.has(dirOf(i)))]
     .sort((a, b) => takenAt(b) - takenAt(a))
+}
+
+/** A file name without its folder and extension, in lower case. */
+export const stem = (name: string) => name.replace(/^.*[\\/]/, '').replace(/\.[^.]+$/, '').toLowerCase()
+
+/**
+ * A picture named after a video in its folder (Heat (1995).jpg or Heat (1995)-thumb.jpg beside Heat (1995).mkv)
+ * is that video's poster, not a photo. `videos` holds "folder\0stem" for each video.
+ */
+export function isPosterOf(dir: string, name: string, videos: Set<string>): boolean {
+  const s = stem(name)
+  return videos.has(`${dir}\0${s}`) || videos.has(`${dir}\0${s.replace(/-[^-]*$/, '')}`)
 }
 
 export interface MonthGroup { key: string; items: Item[] }

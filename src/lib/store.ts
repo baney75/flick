@@ -79,8 +79,10 @@ function pump() {
       try {
         if (it.kind === 'photo') {
           await makeThumb(it)
-          // A file from a folder this browser keeps only for the visit stays out of storage.
-          if (it.src.t !== 'session') await saveItems([it])
+          // A file from a folder this browser keeps only for the visit stays out of storage. Only the date is
+          // written, onto the record as it is now, so a rescan or removal while the thumbnail was made wins.
+          const now = it.src.t === 'session' ? undefined : await db.get<Item>('items', it.id)
+          if (now) await saveItems([{ ...now, taken: it.taken }])
           thumbTick.value++
         } else if (!(await hasThumb(it.id)) || (it.kind === 'video' && !it.duration)) {
           const dur = await makeThumb(it)
@@ -189,6 +191,8 @@ export function itemRequest(i: Item): PlayRequest {
 
 /** Plays media, or opens a book in the reader. */
 export function playItem(i: Item) {
+  // Photos open in the Photos viewer, never the player.
+  if (i.kind === 'photo') return
   if (i.kind === 'book') return go(`/read/${encodeURIComponent(i.id)}`)
   if (i.kind === 'audiobook') return go(`/listen/${encodeURIComponent(i.id)}`)
   play(itemRequest(i))
