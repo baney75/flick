@@ -123,9 +123,16 @@ try {
   const subChooser = page.waitForEvent('filechooser')
   await page.getByText('Load subtitle file…').click()
   await (await subChooser).setFiles('test-media/sample.srt')
-  await page.waitForFunction(() => { const t = document.querySelector('.player video').textTracks; return t.length === 1 && t[0].mode === 'showing' })
-  check(true, 'SRT subtitles load and show')
+  await page.waitForFunction(() => document.querySelector('.player .subs .cue')?.textContent === 'Hello from Flick', null, { timeout: 5000 }).catch(() => {})
+  check(await page.locator('.player .subs .cue').count() === 1, 'SRT subtitles load and show')
   await page.mouse.move(640, 400)
+  await page.waitForTimeout(300)
+  const clear = await page.evaluate(() => {
+    const cue = document.querySelector('.player .subs .cue')?.getBoundingClientRect()
+    const bar = document.querySelector('.player .bottom-bar .scrub')?.getBoundingClientRect()
+    return cue && bar ? Math.round(bar.top - cue.bottom) : null
+  })
+  check(clear !== null && clear >= 0, `subtitles sit above the controls (${clear}px clear)`)
   await page.screenshot({ path: 'test-media/shots/player.png' })
 
   await page.keyboard.press('Escape')
@@ -315,6 +322,13 @@ try {
   await page.waitForTimeout(400)
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)
   check(!overflow, 'no sideways scroll at 390px')
+  const firstRow = await page.evaluate(() => {
+    const cards = [...document.querySelectorAll('.vgrid .card')].map((c) => c.getBoundingClientRect().top)
+    return cards.filter((t) => Math.abs(t - cards[0]) < 2).length
+  })
+  check(firstRow >= 2, `phone library shows ${firstRow} cards a row`)
+  const chipsWrap = await page.evaluate(() => { const c = [...document.querySelectorAll('.toolbar .chip')].map((e) => e.getBoundingClientRect().top); return new Set(c.map(Math.round)).size })
+  check(chipsWrap === 1, `filter chips stay on one scrolling line (${chipsWrap} lines)`)
   await page.screenshot({ path: 'test-media/shots/phone-library.png' })
   await page.goto(`${BASE}/#/stremio`)
   await page.locator('.row-section .card:not(.skeleton)').first().waitFor({ timeout: 15000 })
