@@ -287,6 +287,32 @@ try {
   const reached = Object.entries(probe.v?.manifest?.probe ?? {}).filter(([, v]) => v !== 'blocked').map(([k]) => k)
   check(probe.ok && Object.keys(probe.v.manifest.probe).length === 6 && reached.length === 0, `a plugin cannot reach Flick's storage, page or remote modules${reached.length ? `: reached ${reached.join(', ')}` : ''}`)
 
+  // In the apps a plugin's only network is ctx.fetch: its own fetch to a CORS-open local server is
+  // refused by the app host page. The website page, as the control, reaches the same server.
+  const ownFetch = (host) => page.evaluate(async ([host, target]) => {
+    const code = `
+      let r = 'blocked'
+      try { await fetch(${JSON.stringify(target)}); r = 'reached' } catch {}
+      export default { api: 1, id: 'org.smoke.net', name: 'Net', version: '1', net: r, catalogs: [], catalog() {}, meta() {}, streams() {} }`
+    const f = document.createElement('iframe')
+    f.setAttribute('sandbox', 'allow-scripts')
+    f.hidden = true
+    f.src = host
+    await new Promise((r) => { f.onload = r; document.body.appendChild(f) })
+    const ch = new MessageChannel()
+    f.contentWindow.postMessage({ flick: 'port' }, '*', [ch.port2])
+    const reply = await new Promise((resolve) => {
+      ch.port1.onmessage = (e) => { if (e.data.re === 1) resolve(e.data) }
+      ch.port1.postMessage({ id: 1, m: 'load', a: [code, 'desktop', {}] })
+      setTimeout(() => resolve({ ok: false }), 10000)
+    })
+    f.remove()
+    return reply.ok ? reply.v.manifest.net : 'no answer'
+  }, [host, `${FLICK_URL}/api/library`])
+  const webNet = await ownFetch('/plugin-host.html')
+  const appNet = await ownFetch('/plugin-host-app.html')
+  check(webNet === 'reached' && appNet === 'blocked', `in the apps a plugin's own fetch is refused (app page ${appNet}, website page ${webNet})`)
+
   // A source plugin from a URL: review first, then its page, a title page, a stream that plays.
   await page.goto(`${BASE}/#/settings`)
   const addForm = page.locator('form', { has: page.getByLabel('Plugin address') })
