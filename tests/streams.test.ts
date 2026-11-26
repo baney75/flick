@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { qualityOf, hdrOf, sizeOf, sections, best } from '../src/lib/plugins/streams'
+import { qualityOf, hdrOf, sizeOf, sections, best, downloadable } from '../src/lib/plugins/streams'
 
 const s = (title: string, more: object = {}) => ({ url: `https://x/${title}`, title, ...more })
 
@@ -46,4 +46,25 @@ describe('stream sections', () => {
     expect(best([s('x 1080p', { external: true })])).toBeNull()
     expect(best([])).toBeNull()
   })
+})
+
+// SPEC P4 rule 19: Download shows on one-file http(s) streams, and on yt-dlp streams in the desktop app only.
+describe('downloadable', () => {
+  const desktop = { desktop: true, mobile: false }, web = { desktop: false, mobile: false }, phone = { desktop: true, mobile: true }
+  const ia = { url: 'https://archive.org/download/night_of_the_living_dead/night.mp4' }
+  const yt = { url: 'flick-tool:ytdlp/0123456789abcdef0123456789abcdef' }
+  it.each([
+    ['Internet Archive https mp4', ia, desktop, 'file'],
+    ['Internet Archive https mp4 on the website', ia, web, 'file'],
+    ['a LAN http file', { url: 'http://192.168.1.5:8080/a.mkv' }, phone, 'file'],
+    ['a URL ending in .m3u8', { url: 'https://cdn.example/live/index.m3u8' }, desktop, null],
+    ['an .M3U8 with a query', { url: 'https://cdn.example/a/master.M3U8?token=1' }, desktop, null],
+    ['a DASH .mpd', { url: 'https://cdn.example/a/manifest.mpd' }, desktop, null],
+    ['YouTube on the desktop app', yt, desktop, 'tool'],
+    ['YouTube on the website', yt, web, null],
+    ['YouTube in the phone app', yt, phone, null],
+    ['an external link', { url: 'https://www.youtube.com/watch?v=x', external: true }, desktop, null],
+    ['a book', { url: 'https://archive.org/download/x/x.pdf', kind: 'book' as const }, desktop, null],
+    ['another tool', { url: 'flick-tool:other/abc' }, desktop, null],
+  ])('%s', (_, st, app, want) => expect(downloadable(st, app)).toBe(want))
 })
