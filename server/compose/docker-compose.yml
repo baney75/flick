@@ -1,0 +1,16 @@
+# flick-server on your LAN. Edit the media path, then: docker compose up -d
+# The access code and setup links are in: docker compose logs flick-server
+# The links show the container's own address; use this machine's address instead,
+# or set it with --public-url (for example http://192.168.1.20:8740).
+services:
+  flick-server:
+    image: ghcr.io/baney75/flick-server:latest
+    restart: unless-stopped
+    command: ["--lan", "--media", "/media", "--name", "NAS"]
+    ports:
+      - "8740:8740"
+    volumes:
+      - /path/to/media:/media:ro # your media folder, read-only
+      - flick-config:/config # settings and the access code
+volumes:
+  flick-config:

@@ -8,21 +8,34 @@ The HTTP API is in [CONTRACT.md](CONTRACT.md).
 
 ## Install
 
-For now, build it with Rust (releases and a Docker image come next):
+Download an archive for your system from
+[Releases](https://github.com/baney75/flick/releases?q=server-v) (`flick-server-<version>-<target>`, with the
+web app built in), unpack it and run `flick-server`. Builds exist for macOS (Apple silicon and Intel), Linux
+(x86_64 and arm64) and Windows (x86_64).
+
+On a NAS, use Docker. The image is `ghcr.io/baney75/flick-server` (amd64 and arm64), and
+[compose/](compose) has ready files:
 
 ```sh
-cargo build --release --manifest-path server/Cargo.toml
-# binary: server/target/release/flick-server
+# edit /path/to/media in the file first
+docker compose -f server/compose/docker-compose.yml up -d
+docker compose -f server/compose/docker-compose.yml logs flick-server   # access code and setup links
 ```
 
-To build the web app in, so the server serves Flick at its own address:
+The container keeps its settings and access code in the `/config` volume and serves the folder mounted at
+`/media`. It listens on all interfaces inside the container; the setup links it prints use the container's own
+address, so open the NAS address instead, or pass `--public-url http://<nas>:8740`.
+
+Last option, build it with Rust:
 
 ```sh
 npm ci && npx vite build
 cargo build --release --manifest-path server/Cargo.toml --features embed-web
+# binary: server/target/release/flick-server
 ```
 
-Or serve a built copy from a folder with `--web dist`.
+Leave out `--features embed-web` (and the web build) for a server without the web app, or serve a built copy
+from a folder with `--web dist`.
 
 ## Quick start
 
@@ -52,6 +65,11 @@ already mapped to something else. If Serve fails:
 The mapping stays after the server stops and does nothing while nothing listens. Remove it with
 `tailscale serve --https=8740 off`.
 
+With Docker, [compose/tailscale.yml](compose/tailscale.yml) runs a Tailscale sidecar that joins the tailnet
+as `flick` and serves [compose/serve.json](compose/serve.json): HTTPS on 443 to the server, so the NAS is
+`https://flick.<tailnet>.ts.net` with no port opened. Set `TS_AUTHKEY` and put your tailnet name in
+`--public-url` in the file.
+
 ## Cloudflare
 
 Quick tunnel, for a short test from anywhere. Needs
@@ -73,6 +91,10 @@ flick-server --public-url https://flick.example.com
 
 Put Cloudflare Access in front of a named tunnel for a second lock besides the access code. `--no-public-url`
 forgets the address. The same flag works behind any reverse proxy.
+
+With Docker, [compose/cloudflare.yml](compose/cloudflare.yml) runs cloudflared next to the server. Create the
+tunnel in the Cloudflare dashboard, give its public hostname the service `http://flick-server:8740`, set
+`TUNNEL_TOKEN`, and put the hostname in `--public-url` in the file.
 
 ## LAN
 

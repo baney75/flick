@@ -1,0 +1,28 @@
+# flick-server on your tailnet at https://flick.<tailnet>.ts.net, with no ports opened on the NAS.
+# Needs HTTPS certificates turned on at https://login.tailscale.com/admin/dns.
+# Make an auth key at https://login.tailscale.com/admin/settings/keys, then:
+#   TS_AUTHKEY=tskey-auth-... docker compose -f tailscale.yml up -d
+# Put your tailnet name in --public-url so the setup link is right.
+services:
+  tailscale:
+    image: tailscale/tailscale:v1.104.7
+    hostname: flick
+    restart: unless-stopped
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_HOSTNAME=flick
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/serve.json # HTTPS 443 to flick-server:8740
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./serve.json:/config/serve.json:ro
+  flick-server:
+    image: ghcr.io/baney75/flick-server:latest
+    restart: unless-stopped
+    command: ["--lan", "--media", "/media", "--name", "NAS", "--public-url", "https://flick.your-tailnet.ts.net"]
+    volumes:
+      - /path/to/media:/media:ro
+      - flick-config:/config
+volumes:
+  tailscale-state:
+  flick-config:

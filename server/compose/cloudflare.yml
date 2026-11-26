@@ -1,0 +1,21 @@
+# flick-server on your own domain through a Cloudflare named tunnel, with no ports opened on the NAS.
+# In the Cloudflare dashboard, create a tunnel, copy its token, and add a public hostname
+# (for example flick.example.com) with service http://flick-server:8740. Then:
+#   TUNNEL_TOKEN=... docker compose -f cloudflare.yml up -d
+# Protect the hostname with Cloudflare Access, a second lock besides the access code.
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:2026.11.2
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+  flick-server:
+    image: ghcr.io/baney75/flick-server:latest
+    restart: unless-stopped
+    command: ["--lan", "--media", "/media", "--name", "NAS", "--public-url", "https://flick.example.com"]
+    volumes:
+      - /path/to/media:/media:ro
+      - flick-config:/config
+volumes:
+  flick-config:
