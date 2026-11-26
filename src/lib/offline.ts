@@ -10,7 +10,7 @@ import { progress, settings, notify } from './store'
 /** Server items can be saved. Kodi needs the app, which sends the Kodi login. */
 export function canDownload(it: Item): boolean {
   if (it.src.t === 'kodi') return isDesktop
-  return it.src.t === 'url' && (it.origin === 'jellyfin' || it.origin === 'plex')
+  return it.src.t === 'url' && (it.origin === 'jellyfin' || it.origin === 'plex' || it.origin === 'flick')
 }
 
 /** The card badge for a download: Offline, a percent, Queued or Failed. */

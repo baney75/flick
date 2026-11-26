@@ -92,7 +92,7 @@ export function ItemCard({ it, onClick, onMore }: { it: Item; onClick: () => voi
 }
 
 export function originName(it: Item) {
-  return it.origin === 'stored' ? 'Stored' : it.origin === 'jellyfin' ? 'Jellyfin' : it.origin === 'plex' ? 'Plex' : it.origin === 'kodi' ? 'Kodi' : 'Local'
+  return it.origin === 'stored' ? 'Stored' : it.origin === 'jellyfin' ? 'Jellyfin' : it.origin === 'plex' ? 'Plex' : it.origin === 'kodi' ? 'Kodi' : it.origin === 'flick' ? 'Flick server' : 'Local'
 }
 
 /** A horizontal row that scrolls, with a heading. */

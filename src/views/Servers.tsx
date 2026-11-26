@@ -7,8 +7,9 @@ import { isDesktop } from '../lib/platform'
 export function Servers() {
   const [list, setList] = useState<Srv.Server[]>([])
   const [busy, setBusy] = useState<string | null>(null)
+  const [here, setHere] = useState<Srv.FlickInfo | null>(null)
   const refresh = () => Srv.getServers().then(setList)
-  useEffect(() => { refresh() }, [])
+  useEffect(() => { refresh(); Srv.sameOriginFlick().then(setHere) }, [])
 
   const sync = async (s: Srv.Server) => {
     setBusy(s.id)
@@ -39,7 +40,7 @@ export function Servers() {
             <div class="list-row">
               <Icon name="server" size={18} />
               <div class="grow">
-                <div>{s.name} <span class="small dim">{s.type === 'plex' ? 'Plex' : s.type === 'kodi' ? 'Kodi' : 'Jellyfin'}</span></div>
+                <div>{s.name} <span class="small dim">{s.type === 'plex' ? 'Plex' : s.type === 'kodi' ? 'Kodi' : s.type === 'flick' ? 'Flick server' : 'Jellyfin'}</span></div>
                 <div class="small dim">{s.url} · {items.value.filter((i) => i.server === s.id).length} items</div>
               </div>
               <button class="btn ghost sm" onClick={() => sync(s)} disabled={busy === s.id}><Icon name="refresh" size={14} /> {busy === s.id ? 'Syncing' : 'Sync'}</button>
@@ -50,6 +51,7 @@ export function Servers() {
       )}
 
       <div class="server-grid">
+        <FlickForm onAdd={add} here={here} />
         <JellyfinForm onAdd={add} />
         <PlexForm onAdd={add} />
         {isDesktop && <KodiForm onAdd={add} />}
@@ -79,6 +81,32 @@ function JellyfinForm({ onAdd }: { onAdd: (s: Srv.Server) => void }) {
       <label>Server address<input required placeholder="http://192.168.1.20:8096" value={url} onInput={(e) => setUrl((e.target as HTMLInputElement).value)} /></label>
       <label>Username<input required autocomplete="username" value={user} onInput={(e) => setUser((e.target as HTMLInputElement).value)} /></label>
       <label>Password<input type="password" autocomplete="current-password" value={pw} onInput={(e) => setPw((e.target as HTMLInputElement).value)} /></label>
+      <button class="btn primary" disabled={busy}>{busy ? 'Connecting…' : 'Connect'}</button>
+      {err && <p class="err">{err}</p>}
+    </form>
+  )
+}
+
+function FlickForm({ onAdd, here }: { onAdd: (s: Srv.Server) => void; here: Srv.FlickInfo | null }) {
+  const [url, setUrl] = useState('')
+  const [code, setCode] = useState('')
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const submit = async (e: Event) => {
+    e.preventDefault()
+    setBusy(true)
+    setErr(null)
+    try { onAdd(await Srv.flickConnect(here ? location.origin : url, code)); setCode('') } catch (e2) { setErr((e2 as Error).message) }
+    setBusy(false)
+  }
+  return (
+    <form class="panel" onSubmit={submit}>
+      <h3>Flick server (NAS)</h3>
+      {here
+        ? <p class="dim small">This page comes from the Flick server {here.name}. Enter the access code it printed.</p>
+        : <p class="dim small">Run flick-server on the computer or NAS that holds your media. It prints a setup link; open that on this device, or paste the address and code here.</p>}
+      {!here && <label>Address<input required placeholder="https://nas.tail1234.ts.net" value={url} onInput={(e) => setUrl((e.target as HTMLInputElement).value)} /></label>}
+      <label>Access code<input required autocomplete="off" spellcheck={false} value={code} onInput={(e) => setCode((e.target as HTMLInputElement).value)} /></label>
       <button class="btn primary" disabled={busy}>{busy ? 'Connecting…' : 'Connect'}</button>
       {err && <p class="err">{err}</p>}
     </form>
