@@ -396,9 +396,16 @@ pub async fn plugin_tool(
 
 fn kill_all(children: Vec<Child>) {
     for mut c in children {
-        let _ = c.kill();
+        kill_tree(&mut c);
         let _ = c.wait();
     }
+}
+
+/// Starts `cmd` in its own process group, so `kill_tree` can stop everything it starts.
+fn own_group(cmd: &mut Command) -> &mut Command {
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(cmd, 0);
+    cmd
 }
 
 pub fn stop_job(state: &PluginTools) {
@@ -527,7 +534,7 @@ fn stream(
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let file = |n: &str| std::fs::File::create(dir.join(n)).map_err(|e| e.to_string());
-    let mut yt = Command::new(bin)
+    let mut yt = own_group(&mut Command::new(bin))
         .args([
             "--no-warnings",
             "--no-progress",
@@ -770,11 +777,7 @@ fn save(
     std::fs::create_dir_all(home).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(temp).map_err(|e| e.to_string())?;
     let log = temp.join("yt-dlp.log");
-    let mut cmd = Command::new(bin);
-    // Its own process group, so a cancel can stop every process under it.
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-    let mut child = cmd
+    let mut child = own_group(&mut Command::new(bin))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1020,6 +1023,61 @@ mod tests {
         assert!(err.contains("nothing within"), "{err}");
         assert!(st.job.lock().unwrap().children.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// yt-dlp's loader starts the real program as a child. Stopping a stream must stop that child
+    /// too, or switching videos leaves the old download running.
+    #[cfg(unix)]
+    #[test]
+    fn stopping_a_stream_stops_what_its_ytdlp_started() {
+        let st = PluginTools::default();
+        let pidfile = std::env::temp_dir().join(format!("flick-ytdlp-tree-{}", std::process::id()));
+        let _ = std::fs::remove_file(&pidfile);
+        let loader = own_group(
+            Command::new("sh")
+                .args(["-c", "sleep 30 & echo $! > \"$0\"; wait"])
+                .arg(&pidfile),
+        )
+        .spawn()
+        .unwrap();
+        start_job(&st, vec![loader]);
+        let t = Instant::now();
+        let pid = loop {
+            if let Some(p) = std::fs::read_to_string(&pidfile)
+                .ok()
+                .and_then(|p| p.trim().parse::<u32>().ok())
+            {
+                break p;
+            }
+            assert!(
+                t.elapsed() < Duration::from_secs(5),
+                "the loader never started its child"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let alive = || {
+            Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        assert!(alive());
+        stop_job(&st);
+        let t = Instant::now();
+        while alive() && t.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let left = alive();
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+        let _ = std::fs::remove_file(&pidfile);
+        assert!(
+            !left,
+            "the loader's child kept running after the stream stopped"
+        );
     }
 
     #[test]
