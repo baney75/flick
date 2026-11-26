@@ -35,10 +35,11 @@ export function TitleCard({ t, onMore }: { t: Title; onMore?: (it: Item, e: Mous
   const only = t.srcs.length === 1 ? t.srcs[0] : null
   if (only?.t === 'item') return <ItemCard it={only.it} onClick={() => openSrc(only)} onMore={onMore && ((e) => onMore(only.it, e))} />
   if (only?.t === 'show') return <ShowCard eps={only.eps} />
-  return <MergedCard t={t} />
+  const item = t.srcs.find((s): s is Extract<Src, { t: 'item' }> => s.t === 'item')?.it
+  return <MergedCard t={t} onMore={item && onMore ? (e) => onMore(item, e) : undefined} />
 }
 
-function MergedCard({ t }: { t: Title }) {
+function MergedCard({ t, onMore }: { t: Title; onMore?: (e: MouseEvent) => void }) {
   const first = t.srcs.find((s) => s.t !== 'plugin')
   const it = first?.t === 'item' ? first.it : first?.t === 'show' ? first.eps[0] : undefined
   const thumb = useThumb(it)
@@ -47,7 +48,7 @@ function MergedCard({ t }: { t: Title }) {
   const shows = t.type === 'show'
   return (
     <Card image={it?.poster ? thumb : meta?.poster ?? thumb} title={t.name} sub={[t.year, shows ? 'Show' : null].filter(Boolean).join(' · ') || undefined}
-      shape={it && !it.poster ? 'wide' : 'poster'} pct={pct} badge={badgeOf(t)} onClick={() => openTitle(t)} />
+      shape={it && !it.poster ? 'wide' : 'poster'} pct={pct} badge={badgeOf(t)} onClick={() => openTitle(t)} onMore={onMore} />
   )
 }
 
@@ -69,9 +70,23 @@ export function SourceSheet() {
     if (!t) return
     firstRow.current?.focus()
     // Capture phase: Escape closes the sheet and stops there, before the app's Back handler sees it.
-    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); choosing.value = null } }
+    const k = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); choosing.value = null; return }
+      // Tab and the arrows (a TV remote) stay inside the sheet.
+      const fwd = e.key === 'ArrowDown' || e.key === 'ArrowRight' || (e.key === 'Tab' && !e.shiftKey)
+      const back = e.key === 'ArrowUp' || e.key === 'ArrowLeft' || (e.key === 'Tab' && e.shiftKey)
+      if (!fwd && !back) return
+      e.preventDefault()
+      e.stopPropagation()
+      const btns = [...document.querySelectorAll<HTMLButtonElement>('.source-sheet button')]
+      const i = btns.indexOf(document.activeElement as HTMLButtonElement)
+      btns[(i + (fwd ? 1 : -1) + btns.length) % btns.length]?.focus()
+    }
+    // Back, or any other route change, closes it.
+    const away = () => { choosing.value = null }
     addEventListener('keydown', k, true)
-    return () => removeEventListener('keydown', k, true)
+    addEventListener('hashchange', away)
+    return () => { removeEventListener('keydown', k, true); removeEventListener('hashchange', away) }
   }, [t])
   if (!t) return null
   const rows = ranked(t.srcs, pickedFor(t.key))
