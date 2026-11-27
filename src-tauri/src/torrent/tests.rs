@@ -17,14 +17,16 @@ const LOOPBACK: &str = if cfg!(target_os = "macos") {
     "lo"
 };
 
+type Step = Box<dyn FnOnce(&Engine) + Send>;
+
 /// A gate that passes on `iface` (or fails with no VPN), records its holds, and can run a step
-/// inside `hold` (a VPN drop while a torrent starts).
+/// inside `hold` (a VPN drop or a stop while a torrent starts).
 #[derive(Default)]
 struct Fake {
     iface: Mutex<Option<String>>,
     held: Mutex<Vec<String>>,
     engine: OnceLock<Weak<Engine>>,
-    drop_on_hold: Mutex<bool>,
+    on_hold: Mutex<Option<Step>>,
 }
 
 impl Fake {
@@ -48,9 +50,9 @@ impl Gate for Fake {
             return failed();
         };
         self.held.lock().unwrap().push(id.into());
-        if std::mem::take(&mut *self.drop_on_hold.lock().unwrap()) {
-            let e = self.engine.get().and_then(Weak::upgrade).unwrap();
-            e.on_gate(&failed());
+        let step = self.on_hold.lock().unwrap().take();
+        if let Some(step) = step {
+            step(&self.engine.get().and_then(Weak::upgrade).unwrap());
         }
         GateState::pass(iface, "203.0.113.9".parse().unwrap())
     }
@@ -167,7 +169,7 @@ fn a_seeded_torrent_plays_from_the_local_url_with_ranges_and_stops() {
     assert!(url.starts_with("http://127.0.0.1:"), "{url}");
     assert!(url.ends_with(&format!("/{hash}/0")), "{url}");
     assert_eq!(e.running(), std::slice::from_ref(&hash));
-    assert_eq!(gate.held(), [format!("torrent:{hash}")]);
+    assert_eq!(gate.held(), [format!("torrent:{hash}:1")]);
     assert_eq!(
         e.play(&want(&hash, &[])).unwrap(),
         url,
@@ -205,12 +207,17 @@ fn a_torrent_with_no_peers_gives_up_with_the_no_peers_message() {
     let gate = Fake::passing();
     let e = engine("nopeers", &gate, vec![peer], Duration::from_secs(2));
     let started = std::time::Instant::now();
-    assert_eq!(e.play(&want(HASH, &[])), Err(rules::NO_PEERS.into()));
+    // The app's commands call play on a blocking thread of their async runtime.
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let e2 = Arc::clone(&e);
+    let got = rt.block_on(rt.spawn_blocking(move || e2.play(&want(HASH, &[]))));
+    assert_eq!(got.unwrap(), Err(rules::NO_PEERS.into()));
     assert!(started.elapsed() < Duration::from_secs(15));
     assert!(e.running().is_empty());
     assert!(gate.held().is_empty(), "the hold ends with the torrent");
-    assert!(
-        e.play(&want(HASH, &[])).is_err(),
+    assert_eq!(
+        e.play(&want(HASH, &[])),
+        Err(rules::NO_PEERS.into()),
         "a retry starts over, not 'still starting'"
     );
 }
@@ -252,7 +259,7 @@ fn a_gate_failure_stops_every_torrent_and_a_new_tunnel_stops_the_old_ones() {
         "on_gate never waits"
     );
     assert!(e.running().is_empty());
-    assert!(gate.held().is_empty());
+    wait_until(|| gate.held().is_empty());
     assert_eq!(get(&url, None, "").0, 404);
 
     e.play(&want(&a, &[])).unwrap();
@@ -272,10 +279,91 @@ fn a_vpn_drop_while_a_torrent_starts_stops_it() {
     let hash = seeder.seed("movie.mp4", &body(200_000, 4));
     let gate = Fake::passing();
     let e = engine("drop", &gate, vec![seeder.addr()], Duration::from_secs(30));
-    *gate.drop_on_hold.lock().unwrap() = true;
+    *gate.on_hold.lock().unwrap() = Some(Box::new(|e| e.on_gate(&failed())));
     assert_eq!(e.play(&want(&hash, &[])), Err(rules::DROPPED.into()));
     assert!(e.running().is_empty());
+    wait_until(|| gate.held().is_empty());
+
+    // A new tunnel the engine hears before the start knows its own: the start still stops.
+    let utun9 = || GateState::pass("utun9".into(), "203.0.113.9".parse().unwrap());
+    *gate.on_hold.lock().unwrap() = Some(Box::new(move |e| e.on_gate(&utun9())));
+    assert_eq!(e.play(&want(&hash, &[])), Err(rules::DROPPED.into()));
+    assert!(e.running().is_empty());
+    wait_until(|| gate.held().is_empty());
+
+    // The same tunnel again changes nothing.
+    let lo = || GateState::pass(LOOPBACK.into(), "203.0.113.9".parse().unwrap());
+    *gate.on_hold.lock().unwrap() = Some(Box::new(move |e| e.on_gate(&lo())));
+    assert!(e.play(&want(&hash, &[])).is_ok());
+    assert_eq!(e.running(), vec![hash]);
+}
+
+/// Waits up to 10 seconds for `ok`.
+fn wait_until(ok: impl Fn() -> bool) {
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while !ok() {
+        assert!(std::time::Instant::now() < until, "timed out");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_stop_while_a_torrent_starts_ends_that_start_and_a_new_play_runs_on_its_own_hold() {
+    let seeder = Seeder::new("stopstart");
+    let hash = seeder.seed("movie.mp4", &body(200_000, 6));
+    let gate = Fake::passing();
+    let e = engine(
+        "stopstart",
+        &gate,
+        vec![seeder.addr()],
+        Duration::from_secs(30),
+    );
+    let h = hash.clone();
+    *gate.on_hold.lock().unwrap() = Some(Box::new(move |e| e.stop(&h)));
+    let msg = "Playback stopped before the torrent started.";
+    assert_eq!(e.play(&want(&hash, &[])), Err(msg.into()));
+    assert!(e.running().is_empty() && e.starting().is_empty());
     assert!(gate.held().is_empty());
+
+    let url = e.play(&want(&hash, &[])).unwrap();
+    assert_eq!(e.running(), vec![hash.clone()]);
+    assert_eq!(gate.held().len(), 1, "one hold, the running torrent's own");
+    assert_eq!(get(&url, None, "Range: bytes=0-9\r\n").0, 206);
+}
+
+#[test]
+fn a_stop_or_a_vpn_drop_cuts_a_start_short() {
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let gate = Fake::passing();
+    let e = engine(
+        "cut",
+        &gate,
+        vec![silent.local_addr().unwrap()],
+        Duration::from_secs(60),
+    );
+    type Cut = fn(&Engine);
+    let cuts: [(Cut, &str); 2] = [
+        (
+            |e| e.stop(HASH),
+            "Playback stopped before the torrent started.",
+        ),
+        (|e| e.on_gate(&failed()), rules::DROPPED),
+    ];
+    for (cut, msg) in cuts {
+        let started = std::time::Instant::now();
+        let e2 = Arc::clone(&e);
+        let play = std::thread::spawn(move || e2.play(&want(HASH, &[])));
+        wait_until(|| !gate.held().is_empty());
+        assert_eq!(
+            e.play(&want(HASH, &[])),
+            Err("This torrent is still starting.".into())
+        );
+        cut(&e);
+        assert_eq!(play.join().unwrap(), Err(msg.into()));
+        assert!(started.elapsed() < Duration::from_secs(5), "{msg}");
+        assert!(e.starting().is_empty());
+        wait_until(|| gate.held().is_empty());
+    }
 }
 
 #[test]

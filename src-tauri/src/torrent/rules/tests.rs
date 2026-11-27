@@ -455,6 +455,11 @@ fn file_lengths_that_do_not_match_the_pieces_are_refused() {
     // Two pieces of data with one hash.
     let short = edit(&one, "6:lengthi1e", &format!("6:lengthi{}e", PIECE + 1));
     let hash = "\u{7}".repeat(20);
+    let two_spare = edit(
+        &one,
+        &format!("6:pieces20:{hash}"),
+        &format!("6:pieces60:{hash}{hash}{hash}"),
+    );
     let odd_hash = edit(
         &one,
         &format!("6:pieces20:{hash}"),
@@ -466,6 +471,7 @@ fn file_lengths_that_do_not_match_the_pieces_are_refused() {
         ("piece length 0", zero_piece),
         ("too few hashes", short),
         ("a partial hash", odd_hash),
+        ("two spare hashes", two_spare),
     ] {
         let e = rules::vet(&t).unwrap_err();
         assert!(e.contains("don't match its pieces"), "{what}: {e}");
