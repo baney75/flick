@@ -18,9 +18,22 @@ async function core() {
   return import('@tauri-apps/api/core')
 }
 
+export interface InvokeRow { cmd: string; start: number; end: number; ok: boolean }
+/** Every invoke in a self-test run (window.__FLICK_SELFTEST__, set only by the self-test build or harness). */
+export const invokeLog: InvokeRow[] = []
+const logInvokes = typeof window !== 'undefined' && '__FLICK_SELFTEST__' in window
+
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  const c = await core()
-  return c.invoke<T>(cmd, args)
+  if (!logInvokes) return (await core()).invoke<T>(cmd, args)
+  const start = performance.now()
+  let ok = false
+  try {
+    const v = await (await core()).invoke<T>(cmd, args)
+    ok = true
+    return v
+  } finally {
+    if (invokeLog.length < 5000) invokeLog.push({ cmd, start, end: performance.now(), ok })
+  }
 }
 
 let convert: ((p: string) => string) | null = null
