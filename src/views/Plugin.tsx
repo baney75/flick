@@ -500,6 +500,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       if (!current(t)) return
       releaseGate()
     }
+    const via = r && viaOf(r, serviceName)
     play({
       key,
       title: meta.name,
@@ -508,7 +509,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       url,
       // A service's link is a plain https file: an MKV takes the desktop's convert path (SPEC-debrid rule 5).
       ...(s.torrent ? { src: { t: 'url' as const, url } } : {}),
-      ...(r && viaOf(r, serviceName) ? { via: viaOf(r, serviceName) } : {}),
+      ...(via ? { via } : {}),
       poster: video?.thumbnail ?? meta.background ?? meta.poster,
       subs: subs.slice(0, 12).map((x) => ({ label: x.label ?? x.lang, lang: x.lang, url: x.url })),
       ref,

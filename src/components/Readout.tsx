@@ -6,23 +6,27 @@ import { useEffect, useState } from 'preact/hooks'
 import type { RefObject } from 'preact'
 import { RateMeter } from '../lib/speed'
 import { gate } from '../lib/picking'
-import { bufferedSeconds, fetchedBytes, viaLine, type Via } from '../lib/readout'
+import { bufferedSeconds, counts, fetchedBytes, viaLine, type Via } from '../lib/readout'
 
-export function Readout({ video, via }: { video: RefObject<HTMLVideoElement | null>; via: Via }) {
+export function Readout({ video, via, url }: { video: RefObject<HTMLVideoElement | null>; via: Via; url?: string }) {
   const [mbps, setMbps] = useState<number | null>(null)
   useEffect(() => {
     const v = video.current
     if (!v || !via.bytes) return
     const meter = new RateMeter(performance.now())
     let held = bufferedSeconds(v.buffered)
+    let seen = false
     const onProgress = () => {
       const now = bufferedSeconds(v.buffered)
-      meter.add(fetchedBytes(held, now, via.bytes, v.duration), performance.now())
+      // Only the service's own link measures its download; a converted MKV shows no speed.
+      const got = counts(v.currentSrc, url, v.duration) ? fetchedBytes(held, now, via.bytes, v.duration) : 0
+      if (got > 0) { seen = true; meter.add(got, performance.now()) }
       held = now
     }
     v.addEventListener('progress', onProgress)
-    const t = setInterval(() => setMbps(meter.mbps(performance.now())), 1000)
+    const t = setInterval(() => { if (seen && counts(v.currentSrc, url, v.duration)) setMbps(meter.mbps(performance.now())); else setMbps(null) }, 1000)
     return () => { v.removeEventListener('progress', onProgress); clearInterval(t) }
   }, [])
-  return <div class="t2 readout">{viaLine(via, mbps, gate.value?.ok === true)}</div>
+  const g = gate.value
+  return <div class="t2 readout">{viaLine(via, mbps, g ? g.ok === true : null)}</div>
 }
