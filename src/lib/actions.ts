@@ -155,6 +155,11 @@ export async function storeFiles() {
   notify(`Stored ${files.length} file${files.length > 1 ? 's' : ''} in Flick.`)
 }
 
+/** Whether typed text is a web address the player can open. */
+export function isStreamUrl(text: string) {
+  try { return ['http:', 'https:'].includes(new URL(text.trim()).protocol) } catch { return false }
+}
+
 export function openUrl(url: string) {
   url = url.trim()
   if (!url) return

@@ -281,6 +281,34 @@ try {
     await page.locator('.player').waitFor({ state: 'detached' })
     await page.evaluate(() => { HTMLMediaElement.prototype.canPlayType = window.__ownCanPlayType })
   }
+  // Text that is not a link says so under the box and opens no player.
+  {
+    await page.getByLabel('Stream URL').fill('not a link')
+    await page.getByLabel('Stream URL').press('Enter')
+    check(await page.locator('.url-form + .err').getByText('That is not a link.').waitFor({ timeout: 3000 }).then(() => true, () => false)
+      && !(await page.locator('.player').count()), 'text that is not a link says so under the box and opens no player')
+  }
+  // A link pasted and sent with Enter plays, and the player answers Space and Escape: the box behind it
+  // no longer keeps the keys.
+  {
+    await page.route('**/pasted-link.webm', (route) => route.fulfill({ path: media, contentType: 'video/webm' }))
+    await page.getByLabel('Stream URL').fill(`${BASE}/pasted-link.webm`)
+    await page.getByLabel('Stream URL').press('Enter')
+    await page.waitForFunction(() => (document.querySelector('.player video')?.currentTime ?? 0) > 0.5, null, { timeout: 10000 })
+    await page.keyboard.press(' ')
+    const paused = await page.waitForFunction(() => document.querySelector('.player video')?.paused, null, { timeout: 2000 }).then(() => true, () => false)
+    await page.keyboard.press('Escape')
+    const closed = await page.locator('.player').waitFor({ state: 'detached', timeout: 3000 }).then(() => true, () => false)
+    check(paused && closed, `after a pasted link, Space pauses and Escape closes the player (paused ${paused}, closed ${closed})`)
+    // The steps after this expect nothing in progress yet.
+    await page.evaluate(() => new Promise((res, rej) => {
+      const r = indexedDB.open('flick')
+      r.onsuccess = () => { const tx = r.result.transaction('progress', 'readwrite'); tx.objectStore('progress').clear(); tx.oncomplete = res; tx.onerror = () => rej(tx.error) }
+    }))
+    await page.goto(`${BASE}/#/`)
+    await page.reload()
+    await page.getByText('Drop anything here to play it.').waitFor()
+  }
   await page.goto(`${BASE}/#/library`)
   const addBtn = page.locator('.empty .btn.primary', { hasText: 'Add a folder' })
   await addBtn.waitFor()

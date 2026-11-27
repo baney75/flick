@@ -89,6 +89,12 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   }, [])
 
   const flash = (text: string) => setOsd({ text, n: Date.now() })
+  // A field behind the player (the box a link was pasted in) keeps focus, and the keys below skip text
+  // fields, so Space and Escape did nothing. The player takes the keys when it opens.
+  useEffect(() => {
+    const a = document.activeElement
+    if (a instanceof HTMLElement && !shell.current?.contains(a)) a.blur()
+  }, [])
   useEffect(() => {
     if (!osd) return
     const t = setTimeout(() => setOsd(null), 700)

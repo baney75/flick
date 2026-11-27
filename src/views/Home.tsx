@@ -2,7 +2,7 @@ import { useEffect, useState } from 'preact/hooks'
 import { items, playItem, go, shows, type Progress } from '../lib/store'
 import { Card, ItemCard, Row, useThumb } from '../components/Card'
 import { Icon } from '../components/icons'
-import { addFolder, openFiles, openUrl, playPaths } from '../lib/actions'
+import { addFolder, isStreamUrl, openFiles, openUrl, playPaths } from '../lib/actions'
 import { isDesktop } from '../lib/platform'
 import { online } from '../lib/offline'
 import { downloads } from '../lib/downloads'
@@ -30,6 +30,7 @@ export function ResumeCard({ k, p }: { k: string; p: Progress }) {
 
 export function Home() {
   const [url, setUrl] = useState('')
+  const [urlErr, setUrlErr] = useState('')
   const all = items.value
   // The same entries as Library's Continue tab: this device's in one row, each plugin's own in its row.
   const entries = useContinue()
@@ -68,11 +69,17 @@ export function Home() {
             <button class="btn lg" onClick={() => go('/settings/plugins')}><Icon name="plug" size={18} /> Add plugins</button>
             <button class="btn lg" onClick={() => go('/servers')}><Icon name="server" size={18} /> Connect a server</button>
           </div>
-          <form class="url-form" onSubmit={(e) => { e.preventDefault(); openUrl(url) }}>
+          <form class="url-form" onSubmit={(e) => {
+            e.preventDefault()
+            if (!isStreamUrl(url)) { setUrlErr('That is not a link. Paste an address that starts with http:// or https://.'); return }
+            setUrlErr('')
+            openUrl(url)
+          }}>
             <Icon name="link" size={16} />
-            <input value={url} onInput={(e) => setUrl((e.target as HTMLInputElement).value)} placeholder="Or paste a video or stream URL (MP4, HLS .m3u8)" aria-label="Stream URL" />
+            <input value={url} onInput={(e) => { setUrl((e.target as HTMLInputElement).value); setUrlErr('') }} placeholder="Or paste a video or stream URL (MP4, HLS .m3u8)" aria-label="Stream URL" />
             <button class="btn" disabled={!url.trim()}>Play</button>
           </form>
+          {urlErr && <p class="err">{urlErr}</p>}
           {!isDesktop && <p class="small dim">Tip: the Mac app also plays MKV, AVI and HEVC files and opens straight from Finder.</p>}
         </div>
       ) : (
