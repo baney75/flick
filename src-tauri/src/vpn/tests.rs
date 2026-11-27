@@ -870,6 +870,7 @@ fn the_torrent_engine_holds_through_the_watch_and_hears_every_change() {
         dht: false,
         peers: vec![],
         stop_wait: crate::torrent::STOP_WAIT,
+        close_limit: crate::torrent::CLOSE_LIMIT,
     };
     let gate: Arc<dyn crate::torrent::Gate> = Arc::clone(&w) as _;
     let e = Arc::new(crate::torrent::Engine::new(cfg, gate).unwrap());

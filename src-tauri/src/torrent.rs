@@ -34,6 +34,9 @@ use tokio::time::{timeout, timeout_at, Instant};
 const READ_WAIT: Duration = Duration::from_secs(30);
 /// How long a stop waits for a torrent's session to close (rule 6 allows 30 seconds).
 pub const STOP_WAIT: Duration = Duration::from_secs(10);
+/// How long a session may take to close before its torrent may play again anyway (rule 6's 30
+/// seconds): a stop that never returns can't keep it "still stopping" until Flick restarts.
+pub const CLOSE_LIMIT: Duration = Duration::from_secs(30);
 
 /// Playback stopped while its torrent was still starting.
 const STOPPED: &str = "Playback stopped before the torrent started.";
@@ -65,6 +68,8 @@ pub struct Config {
     pub peers: Vec<SocketAddr>,
     /// How long a stop waits for a session to close (STOP_WAIT; shorter in tests).
     pub stop_wait: Duration,
+    /// How long a session may take to close before its closing mark goes (CLOSE_LIMIT).
+    pub close_limit: Duration,
 }
 
 /// A torrent the engine runs, keyed by info hash.
@@ -119,9 +124,9 @@ pub struct Engine {
     gate: Arc<dyn Gate>,
     cfg: Config,
     table: Arc<Mutex<Table>>,
-    /// Tests: how long each session waits before it starts to close.
+    /// Tests: how each session closes.
     #[cfg(test)]
-    stall: Mutex<Duration>,
+    stall: Mutex<Close>,
 }
 
 #[derive(Default)]
@@ -132,8 +137,12 @@ struct Table {
     heard: u64,
     next: u64,
     /// Torrents whose sessions have left the table but not yet closed. No new session opens one
-    /// of these cache folders until its old session has.
+    /// of these cache folders until its old session has, or has been given up on.
     closing: HashSet<String>,
+    /// Torrents whose last close was given up on (it panicked, was cancelled or passed
+    /// `close_limit`), with the subfolder their next session opens: the old session may still
+    /// write into the folder it had. Kept until Flick restarts; the trim never removes them.
+    abandoned: HashMap<String, u64>,
 }
 
 impl Table {
@@ -374,14 +383,19 @@ impl Engine {
         (token, cancel): (u64, &Notify),
     ) -> Result<Running, String> {
         let deadline = Instant::now() + self.cfg.wait;
-        let dir = self.cfg.cache.join(hash);
+        let (dir, mut keep) = {
+            let t = self.table();
+            let home = self.cfg.cache.join(hash);
+            let dir = match t.abandoned.get(hash) {
+                Some(n) => home.join(format!(".flick-{n}")),
+                None => home,
+            };
+            let held = t.slots.keys().chain(&t.closing).chain(t.abandoned.keys());
+            (dir, held.cloned().collect::<Vec<String>>())
+        };
         let disk = |e: io::Error| format!("Flick can't write the torrent cache: {e}");
         std::fs::create_dir_all(&dir).map_err(disk)?;
-        rules::touch(&dir).map_err(disk)?;
-        let mut keep: Vec<String> = {
-            let t = self.table();
-            t.slots.keys().chain(&t.closing).cloned().collect()
-        };
+        rules::touch(&self.cfg.cache.join(hash)).map_err(disk)?;
         keep.push(hash.to_string());
         rules::trim(&self.cfg.cache, self.cfg.cap, &keep).map_err(disk)?;
         let opts = self.session_options(iface);
@@ -520,18 +534,30 @@ impl Engine {
     }
 
     /// Closes the session of `hash`, which left the table marked as closing. The mark goes once
-    /// the session has closed, however long that takes, so no new session opens its cache folder
-    /// before then.
+    /// the session has closed, so no new session opens its cache folder before then. A close that
+    /// passes `close_limit`, panics or is cancelled is given up on: the mark goes too, so the
+    /// torrent can play again, and its next session opens a fresh folder.
     fn close(&self, hash: &str, session: Arc<Session>) -> JoinHandle<()> {
-        let table = Arc::clone(&self.table);
-        let hash = hash.to_string();
+        let mark = Unmark {
+            table: Arc::clone(&self.table),
+            hash: hash.to_string(),
+            closed: false,
+        };
+        let limit = self.cfg.close_limit;
         #[cfg(test)]
-        let stall = *self.stall.lock().unwrap();
+        let how = *self.stall.lock().unwrap();
         self.rt.spawn(async move {
-            #[cfg(test)]
-            tokio::time::sleep(stall).await;
-            session.stop().await;
-            lock(&table).closing.remove(&hash);
+            // The whole guard moves in, so it drops when the task ends, however it ends.
+            let mut mark = mark;
+            let stop = async {
+                session.stop().await;
+                #[cfg(test)]
+                how.after().await;
+            };
+            match timeout(limit, stop).await {
+                Ok(()) => mark.closed = true,
+                Err(_) => eprintln!("torrent: a session took over {limit:?} to close; given up"),
+            }
         })
     }
 
@@ -634,20 +660,70 @@ impl Engine {
     }
 }
 
-/// Whether every session in `closing` closed within `wait`. Past it they go on closing.
+/// Removes a torrent's closing mark when its close task ends, however it ends. A close that
+/// didn't finish (it panicked, was cancelled or passed its limit) leaves the torrent abandoned.
+struct Unmark {
+    table: Arc<Mutex<Table>>,
+    hash: String,
+    closed: bool,
+}
+
+impl Drop for Unmark {
+    fn drop(&mut self) {
+        let mut t = lock(&self.table);
+        t.closing.remove(&self.hash);
+        if !self.closed {
+            let n = t.next;
+            t.next += 1;
+            t.abandoned.insert(self.hash.clone(), n);
+        }
+    }
+}
+
+/// Tests: how a session closes. A close that panics or never returns once librqbit's stop has
+/// run stands in for a stop that does.
+#[cfg(test)]
+#[derive(Clone, Copy, Default)]
+enum Close {
+    #[default]
+    Now,
+    Stall(Duration),
+    Panic,
+    Hang,
+}
+
+#[cfg(test)]
+impl Close {
+    async fn after(self) {
+        match self {
+            Close::Now => {}
+            Close::Stall(d) => tokio::time::sleep(d).await,
+            Close::Panic => panic!("a close that panics"),
+            Close::Hang => std::future::pending().await,
+        }
+    }
+}
+
+/// Whether every session in `closing` closed within `wait`; a close that panicked or was
+/// cancelled did not. Past `wait` they go on closing.
 async fn closed(wait: Duration, closing: Vec<JoinHandle<()>>) -> bool {
     let all = async {
+        let mut ok = true;
         for c in closing {
             if let Err(e) = c.await {
                 eprintln!("torrent: closing a session failed: {e}");
+                ok = false;
             }
         }
+        ok
     };
-    let done = timeout(wait, all).await.is_ok();
-    if !done {
-        eprintln!("torrent: a session took over {wait:?} to stop");
+    match timeout(wait, all).await {
+        Ok(ok) => ok,
+        Err(_) => {
+            eprintln!("torrent: a session took over {wait:?} to stop");
+            false
+        }
     }
-    done
 }
 
 /// The chosen file of a running torrent, read from the playhead (librqbit fetches the pieces
@@ -721,6 +797,7 @@ fn engine(app: &tauri::AppHandle) -> Result<Arc<Engine>, String> {
         dht: true,
         peers: vec![],
         stop_wait: STOP_WAIT,
+        close_limit: CLOSE_LIMIT,
     };
     let gate: Arc<dyn Gate> = Arc::clone(watch) as Arc<dyn Gate>;
     let started = Arc::new(Engine::new(cfg, gate).map_err(|e| e.to_string())?);

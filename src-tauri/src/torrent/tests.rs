@@ -2,7 +2,7 @@
 
 use super::rules;
 use super::rules::tests::{tmp, want, HASH, PIECE};
-use super::{Config, Engine, Gate, STOPPING, STOP_WAIT};
+use super::{closed, Close, Config, Engine, Gate, CLOSE_LIMIT, STOPPING, STOP_WAIT};
 use crate::vpn::{Fail, GateState};
 use librqbit::{CreateTorrentOptions, ListenerMode, ListenerOptions, Session, SessionOptions};
 use std::io::{Read, Write};
@@ -146,7 +146,7 @@ fn body(len: usize, salt: u8) -> Vec<u8> {
 }
 
 fn engine(tag: &str, gate: &Arc<Fake>, peers: Vec<SocketAddr>, wait: Duration) -> Arc<Engine> {
-    engine_with(tag, gate, peers, wait, STOP_WAIT)
+    engine_with(tag, gate, peers, wait, STOP_WAIT, CLOSE_LIMIT)
 }
 
 fn engine_with(
@@ -155,6 +155,7 @@ fn engine_with(
     peers: Vec<SocketAddr>,
     wait: Duration,
     stop_wait: Duration,
+    close_limit: Duration,
 ) -> Arc<Engine> {
     let cfg = Config {
         cache: tmp(&format!("cache-{tag}")),
@@ -163,6 +164,7 @@ fn engine_with(
         dht: false,
         peers,
         stop_wait,
+        close_limit,
     };
     let e = Arc::new(Engine::new(cfg, Arc::clone(gate) as Arc<dyn Gate>).unwrap());
     let _ = gate.engine.set(Arc::downgrade(&e));
@@ -437,7 +439,7 @@ fn at_most_three_torrents_play_at_once() {
         "the refused torrent never asked the gate"
     );
     // Quitting closes them all together: three 2 second closes, one after another, take 6.
-    *e.stall.lock().unwrap() = Duration::from_secs(2);
+    *e.stall.lock().unwrap() = Close::Stall(Duration::from_secs(2));
     let started = std::time::Instant::now();
     e.stop_all(true);
     let took = started.elapsed();
@@ -462,6 +464,7 @@ fn a_session_slow_to_close_keeps_its_torrent_refused_until_it_has() {
         vec![seeder.addr()],
         Duration::from_secs(30),
         quick,
+        CLOSE_LIMIT,
     );
     let file = |i| {
         let mut w = want(&hash, &[]);
@@ -471,7 +474,7 @@ fn a_session_slow_to_close_keeps_its_torrent_refused_until_it_has() {
     let closing = || !e.table().closing.is_empty();
     e.play(&file(0)).unwrap();
     // Each session now takes 2 seconds to close, past the 300 ms a stop waits for it.
-    *e.stall.lock().unwrap() = Duration::from_secs(2);
+    *e.stall.lock().unwrap() = Close::Stall(Duration::from_secs(2));
     let stopping = Err(STOPPING.to_string());
     assert_eq!(
         e.play(&file(1)),
@@ -494,8 +497,81 @@ fn a_session_slow_to_close_keeps_its_torrent_refused_until_it_has() {
     assert!(closing());
     assert_eq!(e.play(&file(1)), stopping);
     wait_until(|| !closing());
-    *e.stall.lock().unwrap() = Duration::ZERO;
+    *e.stall.lock().unwrap() = Close::Now;
     assert!(e.play(&file(1)).is_ok());
+}
+
+#[test]
+fn a_close_that_panics_lets_its_torrent_play_again() {
+    let seeder = Seeder::new("panic");
+    let hash = seeder.seed("p.mp4", &body(100_000, 31));
+    let gate = Fake::passing();
+    let e = engine("panic", &gate, vec![seeder.addr()], Duration::from_secs(30));
+    e.play(&want(&hash, &[])).unwrap();
+    *e.stall.lock().unwrap() = Close::Panic;
+    e.stop(&hash);
+    assert!(e.table().closing.is_empty(), "the panic took its mark");
+    *e.stall.lock().unwrap() = Close::Now;
+    assert!(e.play(&want(&hash, &[])).is_ok());
+    assert!(fresh(&e, &hash), "the next session opened a fresh folder");
+}
+
+/// Whether `hash`'s file was written under a fresh subfolder, away from the abandoned session's.
+fn fresh(e: &Engine, hash: &str) -> bool {
+    walkdir::WalkDir::new(e.cfg.cache.join(hash))
+        .into_iter()
+        .filter_map(Result::ok)
+        .any(|f| {
+            f.file_type().is_file()
+                && f.path()
+                    .components()
+                    .any(|c| c.as_os_str().to_string_lossy().starts_with(".flick-"))
+        })
+}
+
+#[test]
+fn a_close_that_never_returns_lets_its_torrent_play_after_the_limit() {
+    let seeder = Seeder::new("hang");
+    let hash = seeder.seed("h.mp4", &body(100_000, 32));
+    let gate = Fake::passing();
+    let limit = Duration::from_secs(1);
+    let e = engine_with(
+        "hang",
+        &gate,
+        vec![seeder.addr()],
+        Duration::from_secs(30),
+        Duration::from_millis(200),
+        limit,
+    );
+    e.play(&want(&hash, &[])).unwrap();
+    *e.stall.lock().unwrap() = Close::Hang;
+    let started = std::time::Instant::now();
+    e.stop(&hash);
+    assert_eq!(e.play(&want(&hash, &[])), Err(STOPPING.to_string()));
+    wait_until(|| e.table().closing.is_empty());
+    assert!(started.elapsed() >= limit, "{:?}", started.elapsed());
+    *e.stall.lock().unwrap() = Close::Now;
+    assert!(e.play(&want(&hash, &[])).is_ok());
+    assert!(fresh(&e, &hash), "the next session opened a fresh folder");
+    // A close that finishes keeps the folder it has; only a given-up close moves the next one.
+    let quiet = Seeder::new("quiet");
+    let other = quiet.seed("q.mp4", &body(100_000, 33));
+    let calm = Fake::passing();
+    let f = engine("quiet", &calm, vec![quiet.addr()], Duration::from_secs(30));
+    f.play(&want(&other, &[])).unwrap();
+    f.stop(&other);
+    assert!(f.play(&want(&other, &[])).is_ok());
+    assert!(!fresh(&f, &other));
+}
+
+#[test]
+fn a_close_that_panicked_did_not_close() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let wait = Duration::from_secs(5);
+    let ok = rt.block_on(closed(wait, vec![rt.spawn(async {})]));
+    assert!(ok);
+    let failed = rt.block_on(closed(wait, vec![rt.spawn(async { panic!("close") })]));
+    assert!(!failed, "a panicked close counts as not closed");
 }
 
 #[test]
