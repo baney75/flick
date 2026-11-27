@@ -24,10 +24,12 @@ describe('playbackFailures', () => {
     bad.cases[3].seekMs = 3100
     bad.cases[3].shown = '0:00:01 / 1:35:00'
     bad.cases[1] = { ...bad.cases[1], error: 'no data to play within 15 s' }
+    bad.cases[2].stalls = 'Stalls: 1, longest 0.3 s'
     expect(playbackFailures(bad)).toEqual([
       '1 MKV h264 + ac3: ready in 3400 ms, over 3000',
       '2 MP4 hevc + dts: no data to play within 15 s',
       '3 MP4 h264 + aac: started ffmpeg for a stream that plays directly',
+      '3 MP4 h264 + aac: Stalls: 1, longest 0.3 s after the first frame',
       '4 MKV, seek to 1:30:00: seek ready in 3100 ms, over 3000',
       '4 MKV, seek to 1:30:00: the player shows 0:00:01 / 1:35:00 after the seek',
     ])

@@ -461,6 +461,8 @@ export function playbackFailures(report) {
     if ((n === '1' || n === '4') && c.readyMs > 3000) out.push(`${c.name}: ready in ${c.readyMs} ms, over 3000`)
     if (n === '4' && !(c.seekMs <= 3000)) out.push(`${c.name}: seek ready in ${c.seekMs} ms, over 3000`)
     if (n === '4' && !/^1:30:0\d/.test(c.shown ?? '')) out.push(`${c.name}: the player shows ${c.shown} after the seek`)
+    // Case 13: no stall once the first frame plays (the opening wait and seek waits are not stalls).
+    if (/^Stalls: [1-9]/.test(c.stalls ?? '')) out.push(`${c.name}: ${c.stalls} after the first frame`)
   }
   return out
 }
