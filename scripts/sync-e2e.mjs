@@ -3,12 +3,15 @@
 import { chromium } from 'playwright'
 import { spawn } from 'node:child_process'
 import { freePort } from './free-port.mjs'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
-const PORT = await freePort(), RELAY_PORT = await freePort()
+const PORT = await freePort(), RELAY_PORT = await freePort(), INSPECTOR = await freePort()
 const BASE = `http://localhost:${PORT}`
 const procs = [
   spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore', detached: true }),
-  spawn('npx', ['wrangler', 'dev', '--port', String(RELAY_PORT), '--ip', '127.0.0.1'], { cwd: 'relay', stdio: ['ignore', 'pipe', 'pipe'], detached: true }),
+  spawn('npx', ['wrangler', 'dev', '--port', String(RELAY_PORT), '--inspector-port', String(INSPECTOR), '--persist-to', mkdtempSync(join(tmpdir(), 'flick-relay-')), '--ip', '127.0.0.1'], { cwd: 'relay', stdio: ['ignore', 'pipe', 'pipe'], detached: true }),
 ]
 const fails = []
 const check = (ok, what) => { console.log(`${ok ? 'PASS' : 'FAIL'} ${what}`); if (!ok) fails.push(what) }
