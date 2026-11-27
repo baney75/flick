@@ -137,8 +137,12 @@ struct Table {
     heard: u64,
     next: u64,
     /// Torrents whose sessions have left the table but not yet closed. No new session opens one
-    /// of these cache folders until its old session has.
+    /// of these cache folders until its old session has, or has been given up on.
     closing: HashSet<String>,
+    /// Torrents whose last close was given up on (it panicked, was cancelled or passed
+    /// `close_limit`), with the subfolder their next session opens: the old session may still
+    /// write into the folder it had. Kept until Flick restarts; the trim never removes them.
+    abandoned: HashMap<String, u64>,
 }
 
 impl Table {
@@ -379,14 +383,19 @@ impl Engine {
         (token, cancel): (u64, &Notify),
     ) -> Result<Running, String> {
         let deadline = Instant::now() + self.cfg.wait;
-        let dir = self.cfg.cache.join(hash);
+        let (dir, mut keep) = {
+            let t = self.table();
+            let home = self.cfg.cache.join(hash);
+            let dir = match t.abandoned.get(hash) {
+                Some(n) => home.join(format!(".flick-{n}")),
+                None => home,
+            };
+            let held = t.slots.keys().chain(&t.closing).chain(t.abandoned.keys());
+            (dir, held.cloned().collect::<Vec<String>>())
+        };
         let disk = |e: io::Error| format!("Flick can't write the torrent cache: {e}");
         std::fs::create_dir_all(&dir).map_err(disk)?;
-        rules::touch(&dir).map_err(disk)?;
-        let mut keep: Vec<String> = {
-            let t = self.table();
-            t.slots.keys().chain(&t.closing).cloned().collect()
-        };
+        rules::touch(&self.cfg.cache.join(hash)).map_err(disk)?;
         keep.push(hash.to_string());
         rules::trim(&self.cfg.cache, self.cfg.cap, &keep).map_err(disk)?;
         let opts = self.session_options(iface);
@@ -525,23 +534,29 @@ impl Engine {
     }
 
     /// Closes the session of `hash`, which left the table marked as closing. The mark goes once
-    /// the session has closed, so no new session opens its cache folder before then, or once
-    /// `close_limit` passes, or when the close panics or is cancelled, so the torrent can play
-    /// again.
+    /// the session has closed, so no new session opens its cache folder before then. A close that
+    /// passes `close_limit`, panics or is cancelled is given up on: the mark goes too, so the
+    /// torrent can play again, and its next session opens a fresh folder.
     fn close(&self, hash: &str, session: Arc<Session>) -> JoinHandle<()> {
-        let mark = Unmark(Arc::clone(&self.table), hash.to_string());
+        let mark = Unmark {
+            table: Arc::clone(&self.table),
+            hash: hash.to_string(),
+            closed: false,
+        };
         let limit = self.cfg.close_limit;
         #[cfg(test)]
         let how = *self.stall.lock().unwrap();
         self.rt.spawn(async move {
-            let _mark = mark;
+            // The whole guard moves in, so it drops when the task ends, however it ends.
+            let mut mark = mark;
             let stop = async {
-                #[cfg(test)]
-                how.before().await;
                 session.stop().await;
+                #[cfg(test)]
+                how.after().await;
             };
-            if timeout(limit, stop).await.is_err() {
-                eprintln!("torrent: a session took over {limit:?} to close; it may play again");
+            match timeout(limit, stop).await {
+                Ok(()) => mark.closed = true,
+                Err(_) => eprintln!("torrent: a session took over {limit:?} to close; given up"),
             }
         })
     }
@@ -645,17 +660,28 @@ impl Engine {
     }
 }
 
-/// Removes a torrent's closing mark when its close task ends, however it ends.
-struct Unmark(Arc<Mutex<Table>>, String);
+/// Removes a torrent's closing mark when its close task ends, however it ends. A close that
+/// didn't finish (it panicked, was cancelled or passed its limit) leaves the torrent abandoned.
+struct Unmark {
+    table: Arc<Mutex<Table>>,
+    hash: String,
+    closed: bool,
+}
 
 impl Drop for Unmark {
     fn drop(&mut self) {
-        lock(&self.0).closing.remove(&self.1);
+        let mut t = lock(&self.table);
+        t.closing.remove(&self.hash);
+        if !self.closed {
+            let n = t.next;
+            t.next += 1;
+            t.abandoned.insert(self.hash.clone(), n);
+        }
     }
 }
 
-/// Tests: how a session closes. A close that panics or never returns stands in for a librqbit
-/// stop that does.
+/// Tests: how a session closes. A close that panics or never returns once librqbit's stop has
+/// run stands in for a stop that does.
 #[cfg(test)]
 #[derive(Clone, Copy, Default)]
 enum Close {
@@ -668,7 +694,7 @@ enum Close {
 
 #[cfg(test)]
 impl Close {
-    async fn before(self) {
+    async fn after(self) {
         match self {
             Close::Now => {}
             Close::Stall(d) => tokio::time::sleep(d).await,

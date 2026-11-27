@@ -513,6 +513,20 @@ fn a_close_that_panics_lets_its_torrent_play_again() {
     assert!(e.table().closing.is_empty(), "the panic took its mark");
     *e.stall.lock().unwrap() = Close::Now;
     assert!(e.play(&want(&hash, &[])).is_ok());
+    assert!(fresh(&e, &hash), "the next session opened a fresh folder");
+}
+
+/// Whether `hash`'s file was written under a fresh subfolder, away from the abandoned session's.
+fn fresh(e: &Engine, hash: &str) -> bool {
+    walkdir::WalkDir::new(e.cfg.cache.join(hash))
+        .into_iter()
+        .filter_map(Result::ok)
+        .any(|f| {
+            f.file_type().is_file()
+                && f.path()
+                    .components()
+                    .any(|c| c.as_os_str().to_string_lossy().starts_with(".flick-"))
+        })
 }
 
 #[test]
@@ -538,6 +552,16 @@ fn a_close_that_never_returns_lets_its_torrent_play_after_the_limit() {
     assert!(started.elapsed() >= limit, "{:?}", started.elapsed());
     *e.stall.lock().unwrap() = Close::Now;
     assert!(e.play(&want(&hash, &[])).is_ok());
+    assert!(fresh(&e, &hash), "the next session opened a fresh folder");
+    // A close that finishes keeps the folder it has; only a given-up close moves the next one.
+    let quiet = Seeder::new("quiet");
+    let other = quiet.seed("q.mp4", &body(100_000, 33));
+    let calm = Fake::passing();
+    let f = engine("quiet", &calm, vec![quiet.addr()], Duration::from_secs(30));
+    f.play(&want(&other, &[])).unwrap();
+    f.stop(&other);
+    assert!(f.play(&want(&other, &[])).is_ok());
+    assert!(!fresh(&f, &other));
 }
 
 #[test]
