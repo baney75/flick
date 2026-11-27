@@ -10,6 +10,7 @@ import { sources, searchAll, openPluginRef, libraries, loadLibrary, continueOf, 
 import { MetaCard, PluginIcon, CatalogRow, useCatalogs } from './Plugin'
 import { HOME_ROWS_PER_SOURCE } from '../lib/nav'
 import { addYouTube, installed, offersYouTube } from '../lib/plugins/registry'
+import { sessionSet } from '../lib/session'
 
 export function ResumeCard({ k, p }: { k: string; p: Progress }) {
   const ref = p.ref
@@ -40,7 +41,7 @@ export function Home() {
 
   const saved = [...downloads.value.values()].filter((d) => d.state === 'done').length
   const toDownloads = () => {
-    try { sessionStorage.setItem('flick.tab', 'downloads') } catch { /* private mode */ }
+    sessionSet('flick.tab', 'downloads')
     go('/library')
   }
 
