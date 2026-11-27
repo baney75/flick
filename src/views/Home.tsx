@@ -6,8 +6,8 @@ import { addFolder, openFiles, openUrl, playPaths } from '../lib/actions'
 import { isDesktop } from '../lib/platform'
 import { online } from '../lib/offline'
 import { downloads } from '../lib/downloads'
-import { sources, searchAll, openPluginRef, type Found } from '../lib/plugins/use'
-import { MetaCard, PluginIcon, CatalogRow, useCatalogs } from './Plugin'
+import { sources, openPluginRef } from '../lib/plugins/use'
+import { MetaCard, PluginIcon, CatalogRow, useCatalogs, useSearch } from './Plugin'
 import { HOME_ROWS_PER_SOURCE } from '../lib/nav'
 import { addYouTube, installed, offersYouTube } from '../lib/plugins/registry'
 import { sessionSet } from '../lib/session'
@@ -140,23 +140,15 @@ export function ShowCard({ eps }: { eps: import('../lib/library').Item[] }) {
  */
 function PluginSearch() {
   const [q, setQ] = useState('')
-  const [found, setFound] = useState<Found[] | null>(null)
-  const [busy, setBusy] = useState(false)
+  const { found, busy, search, clear } = useSearch()
   // null: nothing pending; '': installing; anything else: why the install failed.
   const [adding, setAdding] = useState<string | null>(null)
   const offer = offersYouTube(isDesktop, installed.value)
   if (!offer && !sources.value.some((r) => r.manifest.catalogs.some((c) => c.search))) return null
-  const search = async (term: string) => {
-    const out: Found[] = []
-    setFound([])
-    setBusy(true)
-    await searchAll(term, (f) => { out.push(f); setFound([...out]) })
-    setBusy(false)
-  }
   const run = (e: Event) => {
     e.preventDefault()
-    if (!q.trim()) { setFound(null); return }
-    void search(q.trim())
+    if (!q.trim()) clear()
+    else void search(q.trim())
   }
   const addYt = async () => {
     setAdding('')
@@ -168,7 +160,7 @@ function PluginSearch() {
     <div class="home-search">
       <form class="search" onSubmit={run}>
         <Icon name="search" size={16} />
-        <input value={q} onInput={(e) => { const v = (e.target as HTMLInputElement).value; setQ(v); if (!v) setFound(null) }} placeholder="Search your plugins" aria-label="Search your plugins" />
+        <input value={q} onInput={(e) => { const v = (e.target as HTMLInputElement).value; setQ(v); if (!v) clear() }} placeholder="Search your plugins" aria-label="Search your plugins" />
       </form>
       {found && (found.length === 0
         ? <p class="dim">{busy ? 'Searching' : `No results for "${q}".`}</p>
