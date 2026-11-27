@@ -11,6 +11,36 @@ const PAGE = 20
 const MAX = 50 // the most one yt-dlp search returns
 const seen = new Map() // watch URL to the search result it came from, for meta()
 
+/** A view count as YouTube writes it: "1.2M views", "12K views", "1 view". Null when unknown. */
+export function views(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return null
+  if (n === 0) return 'No views'
+  if (n === 1) return '1 view'
+  const [div, unit] = n >= 1e9 ? [1e9, 'B'] : n >= 1e6 ? [1e6, 'M'] : n >= 1e3 ? [1e3, 'K'] : [1, '']
+  const x = n / div
+  // One decimal under 10 (1.2M), none above (12M), never rounded up past the next unit.
+  const shown = x < 10 && div > 1 ? Math.floor(x * 10) / 10 : Math.floor(x)
+  return `${shown}${unit} views`
+}
+
+/** How long ago, from Unix seconds: "3 years ago", "5 days ago". Null when unknown. */
+export function age(ts, now = Date.now()) {
+  if (typeof ts !== 'number' || !(ts > 0)) return null
+  const s = Math.max(0, now / 1000 - ts)
+  const steps = [[31536000, 'year'], [2592000, 'month'], [604800, 'week'], [86400, 'day'], [3600, 'hour'], [60, 'minute']]
+  for (const [len, word] of steps) {
+    const k = Math.floor(s / len)
+    if (k >= 1) return `${k} ${word}${k > 1 ? 's' : ''} ago`
+  }
+  return 'Just now'
+}
+
+/** A search result as a card: the channel under the name, then views and age. */
+export function card(m, now = Date.now()) {
+  const badges = [views(m.views), age(m.uploaded, now)].filter(Boolean)
+  return { ...m, subtitle: m.channel || undefined, badges }
+}
+
 function remember(ctx, items) {
   for (const m of items) seen.set(m.id, m)
   const keep = [...seen.values()].slice(-100)
@@ -54,7 +84,7 @@ export default {
     const want = Math.min(MAX, skip + PAGE)
     const all = await ctx.tools.ytdlp.search(q, want)
     remember(ctx, all)
-    return { items: all.slice(skip), more: want < MAX && all.length >= want }
+    return { items: all.slice(skip).map((m) => card(m)), more: want < MAX && all.length >= want }
   },
 
   async meta(ctx, { id }) {
@@ -73,6 +103,8 @@ export default {
       poster: m.poster,
       background: m.poster,
       posterShape: 'landscape',
+      subtitle: m.channel || undefined,
+      badges: card(m).badges,
       description: `${by}${m.description ?? ''}`.trim(),
       runtime: m.runtime || undefined,
     }

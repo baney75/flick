@@ -29,10 +29,16 @@ export function Card(props: {
   pct?: number
   icon?: string
   badge?: string
+  /** A length on the thumbnail's corner, like a video site's. */
+  time?: string
+  /** A third line of short facts. */
+  info?: string
+  /** Give the title two lines. */
+  wrap?: boolean
   onClick: () => void
   onMore?: (e: MouseEvent) => void
 }) {
-  const { image, title, sub, shape = 'wide', pct, icon = 'film', badge, onClick, onMore } = props
+  const { image, title, sub, shape = 'wide', pct, icon = 'film', badge, time, info, wrap, onClick, onMore } = props
   const [loaded, setLoaded] = useState(false)
   const hold = useLongPress(onMore)
   return (
@@ -40,12 +46,14 @@ export function Card(props: {
       <div class="art">
         {image ? <img src={image} alt="" loading="lazy" decoding="async" class={loaded ? 'in' : ''} onLoad={() => setLoaded(true)} /> : <div class="art-ph"><Icon name={icon} size={30} /></div>}
         {badge && <span class="badge">{badge}</span>}
+        {time && <span class="card-time">{time}</span>}
         <span class="play-hint"><Icon name="play" size={22} /></span>
         {pct != null && pct > 0 && <div class="pbar"><div style={{ width: `${Math.min(100, pct * 100)}%` }} /></div>}
       </div>
       <div class="meta">
-        <div class="t1">{title}</div>
+        <div class={wrap ? 't1 clamp2' : 't1'}>{title}</div>
         {sub && <div class="t2">{sub}</div>}
+        {info && <div class="t2 card-info">{info}</div>}
       </div>
     </button>
   )

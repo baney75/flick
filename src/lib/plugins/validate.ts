@@ -54,6 +54,10 @@ export interface Meta {
   year?: string
   genres?: string[]
   runtime?: string
+  /** One line under the name on a card: a channel, an author. */
+  subtitle?: string
+  /** Up to 4 short facts on a card and the title page: "1.2M views", "3 years ago". */
+  badges?: string[]
   videos?: Video[]
   progress?: { pos: number; dur: number; at: number; videoId?: string }
 }
@@ -250,6 +254,10 @@ export function validateMeta(x: unknown): Meta {
   if (description) m.description = description
   if (year) m.year = year
   if (runtime) m.runtime = runtime
+  const subtitle = str(x.subtitle, 'subtitle', false, 200)
+  if (subtitle) m.subtitle = subtitle
+  const badges = list(x.badges, 'badges', 20).filter((b): b is string => typeof b === 'string' && !!b.trim()).slice(0, 4).map((b) => b.trim().slice(0, 40))
+  if (badges.length) m.badges = badges
   const genres = list(x.genres, 'genres', 20).filter((g) => typeof g === 'string').map((g) => (g as string).slice(0, 60))
   if (genres.length) m.genres = genres
   if (x.videos !== undefined) m.videos = list(x.videos, 'videos', 5000).map(video).filter((v): v is Video => !!v)

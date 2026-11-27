@@ -67,8 +67,9 @@ const t = async (k, f) => { try { await f(); r[k] = 1 } catch { /* blocked */ } 
 export default {
   api: 1, id: 'org.smoke.films', name: 'Smoke Films', version: '1.0.0', author: 'Smoke',
   hosts: ['127.0.0.1'],
-  catalogs: [{ id: 'all', name: 'Smoke catalog', type: 'movie' }, { id: 'sandbox', name: 'Sandbox report', type: 'movie' }, { id: 'find', name: 'Find', type: 'movie', search: true }],
+  catalogs: [{ id: 'all', name: 'Smoke catalog', type: 'movie' }, { id: 'sandbox', name: 'Sandbox report', type: 'movie' }, { id: 'find', name: 'Find', type: 'movie', search: true }, { id: 'videos', name: 'Smoke videos', type: 'video' }],
   async catalog(ctx, { id, search }) {
+    if (id === 'videos') return { items: [{ id: 'vid', type: 'video', name: 'Smoke Video', posterShape: 'landscape', runtime: '1:02:05', subtitle: 'Smoke Channel', badges: ['1.2M views', '2 years ago'] }] }
     if (id === 'sandbox') {
       await t('indexedDB', () => new Promise((ok, no) => { const q = indexedDB.open('flick'); q.onsuccess = ok; q.onerror = () => no(q.error) }))
       await t('localStorage', () => localStorage.length)
@@ -589,6 +590,9 @@ try {
   await page.getByRole('link', { name: 'Open Smoke Films' }).click()
   check(await page.getByText('Smoke Clip').first().waitFor({ timeout: 15000 }).then(() => true, () => false), 'plugin page shows its catalog')
   check(await page.getByText('sandbox: sealed').waitFor({ timeout: 15000 }).then(() => true, () => false), 'a plugin in the real runtime cannot reach Flick storage or the page')
+  const vid = page.locator('.card', { hasText: 'Smoke Video' })
+  const vidText = await vid.innerText({ timeout: 15000 }).catch(() => '')
+  check(await vid.locator('.card-time').innerText().catch(() => '') === '1:02:05' && /Smoke Channel/.test(vidText) && /1\.2M views · 2 years ago/.test(vidText), `a landscape card shows its length on the thumbnail, the channel, views and age (${vidText.replace(/\n/g, ' | ')})`)
   await page.screenshot({ path: 'test-media/shots/plugin-page.png' })
   await page.getByText('Smoke Clip').first().click()
   await page.locator('.stream').first().waitFor({ timeout: 15000 })
