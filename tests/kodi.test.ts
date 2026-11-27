@@ -15,7 +15,6 @@ vi.mock('../src/lib/platform', async (orig) => ({
   invoke: async (cmd: string, args: any) => {
     shell.calls.push([cmd, args])
     if (cmd === 'ffmpeg_status') return { ffmpeg: shell.ffmpeg }
-    if (cmd === 'prepare') return '/cache/remux/x.mp4'
     if (cmd === 'kodi_rpc') return shell.rpc(args.method, args.params)
     return null
   },
