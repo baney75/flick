@@ -154,10 +154,35 @@ export async function registerHosts(rec: Installed) {
   await invoke('plugin_tools', { id: rec.id, tools: rec.enabled ? m.tools : [] })
 }
 
-/** A `flick-tool:` stream from a plugin, started on the desktop app; returns a URL the player plays. */
-export async function openToolStream(url: string): Promise<string> {
+export interface ToolPlay { url: string; live: boolean }
+
+/** A `flick-tool:` stream from a plugin, started on the desktop app: YouTube's own HLS master, or a local
+ *  playlist when a video has none. `fresh` looks it up again, after the stream failed (SPEC-youtube-play). */
+export async function openToolStream(url: string, fresh = false): Promise<ToolPlay> {
   if (!isDesktop) throw new Error('This stream needs the Flick desktop app.')
-  return fileUrl(await invoke<string>('tool_open', { url }))
+  const r = await invoke<{ kind: 'hls'; url: string; live?: boolean } | { kind: 'file'; path: string }>('tool_open', { url, fresh })
+  return r.kind === 'hls' ? { url: r.url, live: !!r.live } : { url: await fileUrl(r.path), live: false }
+}
+
+/** Starts finding a `flick-tool:` stream's address before Play, so Play does not wait for yt-dlp. */
+export function prefetchToolStream(url: string | undefined) {
+  if (isDesktop && url?.startsWith('flick-tool:')) invoke('tool_prefetch', { url }).catch(() => {})
+}
+
+/** After a stream fails, look it up once more (its address expired, or the VPN changed the IP) and
+ *  resume at `at`. Null once that has happened, so a second failure shows its message, not a loop. */
+export function oneRetry(open: (url: string, fresh: boolean) => Promise<ToolPlay>) {
+  let used = false
+  return (url: string, at: number): Promise<{ play: ToolPlay; at: number }> | null => {
+    if (used) return null
+    used = true
+    return open(url, true).then((play) => ({ play, at }))
+  }
+}
+
+/** What the player's bar shows: a live stream says LIVE and has no seek bar. */
+export function barFor(live: boolean): { seek: boolean; label: string | null } {
+  return live ? { seek: false, label: 'LIVE' } : { seek: true, label: null }
 }
 
 /** Why a plugin may not start on this platform, or null. A service runs on the desktop only,

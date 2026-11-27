@@ -24,6 +24,7 @@ mod torrent_http;
 #[cfg(desktop)]
 mod vpn;
 mod ytdlp;
+mod ytmaster;
 
 const VIDEO: &[&str] = &[
     "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "ts", "m2ts", "mts", "mpg", "mpeg",
@@ -1404,6 +1405,7 @@ pub fn run() {
             ytdlp::plugin_tools,
             ytdlp::plugin_tool,
             ytdlp::tool_open,
+            ytdlp::tool_prefetch,
             ytdlp::tool_download,
             ytdlp::tool_download_clean,
             #[cfg(desktop)]

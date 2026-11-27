@@ -318,6 +318,7 @@ label.toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
 .controls .spacer { flex: 1; }
 .time { font-variant-numeric: tabular-nums; font-weight: 600; margin-left: 10px; font-size: 14px; }
 .time span { color: #aaa; font-weight: 500; }
+.time.live { color: #fff; background: #d22; border-radius: 4px; padding: 1px 6px; font-size: 12px; letter-spacing: .04em; }
 .vol { display: flex; align-items: center; }
 .vol input { width: 0; opacity: 0; transition: width .2s, opacity .2s; accent-color: var(--accent); }
 .vol:hover input, .vol:focus-within input { width: 90px; opacity: 1; margin-right: 6px; }

@@ -10,7 +10,7 @@ import { Icon } from '../components/icons'
 import { isDesktop, isMobileApp } from '../lib/platform'
 import { downloads, savedId, cancelDownload, removeDownload, type Saved } from '../lib/downloads'
 import { saveStream, playSaved, badgeFor } from '../lib/offline'
-import { callPlugin } from '../lib/plugins/runtime'
+import { callPlugin, prefetchToolStream } from '../lib/plugins/runtime'
 import { installed } from '../lib/plugins/registry'
 import { sources, sourceById, searchAll, titlePath, progressKey, libraries, loadLibrary, continueOf, type Source, type Found } from '../lib/plugins/use'
 import { isBuiltinType, type CatalogDef, type Meta, type Stream, type TitleActionDef, type Video } from '../lib/plugins/validate'
@@ -264,6 +264,26 @@ function GridTabs({ rec, rows }: { rec: Source; rows: CatalogDef[] }) {
   )
 }
 
+/** A card focused for 300 ms on a plugin that plays through yt-dlp starts finding its stream, so Play
+ *  rarely waits for the lookup (SPEC-youtube-play rule 2). */
+function useWarm(rec: Source) {
+  const timer = useRef(0)
+  if (!isDesktop || !rec.manifest.tools?.includes('ytdlp')) return {}
+  const stop = () => clearTimeout(timer.current)
+  return {
+    onFocusIn: (e: FocusEvent) => {
+      stop()
+      const raw = (e.target as HTMLElement | null)?.closest?.('[data-target]')?.getAttribute('data-target')
+      const t = raw ? (JSON.parse(raw) as { type: string; id: string }) : null
+      if (t) timer.current = window.setTimeout(() => {
+        callPlugin(rec, 'streams', [{ type: t.type, id: t.id }])
+          .then((l) => prefetchToolStream(l.find((s) => s.url?.startsWith('flick-tool:'))?.url)).catch(() => {})
+      }, 300)
+    },
+    onFocusOut: stop,
+  }
+}
+
 function CatalogGrid({ rec, c, onEmpty }: { rec: Source; c: CatalogDef; onEmpty?: () => void }) {
   const [items, setItems] = useState<Meta[] | null>(null)
   const [more, setMore] = useState(false)
@@ -290,11 +310,12 @@ function CatalogGrid({ rec, c, onEmpty }: { rec: Source; c: CatalogDef; onEmpty?
     setBusy(false)
   }
   useEffect(() => { load(0) }, [])
+  const warm = useWarm(rec)
   if (items === null) return <div class="video-grid">{Array.from({ length: 8 }, () => <div class="card wide skeleton"><div class="art" /></div>)}</div>
   if (!items.length) return <p class="dim">{err ? `${rec.manifest.name}: ${err}` : `Nothing in ${c.name} yet.`}</p>
   return (
     <>
-      <div class="video-grid">{items.map((m) => <MetaCard rec={rec} m={m} />)}</div>
+      <div class="video-grid" {...warm}>{items.map((m) => <MetaCard rec={rec} m={m} />)}</div>
       {err && <p class="dim">{rec.manifest.name}: {err}</p>}
       {more && <button class="btn more-grid" disabled={busy} onClick={() => load(offset)}>{busy ? <span class="spinner sm" /> : null} Show more</button>}
     </>
@@ -424,7 +445,9 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   const [opened, setOpened] = useState<string[]>([])
   const [dlId, setDlId] = useState<string | null>(null)
   useEffect(() => {
-    callPlugin(rec, 'streams', [{ type: meta.type, id: meta.id, videoId }]).then(setList).catch((e) => { setErr((e as Error).message); setList([]) })
+    callPlugin(rec, 'streams', [{ type: meta.type, id: meta.id, videoId }])
+      .then((l) => { setList(l); prefetchToolStream(l.find((s) => s.url?.startsWith('flick-tool:'))?.url) })
+      .catch((e) => { setErr((e as Error).message); setList([]) })
   }, [videoId])
   const key = progressKey(rec.id, videoId)
   useEffect(() => { savedId(key).then(setDlId) }, [key])
