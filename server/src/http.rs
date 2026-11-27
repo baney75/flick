@@ -11,11 +11,26 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::sync::{watch, Semaphore};
 
-/// A client must send its request headers within this long.
-const HEADER_READ: Duration = Duration::from_secs(30);
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Limits {
+    /// A client must send its request headers within this long.
+    pub header_read: Duration,
+    /// A write that makes no progress for this long drops the connection.
+    pub write_stall: Duration,
+    /// Connections past this many are closed as soon as they are accepted.
+    pub connections: usize,
+}
+
+pub(crate) const LIMITS: Limits = Limits {
+    header_read: Duration::from_secs(30),
+    write_stall: Duration::from_secs(60),
+    connections: 256,
+};
+
 const CHUNK: usize = 64 * 1024;
 /// Threads for handlers and file reads. A paused stream holds none of them.
 const BLOCKING_THREADS: usize = 64;
@@ -27,7 +42,11 @@ pub(crate) struct Transport {
 }
 
 /// Serves `listener` until `stop`.
-pub(crate) fn listen(listener: std::net::TcpListener, st: Arc<State>) -> io::Result<Transport> {
+pub(crate) fn listen(
+    listener: std::net::TcpListener,
+    st: Arc<State>,
+    limits: Limits,
+) -> io::Result<Transport> {
     listener.set_nonblocking(true)?;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -49,7 +68,7 @@ pub(crate) fn listen(listener: std::net::TcpListener, st: Arc<State>) -> io::Res
     };
     let (stop, stopped) = watch::channel(false);
     let (closed_tx, closed) = std::sync::mpsc::channel();
-    rt.spawn(accept(listener, st, stopped, closed_tx));
+    rt.spawn(accept(listener, st, limits, stopped, closed_tx));
     Ok(Transport {
         rt: Some(rt),
         stop,
@@ -71,9 +90,11 @@ impl Transport {
 async fn accept(
     listener: TcpListener,
     st: Arc<State>,
+    limits: Limits,
     mut stopped: watch::Receiver<bool>,
     closed: std::sync::mpsc::Sender<()>,
 ) {
+    let slots = Arc::new(Semaphore::new(limits.connections));
     loop {
         let stream = tokio::select! {
             _ = stopped.changed() => break,
@@ -86,15 +107,20 @@ async fn accept(
                 }
             },
         };
+        // Past the cap the connection is closed at once, so a flood can't hold the server's memory.
+        let Ok(slot) = slots.clone().try_acquire_owned() else {
+            continue;
+        };
         let (st, mut stopped) = (st.clone(), stopped.clone());
         tokio::spawn(async move {
+            let _slot = slot;
             let _ = stream.set_nodelay(true);
-            let io = TokioIo::new(stream);
+            let io = TokioIo::new(Stalls::new(stream, limits.write_stall));
             let conn = hyper::server::conn::http1::Builder::new()
                 .timer(TokioTimer::new())
                 // Header names as tiny_http wrote them, so answers read the same as before.
                 .title_case_headers(true)
-                .header_read_timeout(HEADER_READ)
+                .header_read_timeout(limits.header_read)
                 .serve_connection(io, service_fn(move |req| respond(st.clone(), req)));
             tokio::select! {
                 _ = conn => {}
@@ -238,5 +264,215 @@ impl Body for Stream {
     }
     fn size_hint(&self) -> SizeHint {
         SizeHint::with_exact(self.left)
+    }
+}
+
+/// Fails a write that makes no progress for `limit`, so a client that stopped reading can't hold
+/// its connection open forever.
+pub(crate) struct Stalls<T> {
+    io: T,
+    limit: Duration,
+    timer: Option<Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl<T> Stalls<T> {
+    pub(crate) fn new(io: T, limit: Duration) -> Stalls<T> {
+        Stalls {
+            io,
+            limit,
+            timer: None,
+        }
+    }
+    fn watch<R>(&mut self, cx: &mut Context<'_>, got: Poll<io::Result<R>>) -> Poll<io::Result<R>> {
+        if got.is_ready() {
+            self.timer = None;
+            return got;
+        }
+        let limit = self.limit;
+        let timer = self
+            .timer
+            .get_or_insert_with(|| Box::pin(tokio::time::sleep(limit)));
+        match timer.as_mut().poll(cx) {
+            Poll::Ready(()) => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the client stopped reading",
+            ))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for Stalls<T> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().io).poll_read(cx, buf)
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for Stalls<T> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        let got = Pin::new(&mut this.io).poll_write(cx, buf);
+        this.watch(cx, got)
+    }
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        let got = Pin::new(&mut this.io).poll_write_vectored(cx, bufs);
+        this.watch(cx, got)
+    }
+    fn is_write_vectored(&self) -> bool {
+        self.io.is_write_vectored()
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let got = Pin::new(&mut this.io).poll_flush(cx);
+        this.watch(cx, got)
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().io).poll_shutdown(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{start_with, Config, Handle};
+    use std::io::Write;
+    use std::net::TcpStream;
+    use std::time::Instant;
+
+    fn server(tag: &str, limits: Limits) -> Handle {
+        let base =
+            std::env::temp_dir().join(format!("flick-server-limits-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let media = base.join("Movies");
+        std::fs::create_dir_all(&media).unwrap();
+        // Sparse, so it costs no disk.
+        std::fs::File::create(media.join("big.mp4"))
+            .unwrap()
+            .set_len(256 << 20)
+            .unwrap();
+        let cfg = Config {
+            media: vec![media],
+            port: 0,
+            name: "Test box".into(),
+            lan: false,
+            config_dir: base.join("cfg"),
+            web: None,
+        };
+        start_with(cfg, limits).unwrap()
+    }
+
+    /// Reads until the server closes the connection, or fails after `wait`.
+    fn read_until_closed(s: &mut TcpStream, wait: Duration) -> Vec<u8> {
+        s.set_read_timeout(Some(wait)).unwrap();
+        let (mut got, mut buf) = (Vec::new(), vec![0u8; 1 << 16]);
+        loop {
+            match s.read(&mut buf) {
+                Ok(0) => return got,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == io::ErrorKind::ConnectionReset => return got,
+                Err(e) => panic!("the connection stayed open: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_client_that_never_finishes_its_headers_is_dropped() {
+        let limits = Limits {
+            header_read: Duration::from_millis(300),
+            ..LIMITS
+        };
+        let h = server("headers", limits);
+        let mut s = TcpStream::connect(("127.0.0.1", h.port())).unwrap();
+        s.write_all(b"GET /api/info HTTP/1.1\r\nHost: x\r\n")
+            .unwrap();
+        let t = Instant::now();
+        let got = read_until_closed(&mut s, Duration::from_secs(5));
+        assert!(!got.starts_with(b"HTTP/1.1 200"));
+        assert!(
+            t.elapsed() < Duration::from_secs(3),
+            "took {:?}",
+            t.elapsed()
+        );
+        h.stop();
+    }
+
+    #[test]
+    fn a_stream_the_client_stopped_reading_is_dropped() {
+        let limits = Limits {
+            write_stall: Duration::from_millis(300),
+            ..LIMITS
+        };
+        let h = server("stall", limits);
+        let id = crate::index::item_id("Movies", "big.mp4");
+        let mut s = TcpStream::connect(("127.0.0.1", h.port())).unwrap();
+        write!(
+            s,
+            "GET /media/{id} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {}\r\n\r\n",
+            h.token()
+        )
+        .unwrap();
+        let mut first = [0u8; 4096];
+        s.read_exact(&mut first).unwrap();
+        assert!(first.starts_with(b"HTTP/1.1 200"));
+        std::thread::sleep(Duration::from_millis(1500));
+        // Only what was already in the socket buffers arrives; the rest of the file never does.
+        let got = read_until_closed(&mut s, Duration::from_secs(20));
+        assert!(got.len() < (64 << 20), "{} bytes arrived", got.len());
+        h.stop();
+    }
+
+    #[test]
+    fn many_idle_connections_do_not_keep_a_request_from_being_answered() {
+        let h = server("idle", LIMITS);
+        let port = h.port();
+        let _idle: Vec<_> = (0..200)
+            .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
+            .collect();
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.write_all(b"GET /api/info HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        assert!(read_until_closed(&mut s, Duration::from_secs(5)).starts_with(b"HTTP/1.1 200"));
+        h.stop();
+    }
+
+    #[test]
+    fn connections_past_the_cap_are_closed() {
+        let limits = Limits {
+            connections: 2,
+            ..LIMITS
+        };
+        let h = server("cap", limits);
+        let port = h.port();
+        let first = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let _second = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let info = |s: &mut TcpStream| {
+            let _ = s.write_all(b"GET /api/info HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+            read_until_closed(s, Duration::from_secs(5))
+        };
+        let mut third = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        assert!(
+            info(&mut third).is_empty(),
+            "a third connection was answered"
+        );
+        // A freed slot takes a new connection.
+        drop(first);
+        std::thread::sleep(Duration::from_millis(200));
+        let mut fourth = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        assert!(info(&mut fourth).starts_with(b"HTTP/1.1 200"));
+        h.stop();
     }
 }

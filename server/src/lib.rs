@@ -196,6 +196,10 @@ pub fn serves_web(web: Option<PathBuf>) -> bool {
 }
 
 pub fn start(cfg: Config) -> Result<Handle, String> {
+    start_with(cfg, http::LIMITS)
+}
+
+fn start_with(cfg: Config, limits: http::Limits) -> Result<Handle, String> {
     let token = access_code(&cfg.config_dir, false)?;
     let host = if cfg.lan { "0.0.0.0" } else { "127.0.0.1" };
     let bind = |e: std::io::Error| format!("bind {host}:{}: {e}", cfg.port);
@@ -225,7 +229,8 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
             st.rescan(true);
         }
     });
-    let transport = http::listen(listener, state.clone()).map_err(|e| format!("start: {e}"))?;
+    let transport =
+        http::listen(listener, state.clone(), limits).map_err(|e| format!("start: {e}"))?;
     Ok(Handle {
         port,
         token,
