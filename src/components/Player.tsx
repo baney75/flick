@@ -11,12 +11,9 @@ import { kodiConvert, convertUrl } from '../lib/servers'
 import { openToolStream } from '../lib/plugins/runtime'
 import { Icon } from './icons'
 import { Readout } from './Readout'
+import { convertLine, isHls, planSeek, probeStream, probes, Remux, SLOW_SERVER, writtenOf } from '../lib/playback'
 
 const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
-
-function isHls(url: string) {
-  return /\.m3u8(\?|$)/i.test(url) || /\/hlsv2\//.test(url)
-}
 
 type HlsLike = { destroy(): void; loadSource(u: string): void; attachMedia(v: HTMLMediaElement): void; on(e: string, cb: (...a: any[]) => void): void }
 
@@ -36,6 +33,9 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   const resolved = useRef<Resolved | null>(null)
   const triedFallback = useRef(false)
   const triedConvert = useRef(false)
+  // A stream the web view cannot open plays through a live remux run; its start offsets the clock.
+  const remux = useRef<Remux | null>(null)
+  const restarting = useRef(false)
 
   const [status, setStatus] = useState<string | null>('Loading')
   const [error, setError] = useState<string | null>(null)
@@ -94,7 +94,26 @@ function PlayerInner({ req }: { req: PlayRequest }) {
           if (cancelled) return
           setStatus(null)
         }
-        await attach(v, url)
+        let startAt = req.startAt
+        if (probes(url)) {
+          // Only a server that never answers stops here; any other probe failure plays the link as it is.
+          const p = await probeStream(url).catch((e) => {
+            if (String((e as Error)?.message ?? e) === SLOW_SERVER) throw new Error(SLOW_SERVER)
+            return null
+          })
+          if (cancelled) return
+          if (p && !p.direct) {
+            const r = new Remux(url, p)
+            remux.current = r
+            setDur(p.duration)
+            setStatus(convertLine(p))
+            const local = await r.open(req.startAt ?? 0)
+            if (cancelled || !local) return
+            url = local
+            startAt = 0
+          }
+        }
+        await attach(v, url, startAt)
         if (isDesktop && req.src?.t === 'path') {
           // Subtitles inside MKV and MP4 files arrive after playback starts, so they never delay it.
           invoke<{ name: string; text: string }[]>('embedded_subs', { path: req.src.path }).then((list) => {
@@ -112,12 +131,13 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     })()
     return () => {
       cancelled = true
+      remux.current?.stop()
       hls.current?.destroy()
       resolved.current?.revoke?.()
     }
   }, [])
 
-  async function attach(v: HTMLVideoElement, url: string) {
+  async function attach(v: HTMLVideoElement, url: string, startAt = req.startAt) {
     hls.current?.destroy()
     hls.current = null
     // A local event playlist (a flick-tool: stream through ffmpeg) is still growing; start at the top, not the live edge.
@@ -134,16 +154,19 @@ function PlayerInner({ req }: { req: PlayRequest }) {
       hls.current = h
     } else {
       v.src = url
-      if (local && !req.startAt) v.addEventListener('loadedmetadata', () => { v.currentTime = 0 }, { once: true })
+      if (local && !startAt) v.addEventListener('loadedmetadata', () => { v.currentTime = 0 }, { once: true })
     }
     v.playbackRate = speed
     v.volume = volume
-    if (req.startAt) v.currentTime = req.startAt
+    if (startAt) v.currentTime = startAt
     v.play().catch(() => setPlaying(false))
   }
 
   function onFail(msg: string, unsupported = false) {
     const v = video.current!
+    // A run being replaced loses its folder; the new run plays instead.
+    if (restarting.current) return
+    if (remux.current) { setStatus(null); setError(msg); return }
     const src = req.src
     // A URL with a server-side fallback stream (Jellyfin, Plex) uses that instead.
     const convertible = src?.t === 'kodi' || (src?.t === 'url' && !src.fallback)
@@ -222,13 +245,56 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     return () => { on?.removeEventListener('cuechange', draw); box.replaceChildren() }
   }, [subOn, subs.length])
 
+  // ---- the source's clock: a remux run starts at r.at, so its clock is offset by that ----
+  const clock = () => {
+    const v = video.current
+    if (!v) return 0
+    return remux.current ? remux.current.time(v.currentTime) : v.currentTime
+  }
+  const durOf = () => {
+    const v = video.current
+    if (!v) return 0
+    return remux.current ? remux.current.duration(v.duration) : v.duration
+  }
+  /** Every seek: in place, or for a remux run outside what it wrote, a new run there. */
+  const seekTo = (t: number) => {
+    const v = video.current!
+    const r = remux.current
+    if (!r) { v.currentTime = t; return }
+    const d = durOf()
+    const plan = planSeek(d > 1 ? Math.min(t, d - 1) : t, r.at, writtenOf(v.seekable))
+    if ('local' in plan) { v.currentTime = plan.local; return }
+    setTime(plan.restart)
+    restartAt(r, plan.restart)
+  }
+  async function restartAt(r: Remux, at: number) {
+    const v = video.current!
+    restarting.current = true
+    v.pause()
+    v.removeAttribute('src')
+    v.load()
+    setStatus(convertLine(r.probe))
+    try {
+      const url = await r.open(at)
+      if (!url || remux.current !== r) return
+      restarting.current = false
+      await attach(v, url, 0)
+    } catch (e) {
+      restarting.current = false
+      setStatus(null)
+      setError(String((e as Error)?.message ?? e))
+    }
+  }
+
   // ---- progress saving ----
   const lastSave = useRef(0)
   const save = useCallback(() => {
     const v = video.current
-    if (!v || !v.duration || !isFinite(v.duration)) return
-    saveProgress(req.key, { pos: v.currentTime, dur: v.duration, at: Date.now(), title: req.title, subtitle: req.subtitle, poster: req.poster, ref: req.ref })
-    req.onSave?.(v.currentTime, v.duration)
+    const d = durOf()
+    if (!v || !d || !isFinite(d) || restarting.current) return
+    const pos = clock()
+    saveProgress(req.key, { pos, dur: d, at: Date.now(), title: req.title, subtitle: req.subtitle, poster: req.poster, ref: req.ref })
+    req.onSave?.(pos, d)
   }, [req])
   useEffect(() => () => save(), [save])
 
@@ -236,9 +302,9 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   const onTime = () => {
     // A last timeupdate can arrive after the player closes.
     const v = video.current
-    if (!v) return
-    setTime(v.currentTime)
-    if (v.buffered.length) setBuffered(v.buffered.end(v.buffered.length - 1))
+    if (!v || restarting.current) return
+    setTime(clock())
+    if (v.buffered.length) setBuffered((remux.current?.at ?? 0) + v.buffered.end(v.buffered.length - 1))
     if (Date.now() - lastSave.current > 5000) { lastSave.current = Date.now(); save() }
   }
 
@@ -263,8 +329,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     else v.pause()
   }
   const seekBy = (d: number) => {
-    const v = video.current!
-    v.currentTime = Math.max(0, Math.min((v.duration || 0) - 0.1, v.currentTime + d))
+    seekTo(Math.max(0, Math.min((durOf() || 0) - 0.1, clock() + d)))
     flash(`${d > 0 ? '+' : '−'}${Math.abs(d)}s`)
   }
   const setVol = (x: number) => {
@@ -369,7 +434,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
           else close()
           break
         default:
-          if (/^[0-9]$/.test(e.key) && v.duration) { v.currentTime = (Number(e.key) / 10) * v.duration; flash(`${Number(e.key) * 10}%`) }
+          if (/^[0-9]$/.test(e.key) && durOf()) { seekTo((Number(e.key) / 10) * durOf()); flash(`${Number(e.key) * 10}%`) }
           else handled = false
       }
       if (handled) { e.preventDefault(); wake() }
@@ -393,13 +458,14 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     set('seekbackward', () => seekBy(-settings.value.skipSeconds))
     set('seekforward', () => seekBy(settings.value.skipSeconds))
     set('nexttrack', req.next ? goNext : null)
-    set('seekto', (d) => { if (video.current && d.seekTime != null) video.current.currentTime = d.seekTime })
+    set('seekto', (d) => { if (video.current && d.seekTime != null) seekTo(d.seekTime) })
     return () => { for (const a of ['play', 'pause', 'seekbackward', 'seekforward', 'nexttrack', 'seekto'] as MediaSessionAction[]) set(a, null) }
   }, [req])
 
   // ---- scrubbing ----
   const bar = useRef<HTMLDivElement>(null)
   const dragging = useRef(false)
+  const dragTo = useRef(0)
   const posFromEvent = (e: PointerEvent) => {
     const r = bar.current!.getBoundingClientRect()
     const x = Math.max(0, Math.min(r.width, e.clientX - r.left))
@@ -409,21 +475,30 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     dragging.current = true
     ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
     const p = posFromEvent(e)
-    video.current!.currentTime = p.t
+    dragTo.current = p.t
+    // A remux run restarts only where the drag ends, not at every step of it.
+    if (!remux.current) video.current!.currentTime = p.t
     setTime(p.t)
   }
   const lastPreview = useRef(0)
   const onBarMove = (e: PointerEvent) => {
     const p = posFromEvent(e)
     setHover(p)
-    if (dragging.current) { video.current!.currentTime = p.t; setTime(p.t) }
+    if (dragging.current) {
+      dragTo.current = p.t
+      if (!remux.current) video.current!.currentTime = p.t
+      setTime(p.t)
+    }
     const pv = preview.current
     if (pv && pv.src && Date.now() - lastPreview.current > 120) {
       lastPreview.current = Date.now()
       pv.currentTime = p.t
     }
   }
-  const onBarUp = () => { dragging.current = false }
+  const onBarUp = () => {
+    if (dragging.current && remux.current) seekTo(dragTo.current)
+    dragging.current = false
+  }
 
   // ---- drag and drop subtitles onto the player ----
   const onDrop = (e: DragEvent) => {
@@ -472,8 +547,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         onWaiting={() => setStatus('Buffering')}
         onPlaying={() => setStatus(null)}
         onCanPlay={() => setStatus(null)}
-        onLoadedMetadata={(e) => setDur((e.currentTarget as HTMLVideoElement).duration)}
-        onDurationChange={(e) => setDur((e.currentTarget as HTMLVideoElement).duration)}
+        onLoadedMetadata={() => setDur(durOf())}
+        onDurationChange={() => setDur(durOf())}
         onTimeUpdate={onTime}
         onEnded={onEnded}
         onError={() => {
