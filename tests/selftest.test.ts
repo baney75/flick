@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { failures, invokeSummary, medianReport, override, perfMarkdown, table, webkitPath, youtubeFailures, youtubeTable, identifierFor, profileDirs, removeDirs } from '../scripts/desktop-selftest.mjs'
+import { failures, invokeSummary, medianReport, override, perfMarkdown, table, webkitPath, youtubeFailures, youtubeTable, identifierFor, profileDirs, removeDirs, TOOLS_LAYOUT } from '../scripts/desktop-selftest.mjs'
+import ytdlpRs from '../src-tauri/src/ytdlp.rs?raw'
 import { hostOf } from '../src/lib/plugins/selftest'
 
 const ok = (name: string, totalMs: number) => ({ url: `/plugins/${name}.js`, name, totalMs, steps: [{ step: 'fetch', ms: 1 }, { step: 'ping', ms: totalMs - 1 }] })
@@ -32,6 +33,12 @@ describe('desktop self-test report', () => {
     for (const bad of ['com.dbaney.flick', 'dev.flick.selftest', 'dev.flick.selftest.0123ABCD', 'dev.flick.selftest.0123abcd/../../x']) {
       expect(() => profileDirs(bad, '/h'), bad).toThrow(/not a self-test identifier/)
     }
+  })
+
+  it("fills the shared yt-dlp folder in the app's own layout", () => {
+    expect(ytdlpRs).toContain(`const MAC_DIR: &str = "${TOOLS_LAYOUT.dir}";`)
+    expect(ytdlpRs).toContain(`const SUM_FILE: &str = "${TOOLS_LAYOUT.sum}";`)
+    expect(ytdlpRs).toContain(`dir.join(MAC_DIR).join("${TOOLS_LAYOUT.bin}")`)
   })
 
   it('cleanup removes self-test folders only, after looking', () => {

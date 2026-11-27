@@ -1,5 +1,7 @@
 export const PREFIX: string
 export const TOOLS: string
+export const TOOLS_LAYOUT: { dir: string; bin: string; sum: string }
+export function ensureTools(dir?: string): Promise<string>
 export function identifierFor(root: string): string
 export function profileDirs(id: string, home?: string): string[]
 export function removeDirs(paths: string[], fs?: { lstatSync(p: string): { isSymbolicLink(): boolean; isDirectory(): boolean }; rmSync(p: string, o: object): void }): string[]
