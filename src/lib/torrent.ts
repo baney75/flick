@@ -42,19 +42,23 @@ export function stopTorrent(hash: string) {
   invoke('torrent_stop', { infoHash: hash }).catch(() => {})
 }
 
-/** Every tap on a stream says which engine torrent it wants, if any. */
+/**
+ * Every tap on a stream says which engine torrent it wants, if any. Wanting one still in its grace
+ * keeps it running from the tap on, through the start, the subtitles and the VPN hold.
+ */
 export function wantTorrent(infoHash: string | undefined) {
   wanted = infoHash?.toLowerCase() ?? null
+  if (closing && closing.hash === wanted) { clearTimeout(closing.timer); closing = null }
 }
 
-/** A started torrent that won't play after all (its VPN hold failed): it stops, unless it plays already. */
-export function dropTorrent(hash: string) {
-  if (playing?.hash !== hash.toLowerCase()) stopTorrent(hash)
-}
-
-/** A started torrent whose tap a newer one replaced: it stops, unless it plays or the newer tap wants it too. */
-export function lostTorrent(hash: string) {
-  if (wanted !== hash.toLowerCase()) dropTorrent(hash)
+/**
+ * A started torrent its tap won't play: a newer tap replaced it (`newest` false), or its VPN hold
+ * failed. It stops, unless it plays already or a newer tap wants it too.
+ */
+export function letGo(hash: string, newest: boolean) {
+  const h = hash.toLowerCase()
+  if (playing?.hash === h || (!newest && wanted === h)) return
+  stopTorrent(hash)
 }
 
 function endGrace() {

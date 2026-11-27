@@ -21,7 +21,7 @@ import { cancelFetch, canStart, serviceTag, wantsGate } from '../lib/debrid-play
 import { DebridWait, playTorrent, useCached } from './Debrid'
 import { viaOf } from '../lib/readout'
 import { checkAgain, ctxNow, current, debridNow, deviceFor, holdGate, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
-import { dropTorrent, lostTorrent, playTorrent as fromEngine, playingTorrent, STARTING, wantTorrent } from '../lib/torrent'
+import { letGo, playTorrent as fromEngine, playingTorrent, STARTING, wantTorrent } from '../lib/torrent'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
 import { langCode } from '../lib/release'
@@ -475,17 +475,17 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     let url = s.url
     // A torrent from peers gets its url from the built-in engine, which holds the VPN gate itself.
     const hash = !url && s.torrent && r?.c.via === 'p2p' ? s.torrent.infoHash : undefined
-    wantTorrent(hash)
-    if (toast.value?.text === STARTING) toast.value = null
     // A stream behind the VPN gate never opens on a tap while the gate fails, nor outside its hold.
     const shut = shutBy(r)
+    wantTorrent(shut ? undefined : hash)
+    if (toast.value?.text === STARTING) toast.value = null
     if (shut) { notify(shut); return }
     if (hash && s.torrent) {
       notify(STARTING, 60_000)
       const got = await fromEngine(s.torrent).then((u) => ({ u }), (e) => ({ e: String(e) }))
       if (current(t) && toast.value?.text === STARTING) toast.value = null
       if ('e' in got) { if (current(t)) notify(got.e, 6000); return }
-      if (!current(t)) { lostTorrent(hash); return }
+      if (!current(t)) { letGo(hash, false); return }
       url = got.u
     } else if (!url && r && canStart(r, s)) {
       // A torrent a debrid service takes gets its url from the service.
@@ -509,7 +509,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     if (gated(r)) {
       const g = await holdGate(key, t)
       if (!g.ok) {
-        if (hash) dropTorrent(hash)
+        if (hash) letGo(hash, current(t))
         if (current(t)) notify(g.message || 'Turn on your VPN')
         return
       }
@@ -569,7 +569,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
             </div>
           <Icon name={s.external ? 'external' : 'play'} size={18} class="stream-go" />
         </button>
-      {why && gated(rowOf.get(s)) && !ctx.gate && !ctx.noGate && <button class="btn ghost sm stream-dl" onClick={checkAgain}>Check again</button>}
+      {why && gated(rowOf.get(s)) && !ctx.gate && !ctx.noGate && why !== ctx.noEngine && <button class="btn ghost sm stream-dl" onClick={checkAgain}>Check again</button>}
       {canSave && <button class="btn ghost sm stream-dl" onClick={() => save(s)} aria-label={`Download ${s.title ?? meta.name}`}><Icon name="download" size={16} /> Download</button>}
       </div>
     )

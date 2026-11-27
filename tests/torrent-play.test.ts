@@ -18,7 +18,7 @@ vi.mock('../src/lib/platform', async (orig) => ({
   },
   onDesktopEvent: async () => () => {},
 }))
-const { playingTorrent, dropTorrent, lostTorrent, playTorrent, wantTorrent, GRACE_MS, POLL_MS, TORRENT_LOST } = await import('../src/lib/torrent')
+const { playingTorrent, letGo, playTorrent, wantTorrent, GRACE_MS, POLL_MS, TORRENT_LOST } = await import('../src/lib/torrent')
 const { engineNow, engineLine } = await import('../src/lib/readout')
 const { nowPlaying, toast } = await import('../src/lib/store')
 const { checkAgain, gate } = await import('../src/lib/picking')
@@ -82,10 +82,37 @@ describe('a torrent the engine plays', () => {
   it('a torrent whose VPN hold failed stops, unless it is the one playing', async () => {
     playingTorrent('k1', H)
     nowPlaying.value = req('k1')
-    dropTorrent(H)
+    letGo(H, true)
     expect(stops()).toEqual([])
-    dropTorrent('C'.repeat(40))
+    wantTorrent('C'.repeat(40))
+    letGo('C'.repeat(40), true)
     expect(stops()).toEqual(['C'.repeat(40)])
+  })
+
+  it('a tap whose hold fails after a newer tap wants the same torrent leaves it to that tap', async () => {
+    // Tap 1 waits on its hold; tap 2 wants the same torrent, so tap 1's hold answers stale.
+    wantTorrent(H)
+    wantTorrent(H)
+    letGo(H, false)
+    expect(stops()).toEqual([])
+    letGo(H, true)
+    expect(stops()).toEqual([H])
+  })
+
+  it('a tap that wants a torrent in its grace keeps it running through a slow start', async () => {
+    playingTorrent('k1', H)
+    nowPlaying.value = req('k1')
+    nowPlaying.value = null
+    await vi.advanceTimersByTimeAsync(GRACE_MS - 1000)
+    // The tap for the next file: torrent_play, the subtitles and the hold take longer than the grace left.
+    wantTorrent(H)
+    await vi.advanceTimersByTimeAsync(GRACE_MS * 2)
+    expect(stops()).toEqual([])
+    playingTorrent('k2', H)
+    nowPlaying.value = req('k2')
+    nowPlaying.value = null
+    await vi.advanceTimersByTimeAsync(GRACE_MS)
+    expect(stops()).toEqual([h])
   })
 
   it('a double tap starts the torrent once, and the losing tap never stops what the newer one wants', async () => {
@@ -94,11 +121,11 @@ describe('a torrent the engine plays', () => {
     const [a, b] = await Promise.all([playTorrent(t), playTorrent(t)])
     expect(a).toBe(b)
     expect(shell.calls.filter(([c]) => c === 'torrent_play')).toHaveLength(1)
-    lostTorrent(H)
+    letGo(H, false)
     expect(stops()).toEqual([])
     // A newer tap on another stream: the older torrent stops.
     wantTorrent(undefined)
-    lostTorrent(H)
+    letGo(H, false)
     expect(stops()).toEqual([H])
   })
 
