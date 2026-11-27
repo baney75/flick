@@ -8,7 +8,7 @@ import { formatTime } from '../lib/parse'
 import { vttUrl, toVtt } from '../lib/subs'
 import { isDesktop, isMobileApp, hasOpfs, invoke } from '../lib/platform'
 import { kodiLive, urlLive } from '../lib/servers'
-import { barFor, oneRetry, openToolStream } from '../lib/plugins/runtime'
+import { barFor, oneRetry, openToolStream, stopToolStream } from '../lib/plugins/runtime'
 import { Icon } from './icons'
 import { Readout } from './Readout'
 import { Delayed, KEEPS_STALLING, kindOf, OPENING, waitLine, Watchdog } from '../lib/stalls'
@@ -97,6 +97,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     let cancelled = false
     const closed = new AbortController()
     const v = video.current!
+    let toolUrl: string | null = null
     ;(async () => {
       try {
         let url = req.url
@@ -118,8 +119,10 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         note('play_start', { kind: req.src?.t ?? (req.via ? 'debrid' : req.peers ? 'torrent' : 'url'), ref: req.ref.t, service: req.via?.service ?? null, ...sourceOf(url) })
         if (url.startsWith('flick-tool:')) {
           setStatus('Starting the stream')
+          toolUrl = url
           const got = await openToolStream(url)
-          if (cancelled) return
+          // Closed while it started: the stream began after the close's stop, so stop it again.
+          if (cancelled) { stopToolStream(url); return }
           tool.current = { url, retry: oneRetry(openToolStream) }
           setLive(got.live)
           url = got.url
@@ -173,6 +176,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
       note('close', { played: began.current > 0 && firstFrame.current, at: Math.round(clock()), stalledMs: openStall() })
       closed.abort()
       remux.current?.stop()
+      if (toolUrl) stopToolStream(toolUrl)
       dog.current?.stop()
       delayed.current?.stop()
       hls.current?.destroy()

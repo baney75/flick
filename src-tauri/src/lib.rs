@@ -1429,6 +1429,7 @@ pub fn run() {
             ytdlp::plugin_tools,
             ytdlp::plugin_tool,
             ytdlp::tool_open,
+            ytdlp::tool_stop,
             ytdlp::tool_prefetch,
             ytdlp::tool_download,
             ytdlp::tool_download_clean,
