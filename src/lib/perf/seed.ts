@@ -6,12 +6,12 @@
 import * as db from '../db'
 import type { Item } from '../library'
 import { isDesktop } from '../platform'
-import { install, installed, prepare } from '../plugins/registry'
+import { install, installed, prepare, YOUTUBE_PLUGIN } from '../plugins/registry'
 
 export const SEED_KEY = 'perf.seed'
 export const SEED_VERSION = 2
 /** The desktop seed also installs Flick's own YouTube plugin, whose Home rows run yt-dlp in the app. */
-export const SEED_PLUGIN = { id: 'com.youtube', url: '/plugins/youtube.js' }
+export const SEED_PLUGIN = YOUTUBE_PLUGIN
 const pluginOk = () => !isDesktop || installed.value.some((p) => p.id === SEED_PLUGIN.id)
 export const COUNTS = { episodes: 120, shows: 8, movies: 280, songs: 150, books: 30, photos: 200 }
 

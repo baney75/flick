@@ -9,6 +9,7 @@ import { downloads } from '../lib/downloads'
 import { sources, searchAll, openPluginRef, libraries, loadLibrary, continueOf, type Found } from '../lib/plugins/use'
 import { MetaCard, PluginIcon, CatalogRow, useCatalogs } from './Plugin'
 import { HOME_ROWS_PER_SOURCE } from '../lib/nav'
+import { addYouTube, installed, offersYouTube } from '../lib/plugins/registry'
 
 export function ResumeCard({ k, p }: { k: string; p: Progress }) {
   const ref = p.ref
@@ -130,20 +131,35 @@ export function ShowCard({ eps }: { eps: import('../lib/library').Item[] }) {
     shape="wide" onClick={() => go(`/show/${encodeURIComponent(first.show!.toLowerCase())}`)} />
 }
 
-/** Searches every enabled plugin catalog marked search. Hidden when no plugin can search. */
+/**
+ * Searches every enabled plugin catalog marked search. Hidden when no plugin can search, except on the
+ * desktop before YouTube is installed: then the results end with "Search YouTube too" (rule 13).
+ */
 function PluginSearch() {
   const [q, setQ] = useState('')
   const [found, setFound] = useState<Found[] | null>(null)
   const [busy, setBusy] = useState(false)
-  if (!sources.value.some((r) => r.manifest.catalogs.some((c) => c.search))) return null
-  const run = async (e: Event) => {
-    e.preventDefault()
-    if (!q.trim()) { setFound(null); return }
+  // null: nothing pending; '': installing; anything else: why the install failed.
+  const [adding, setAdding] = useState<string | null>(null)
+  const offer = offersYouTube(isDesktop, installed.value)
+  if (!offer && !sources.value.some((r) => r.manifest.catalogs.some((c) => c.search))) return null
+  const search = async (term: string) => {
     const out: Found[] = []
     setFound([])
     setBusy(true)
-    await searchAll(q.trim(), (f) => { out.push(f); setFound([...out]) })
+    await searchAll(term, (f) => { out.push(f); setFound([...out]) })
     setBusy(false)
+  }
+  const run = (e: Event) => {
+    e.preventDefault()
+    if (!q.trim()) { setFound(null); return }
+    void search(q.trim())
+  }
+  const addYt = async () => {
+    setAdding('')
+    try { await addYouTube() } catch (e) { setAdding(e instanceof Error ? e.message : String(e)); return }
+    setAdding(null)
+    await search(q.trim())
   }
   return (
     <div class="home-search">
@@ -158,6 +174,12 @@ function PluginSearch() {
             {f.items.map((m) => <MetaCard rec={f.rec} m={m} />)}
           </Row>
         )))}
+      {found && offer && (
+        <div class="yt-offer">
+          <button class="btn" disabled={adding === ''} onClick={addYt}>{adding === '' ? 'Adding YouTube' : 'Search YouTube too'}</button>
+          {adding && <p class="dim">{adding}</p>}
+        </div>
+      )}
     </div>
   )
 }

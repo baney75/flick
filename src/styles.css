@@ -466,6 +466,7 @@ html.tv .hrow { grid-auto-columns: 300px; padding: 10px 6px 14px; }
 .with-icon { display: flex; align-items: center; gap: 10px; }
 .home-search { margin-bottom: 18px; }
 .home-search .search { max-width: 420px; margin-bottom: 14px; }
+.yt-offer { margin-top: 8px; }
 .tag { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 99px; background: var(--surface-2); color: var(--warn); border: 1px solid var(--line); }
 .swatch { width: 20px; height: 20px; border-radius: 50%; flex: none; border: 1px solid var(--line); }
 .plugin-detail { padding: 4px 0 12px 32px; display: grid; gap: 10px; }
