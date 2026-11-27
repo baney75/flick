@@ -5,16 +5,19 @@ import { rank, VPN_DEBRID, VPN_P2P, type Device, type PickCtx } from '../src/lib
 import type { Stream } from '../src/lib/plugins/validate'
 
 // A desktop shell whose VPN gate the tests set through the gate signal.
-vi.hoisted(() => { Object.assign(globalThis, { location: { hash: '', href: 'http://localhost/', search: '' }, addEventListener: () => {}, removeEventListener: () => {} }) })
+const shell = vi.hoisted(() => {
+  Object.assign(globalThis, { location: { hash: '', href: 'http://localhost/', search: '' }, addEventListener: () => {}, removeEventListener: () => {} })
+  return { answer: { ok: false } as { ok: boolean } }
+})
 vi.mock('../src/lib/platform', async (orig) => ({
   ...(await orig<typeof import('../src/lib/platform')>()),
   isDesktop: true,
   isMobileApp: false,
-  invoke: async () => ({ ok: false }),
+  invoke: async () => shell.answer,
   onDesktopEvent: async () => () => {},
 }))
-const { debridNow, gate, askable, mayAskNow, NO_ENGINE_YET } = await import('../src/lib/picking')
-const { lookupCached, serviceTag, torrentHashes, mayAsk, resolveOrder } = await import('../src/lib/debrid-play')
+const { debridNow, gate, askable, mayAskNow, watchGate, NO_ENGINE_YET } = await import('../src/lib/picking')
+const { lookupCached, serviceTag, torrentHashes, mayAsk, resolveOrder, wantsGate, notYet } = await import('../src/lib/debrid-play')
 const { installed } = await import('../src/lib/plugins/registry')
 const { settings } = await import('../src/lib/store')
 
@@ -125,6 +128,37 @@ describe('the cached lookups', () => {
     expect(call).not.toHaveBeenCalled()
     expect(rows[0].c.via).toBe('p2p')
   })
+})
+
+describe('the title page watches the gate for any torrent or debrid stream', () => {
+  it('direct links only: no watch; a torrent or a debrid link: watch', () => {
+    expect(wantsGate([{ via: 'direct' }])).toBe(false)
+    expect(wantsGate([{ via: 'direct' }, { via: 'debrid-fetch' }])).toBe(true)
+    expect(wantsGate([{ via: 'debrid-cached' }])).toBe(true)
+    expect(wantsGate([{ via: 'p2p' }])).toBe(true)
+  })
+  it('fresh start, VPN on, [gated, TorBox]: TorBox alone until the gate answers, then the user\'s order', async () => {
+    setup({ list: [OTHER, TORBOX], gate: false })
+    gate.value = null
+    expect(debridNow().order.map((s) => s.id)).toEqual(['app.torbox'])
+    // Every row routes to TorBox (vpnOptional), so no row is gated; the page still watches.
+    expect(wantsGate(streamCandidates('k', [{ torrent: { infoHash: h('a') } }], { debrid: debridNow() }))).toBe(true)
+    shell.answer = { ok: true }
+    watchGate()
+    await vi.waitFor(() => expect(gate.value?.ok).toBe(true))
+    expect(debridNow().order.map((s) => s.id)).toEqual(['org.other', 'app.torbox'])
+    shell.answer = { ok: false }
+  })
+  it('leaving the page stops the batches still to go', async () => {
+    setup({ list: [TORBOX], gate: true })
+    let live = true
+    const call = vi.fn(async () => { live = false; return [] })
+    const many = Array.from({ length: 150 }, (_, i) => i.toString(16).padStart(40, 'c'))
+    await lookupCached(askable(), many, (s) => live && mayAskNow(s), call as never)
+    expect(call).toHaveBeenCalledOnce()
+  })
+  it('until Play resolves through a service, a tap on its torrent row says so', () =>
+    expect(notYet('TorBox')).toBe('Playing torrents through TorBox comes in the next Flick update'))
 })
 
 describe('the row tag (rule 7)', () => {

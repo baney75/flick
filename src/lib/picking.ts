@@ -35,8 +35,8 @@ export function prefsNow(): Prefs {
 
 /**
  * The VPN gate (SPEC-torrent rules 25 to 30). It fails closed: null until the desktop app answers,
- * and never ok on the website or a phone. Pages start it with watchGate only when a stream needs
- * it, so a title with no torrent or gated debrid stream runs no exit check.
+ * and never ok on the website or a phone. Pages start it with watchGate only for a torrent or
+ * debrid stream (wantsGate), so a title with only direct links runs no exit check.
  */
 export const gate = signal<Gate | null>(null)
 export const VPN_DROPPED = "Your VPN dropped or isn't hiding you, so playback stopped. Reconnect it and press Play."

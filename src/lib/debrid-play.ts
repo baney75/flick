@@ -35,6 +35,7 @@ export async function lookupCached(list: Service[], hashes: string[], may: (s: S
   if (!want.length) return out
   for (const s of list) {
     const have: string[] = []
+    // callPlugin's validator lowercases the answer and drops hashes it was not asked about.
     for (let i = 0; i < want.length; i += HASHES_PER_CALL) {
       if (!may(s)) break
       try { have.push(...(await call(s, 'cached', [want.slice(i, i + HASHES_PER_CALL)]))) } catch { /* none cached */ }
@@ -43,6 +44,15 @@ export async function lookupCached(list: Service[], hashes: string[], may: (s: S
   }
   return out
 }
+
+/**
+ * Whether a title page must watch the VPN gate: any torrent or debrid stream. The gate decides
+ * which services Flick may ask and whether the player says "via VPN", even when no row is gated.
+ */
+export const wantsGate = (cands: Pick<Candidate, 'via'>[]) => cands.some((c) => c.via !== 'direct')
+
+/** Rule 5 until Play resolves through a service: a torrent row a service takes says so on a tap. */
+export const notYet = (name: string) => `Playing torrents through ${name} comes in the next Flick update`
 
 /** The infoHashes of a stream list's torrents, lowercase, once each. */
 export const torrentHashes = (list: Stream[]) => [...new Set(list.flatMap((s) => (s.torrent ? [s.torrent.infoHash.toLowerCase()] : [])))]
