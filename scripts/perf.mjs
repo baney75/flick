@@ -4,7 +4,8 @@
 // prints a table, and exits non-zero naming every metric over its budget in perf/budgets.json.
 //
 //   node scripts/perf.mjs [--runs 5] [--engine webkit|chromium] [--viewport 1280|390|both]
-//     [--compare perf/baseline.json] [--out perf/results.json] [--no-build] [--no-gate]
+//     [--compare perf/baseline.json] [--out perf/results.json] [--no-build [--dist dist]] [--no-gate]
+//     [--against base.json] (gates on regressions from that run, not on the budgets: see regressions())
 //     [--throttle 4] (Chromium only) [--inject chip=200] (adds a delay, to prove the gate fails)
 import { webkit, chromium } from 'playwright'
 import { spawn, execFileSync } from 'node:child_process'
@@ -14,7 +15,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { deflateSync, crc32 } from 'node:zlib'
 import { freePort } from './free-port.mjs'
-import { stats, gate, table, compare } from './perf-lib.mjs'
+import { stats, gate, table, compare, regressions } from './perf-lib.mjs'
 import { buildSeed, pluginCode, shelvesPluginCode, PLUGIN_ID, SHELF_PLUGIN_ID } from '../tests/fixtures/perf-seed.ts'
 import * as V from '../src/lib/plugins/validate.ts'
 
@@ -36,11 +37,11 @@ const budgets = JSON.parse(readFileSync('perf/budgets.json', 'utf8'))
 
 // Its own build in a temp directory, never dist/: smoke serves dist/, and a build there empties it
 // under a running smoke (its lazy chunks, the EPUB reader's among them, vanish mid-test).
-// --no-build serves the dist/ that is already there.
+// --no-build serves a build that is already there: dist/, or the folder --dist names.
 const VITE = ['node_modules/vite/bin/vite.js']
-const BUILD = flag('no-build') ? 'dist' : mkdtempSync(join(tmpdir(), 'flick-perf-dist-'))
+const BUILD = flag('no-build') ? opt('dist', 'dist') : mkdtempSync(join(tmpdir(), 'flick-perf-dist-'))
 // Temp folders go however the run ends: a thrown step, a failed build, or no WebKit.
-const temps = BUILD === 'dist' ? [] : [BUILD]
+const temps = flag('no-build') ? [] : [BUILD]
 let server
 process.on('exit', () => { server?.kill(); for (const d of temps) rmSync(d, { recursive: true, force: true }) })
 // A stop from outside (Ctrl-C, a timeout) still runs the cleanup above.
@@ -402,8 +403,14 @@ if (base) console.log(`\nAgainst ${base}:\n\n${compare(JSON.parse(readFileSync(b
 // Budgets are for 1280. With --only, or without the 1280 viewport, budgets for what did not run are not misses.
 const partial = ONLY.length || !sizes.includes('1280')
 const misses = gate(metrics, budgets.budgets).filter((m) => !(partial && m.why === 'not measured'))
+const AGAINST = opt('against')
+const round = (v) => Math.round(v * 1000) / 1000
+const regressed = AGAINST ? regressions(JSON.parse(readFileSync(AGAINST, 'utf8')).metrics, metrics, budgets.budgets) : []
+if (AGAINST && misses.length) console.log(`\nOver budget on this machine, not gated (measured against ${AGAINST} instead):\n${misses.map((m) => `- ${m.metric}: p95 ${m.p95 == null ? m.why : round(m.p95)} > ${m.budget}`).join('\n')}`)
 const problems = [
-  ...misses.map((m) => `${m.metric}: p95 ${m.p95 == null ? m.why : Math.round(m.p95 * 1000) / 1000} > ${m.budget}`),
+  ...(AGAINST
+    ? regressed.map((r) => `${r.metric}: ${r.why === 'regressed' ? `median ${round(r.median)}, base ${round(r.base)}, allowed ${round(r.allowed)}` : 'not measured, the base measured it'}`)
+    : misses.map((m) => `${m.metric}: p95 ${m.p95 == null ? m.why : round(m.p95)} > ${m.budget}`)),
   // A screen that threw can look fast, so an app error fails the run too.
   ...[...pageErrors].map((e) => `page error: ${e}`),
   ...(failure ? [`the run stopped early: ${failure.message.split('\n')[0]}`] : []),

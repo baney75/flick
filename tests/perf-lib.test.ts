@@ -1,7 +1,7 @@
 // SPEC-perf: the budget gate, the statistics behind it, and the seeded library perf.mjs measures.
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error plain JavaScript module, no types
-import { stats, matches, gate, budgetFor, table, compare } from '../scripts/perf-lib.mjs'
+import { stats, matches, gate, budgetFor, table, compare, regressions } from '../scripts/perf-lib.mjs'
 import { buildSeed, COUNTS, pluginCode, shelvesPluginCode, PLUGIN_ID, SHELF_PLUGIN_ID } from './fixtures/perf-seed'
 import { validateLibrary, validateManifest } from '../src/lib/plugins/validate'
 import { shelfChips } from '../src/lib/shelves'
@@ -80,5 +80,29 @@ describe('the perf seed (SPEC-perf rule 2)', () => {
     const chips = shelfChips([{ p: SHELF_PLUGIN_ID, lib }])
     expect(chips.find((c) => c.name === 'Watch later')).toMatchObject({ layout: 'list' })
     expect(chips.find((c) => c.name === 'Watch later')!.items.length).toBe(COUNTS.shelfList)
+  })
+})
+
+describe('regressions', () => {
+  const budgets = { 'nav.home-library': 100, 'scroll.dropped': 5, 'cls.*': 0.05 }
+  it('passes run to run noise and a slow machine that is slow for both builds', () => {
+    const base = { 'nav.home-library': m([190, 195, 200, 205, 210]), 'scroll.dropped': m([45, 48, 50], '%'), 'cls.home': m([0.005], 'score') }
+    const cur = { 'nav.home-library': m([200, 210, 220, 230, 508]), 'scroll.dropped': m([50, 55, 57], '%'), 'cls.home': m([0.02], 'score') }
+    expect(regressions(base, cur, budgets)).toEqual([])
+  })
+  it('fails a median half again worse and past the floor', () => {
+    const base = { 'nav.home-library': m([60, 65, 70]), 'scroll.dropped': m([1, 2, 3], '%') }
+    const cur = { 'nav.home-library': m([190, 200, 210]), 'scroll.dropped': m([14, 15, 16], '%') }
+    expect(regressions(base, cur, budgets).map((r) => [r.metric, r.why])).toEqual([['nav.home-library', 'regressed'], ['scroll.dropped', 'regressed']])
+  })
+  it('needs the floor on fast metrics: 20 to 40 ms is noise, not a regression', () => {
+    expect(regressions({ 'nav.home-library': m([20]) }, { 'nav.home-library': m([40]) }, budgets)).toEqual([])
+    expect(regressions({ 'nav.home-library': m([20]) }, { 'nav.home-library': m([51]) }, budgets)).toHaveLength(1)
+  })
+  it('fails a budgeted metric the base measured and this run did not', () => {
+    expect(regressions({ 'nav.home-library': m([60]) }, {}, budgets)).toMatchObject([{ metric: 'nav.home-library', why: 'not measured' }])
+  })
+  it('ignores metrics with no budget', () => {
+    expect(regressions({ 'start.painted': m([90]) }, { 'start.painted': m([900]) }, budgets)).toEqual([])
   })
 })

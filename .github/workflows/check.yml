@@ -25,12 +25,22 @@ jobs:
         run: SMOKE_CHANNEL=chromium node scripts/plugin-worker-check.mjs && node scripts/plugin-worker-check.mjs --engine webkit
       - name: Sync relay and two-device sync
         run: node relay/test.mjs && SMOKE_CHANNEL=chromium node scripts/sync-e2e.mjs
-      # Speed budgets (perf/budgets.json) in WebKit, the desktop app's engine, on the build above.
-      - run: npx playwright install --with-deps webkit
-      - run: npm run perf -- --viewport 1280 --no-build
+      # Speed in WebKit, the apps' engine. A runner is too slow for perf/budgets.json itself (those are for
+      # a desktop), so a pull request is measured against its base, built and run on this runner first,
+      # and fails on a clear regression (regressions() in scripts/perf-lib.mjs). Budget misses are listed.
+      - name: Speed against the base branch (WebKit)
+        if: github.event_name == 'pull_request'
+        env: { BASE: '${{ github.event.pull_request.base.sha }}' }
+        run: |
+          git fetch -q --no-tags --depth=1 origin "$BASE"
+          git worktree add -q --detach "$RUNNER_TEMP/base" FETCH_HEAD
+          if git diff --quiet FETCH_HEAD HEAD -- package-lock.json; then ln -s "$PWD/node_modules" "$RUNNER_TEMP/base/node_modules"; else (cd "$RUNNER_TEMP/base" && npm ci); fi
+          (cd "$RUNNER_TEMP/base" && npx vite build --logLevel warn --outDir "$RUNNER_TEMP/base-dist")
+          node scripts/perf.mjs --viewport 1280 --no-build --dist "$RUNNER_TEMP/base-dist" --no-gate --out perf/results-base.json
+          npm run perf -- --viewport 1280 --no-build --against perf/results-base.json --compare perf/results-base.json
       - uses: actions/upload-artifact@v4
-        if: always()
-        with: { name: perf-results, path: perf/results.json, if-no-files-found: ignore }
+        if: always() && github.event_name == 'pull_request'
+        with: { name: perf-results, path: perf/results*.json, if-no-files-found: ignore }
   rust:
     # 24.04 for its ffmpeg (6.1): the playback tests run against it.
     runs-on: ubuntu-24.04
