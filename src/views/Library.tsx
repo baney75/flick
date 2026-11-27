@@ -7,6 +7,7 @@ import { sources, libraries, loadLibrary } from '../lib/plugins/use'
 import { shelfChips, shelfOrder, isShelfKey, metaText, typeChip, type ShelfChip, type ShelfKey } from '../lib/shelves'
 import { MetaCard, ShelfRow } from './Plugin'
 import { Icon } from '../components/icons'
+import { useEscape } from '../lib/escape'
 import { addFolder, rescanAll, storeFiles, openFiles } from '../lib/actions'
 import { getFolders, removeFolder, deleteStored, removeItems, type Folder, type Item } from '../lib/library'
 import { formatBytes, formatTime } from '../lib/parse'
@@ -49,6 +50,7 @@ export function Library({ start }: { start?: Tab } = {}) {
   const [showFolders, setShowFolders] = useState(false)
   const [menu, setMenu] = useState<{ it: Item; x: number; y: number } | null>(null)
   const search = useRef<HTMLInputElement>(null)
+  useEscape(!!menu, () => setMenu(null))
 
   useEffect(() => { getFolders().then(setFolders) }, [items.value.length])
   // Source plugins' own libraries (a Stremio library) sit beside the files and servers.

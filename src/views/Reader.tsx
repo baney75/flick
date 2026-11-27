@@ -7,6 +7,7 @@ import * as db from '../lib/db'
 import { resolve, srcName, type Item } from '../lib/library'
 import { clampPage, ext } from '../lib/parse'
 import { Icon } from '../components/icons'
+import { useEscape } from '../lib/escape'
 import { EpubReader, ColorPicker } from './EpubReader'
 import { savedColor, saveColor } from '../lib/pagecolor'
 import type { PageColor } from '../lib/epub'
@@ -94,6 +95,7 @@ function PdfReader({ id, link }: { id: string; link?: BookLink }) {
 
   // A book opened from a link or a fresh tab has no page to go back to.
   const leave = () => (history.length > 1 ? history.back() : go('/library'))
+  useEscape(true, leave, true)
 
   // Draw the page to fit the stage, sharp on high-density screens.
   useEffect(() => {
@@ -133,7 +135,6 @@ function PdfReader({ id, link }: { id: string; link?: BookLink }) {
       else if (['ArrowLeft', 'PageUp', 'ArrowUp'].includes(e.key)) { e.preventDefault(); turn(-1) }
       else if (e.key === 'Home') setPage(1)
       else if (e.key === 'End' && pdf) setPage(pdf.numPages)
-      else if (e.key === 'Escape') leave()
     }
     addEventListener('keydown', k)
     return () => removeEventListener('keydown', k)

@@ -7,6 +7,7 @@ import { resolve, hasThumb, type Item } from '../lib/library'
 import { openEpub, chapterPage, coverBlob, toPos, fromPos, type Book, type PageColor } from '../lib/epub'
 import { PAGE_COLORS, savedColor, saveColor, chapterLeft } from '../lib/pagecolor'
 import { Icon } from '../components/icons'
+import { useEscape } from '../lib/escape'
 
 const pref = (k: string, d: string) => { try { return localStorage.getItem(k) ?? d } catch { return d } }
 const setPref = (k: string, v: string) => { try { localStorage.setItem(k, v) } catch { /* private mode */ } }
@@ -77,6 +78,9 @@ export function EpubReader({ it }: { it: Item }) {
     else if (k === 'Home') place({ chapter: 0, start: 0 })
     else if (k === 'Escape') toc ? setToc(false) : leave()
   }
+  // Escape closes the contents, or leaves the book; a key pressed in the chapter frame comes as a message.
+  useEscape(true, leave, true)
+  useEscape(toc, () => setToc(false))
 
   // Messages from the chapter frame. Only that frame's window is listened to, and only known shapes.
   useEffect(() => {
@@ -133,7 +137,9 @@ export function EpubReader({ it }: { it: Item }) {
           </div>
         ) : !doc ? <span class="spinner" aria-label="Opening" /> : (
           // No allow-same-origin: the book runs in an opaque origin and cannot reach Flick's storage.
-          <iframe ref={frame} class="epub-frame" title="Book page" sandbox="allow-scripts" srcdoc={doc} onLoad={() => frame.current?.focus()} />
+          // A new frame for each layout: a new document in the same frame is a history entry, and Back
+          // then turned back through old layouts instead of leaving the book.
+          <iframe key={doc} ref={frame} class="epub-frame" title="Book page" sandbox="allow-scripts" srcdoc={doc} onLoad={() => frame.current?.focus()} />
         )}
         {toc && book && (
           <nav class="epub-toc panel" aria-label="Contents">

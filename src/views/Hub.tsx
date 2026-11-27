@@ -8,6 +8,7 @@ import * as Srv from '../lib/servers'
 import { bus } from '../lib/sync/bus'
 import { isDesktop } from '../lib/platform'
 import { Icon } from '../components/icons'
+import { useEscape } from '../lib/escape'
 import { PluginIcon } from './Plugin'
 import { absolute, install, installed, officialList, prepare, type Candidate, type Installed, type OfficialEntry } from '../lib/plugins/registry'
 import { allServices, hasKey, type Service } from '../lib/plugins/services'
@@ -98,11 +99,7 @@ function AddSheet({ onClose }: { onClose: () => void }) {
   const [cand, setCand] = useState<Candidate | null>(null)
   const [url, setUrl] = useState('')
   useEffect(() => { officialList().then(setOfficial) }, [])
-  useEffect(() => {
-    const esc = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) onClose() }
-    addEventListener('keydown', esc)
-    return () => removeEventListener('keydown', esc)
-  }, [busy])
+  useEscape(true, () => { if (!busy) onClose() })
 
   const opened = (id: string) => { onClose(); go(pageOf(id)) }
   // Something from Flick's own list installs at once: the user picked it there, and the row said
