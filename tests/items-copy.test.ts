@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto'
 import { IDBFactory } from 'fake-indexeddb'
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 // The items copy in src/lib/db.ts. A fresh import of the module stands for a new launch, or another tab.
 type Db = typeof import('../src/lib/db')
@@ -22,7 +22,20 @@ async function raw(fn: (items: IDBObjectStore, kv: IDBObjectStore) => void, bump
 }
 const ids = (l: { id: string }[]) => l.map((x) => x.id)
 
-beforeEach(() => { (globalThis as any).indexedDB = new IDBFactory() })
+/** Counts full reads of the items store. */
+let storeReads = 0
+/** Runs once, inside the next full read of the items store. */
+let duringRead: (() => void) | null = null
+beforeEach(() => {
+  (globalThis as any).indexedDB = new IDBFactory()
+  storeReads = 0
+  const getAll = IDBObjectStore.prototype.getAll
+  vi.spyOn(IDBObjectStore.prototype, 'getAll').mockImplementation(function (this: IDBObjectStore, ...a: any[]) {
+    if (this.name === 'items') { storeReads++; const f = duringRead; duringRead = null; f?.() }
+    return getAll.apply(this, a as any)
+  })
+})
+afterEach(() => { vi.restoreAllMocks() })
 
 describe('items copy', () => {
   it('an empty library reads as empty', async () => {
@@ -120,5 +133,77 @@ describe('items copy', () => {
     await db.putMany('progress', [['p', { pos: 1 }]])
     expect(await db.all('progress')).toEqual([{ pos: 1 }])
     expect(await db.get('kv', 'items.rev')).toBeUndefined()
+  })
+  it('a write during the first store read still leaves a copy for the next launch', async () => {
+    const db = await launch()
+    await db.get('kv', 'opens the database')
+    await raw((items) => { items.put(it3('a'), 'a'); items.put(it3('b'), 'b') }, true)
+    const read = db.all('items')
+    const write = db.putMany('items', [['c', it3('c')]])
+    await Promise.all([read, write])
+    await db.copySettled()
+    const next = await launch()
+    storeReads = 0
+    expect(ids(await next.all('items'))).toEqual(['a', 'b', 'c'])
+    expect(storeReads).toBe(0)
+  })
+
+  it('this tab writing while its fold is saving folds again, without reading the store', async () => {
+    const db = await launch()
+    await db.putMany('items', [['a', it3('a')]])
+    await db.all('items')
+    await db.copySettled()
+    await db.putMany('items', [['b', it3('b')]])
+    storeReads = 0
+    const write = db.putMany('items', [['c', it3('c')]])
+    const fold = db.copySettled()
+    await Promise.all([write, fold])
+    await db.copySettled()
+    expect(storeReads).toBe(0)
+    const next = await launch()
+    expect(ids(await next.all('items'))).toEqual(['a', 'b', 'c'])
+    expect(storeReads).toBe(0)
+  })
+
+  it('a Flick from before the copy cannot open the database to write around it', async () => {
+    const db = await launch()
+    await db.putMany('items', [['a', it3('a')]])
+    const err = await new Promise<string>((ok) => { const r = indexedDB.open('flick', 3); r.onsuccess = () => { r.result.close(); ok('opened') }; r.onerror = () => ok(r.error!.name) })
+    expect(err).toBe('VersionError')
+  })
+
+  it('with no structuredClone, writes still reach the next launch through a recopy', async () => {
+    const sc = globalThis.structuredClone
+    ;(globalThis as any).structuredClone = undefined
+    let db: Db
+    try { db = await launch() } finally { globalThis.structuredClone = sc }
+    await db.putMany('items', [['a', it3('a')]])
+    await db.all('items')
+    await db.putMany('items', [['b', it3('b')]])
+    expect(ids(await db.all('items'))).toEqual(['a', 'b'])
+    await db.copySettled()
+    const next = await launch()
+    storeReads = 0
+    expect(ids(await next.all('items'))).toEqual(['a', 'b'])
+    expect(storeReads).toBe(0)
+  })
+  it('another tab writing during the first store read still leaves a copy for the next launch', async () => {
+    const db = await launch()
+    await db.get('kv', 'opens the database')
+    await raw((items) => { items.put(it3('a'), 'a') }, true)
+    const other = await new Promise<IDBDatabase>((ok) => { const r = indexedDB.open('flick'); r.onsuccess = () => ok(r.result) })
+    duringRead = () => {
+      const tx = other.transaction(['items', 'kv'], 'readwrite')
+      const kv = tx.objectStore('kv')
+      tx.objectStore('items').put(it3('b'), 'b')
+      const r = kv.get('items.rev'); r.onsuccess = () => kv.put((r.result ?? 0) + 1, 'items.rev')
+    }
+    expect(ids(await db.all('items'))).toEqual(['a'])
+    await db.copySettled()
+    other.close()
+    const next = await launch()
+    storeReads = 0
+    expect(ids(await next.all('items'))).toEqual(['a', 'b'])
+    expect(storeReads).toBe(0)
   })
 })

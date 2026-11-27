@@ -1,8 +1,9 @@
 // Tiny IndexedDB wrapper. One database, a few object stores, promise API.
 
 const DB_NAME = 'flick'
-// Bump on every new store: onupgradeneeded adds only the stores an existing database lacks.
-const DB_VERSION = 3
+// Bump on every new store: onupgradeneeded adds only the stores an existing database lacks. 4: the items
+// copy (below); a Flick from before it writes items without its rev, so it must not open this database.
+const DB_VERSION = 4
 export const STORES = ['items', 'progress', 'kv', 'thumbs', 'downloads', 'plugins', 'pluginData'] as const
 export type StoreName = (typeof STORES)[number]
 
@@ -72,7 +73,7 @@ export async function entries<T>(name: StoreName): Promise<[string, T][]> {
 /** Write many records in one transaction. Much faster than one put per record. */
 export async function putMany(name: StoreName, rows: [IDBValidKey, unknown][]): Promise<void> {
   if (!rows.length) return
-  if (name === 'items') return writeItems((s) => { for (const [k, v] of rows) s.put(v, k) }, rows.map(([k, v]) => [k, structuredClone(v)]))
+  if (name === 'items') return writeItems((s) => { for (const [k, v] of rows) s.put(v, k) }, () => rows.map(([k, v]) => [k, clone!(v)]))
   const db = await open()
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(name, 'readwrite')
@@ -85,7 +86,7 @@ export async function putMany(name: StoreName, rows: [IDBValidKey, unknown][]): 
 
 export async function delMany(name: StoreName, keys: IDBValidKey[]): Promise<void> {
   if (!keys.length) return
-  if (name === 'items') return writeItems((s) => { for (const k of keys) s.delete(k) }, keys.map((k) => [k, GONE]))
+  if (name === 'items') return writeItems((s) => { for (const k of keys) s.delete(k) }, () => keys.map((k) => [k, GONE]))
   const db = await open()
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(name, 'readwrite')
@@ -103,20 +104,26 @@ export async function delMany(name: StoreName, keys: IDBValidKey[]): Promise<voi
 // 1. Every write to items bumps kv `items.rev` in the same transaction.
 // 2. The copy (kv `items.copy`) counts only when its rev is the current `items.rev`. Any other copy is
 //    ignored, so a write the copy missed (another tab, a crash before it was saved) can never be lost.
-// 3. With no good copy a read reads the store, and saves a copy of what it read.
+// 3. With no good copy a read reads the store, and saves a copy of what it read unless the rev moved.
 // 4. This tab keeps the writes made since the copy it knows, cloned, and folds them into the copy two
-//    seconds after the last one. A write from another tab drops them; the next read reads the store.
+//    seconds after the last one. A write from another tab drops them.
+// 5. Whenever a save cannot be made, the store is read again and copied once writes have been quiet
+//    for two seconds, so the next start still reads one record.
 
 const REV = 'items.rev'
 const COPY = 'items.copy'
 const GONE = Symbol('gone')
+const DELAY = 2000
 type Row = [IDBValidKey, unknown]
 type Copy = { rev: number; rows: Row[] }
+type Mine = { rev: number; base: number; changes: Map<IDBValidKey, unknown> }
 /** This tab's writes since copy `base`; `rev` is the items.rev after the last of them. */
-let mine: { rev: number; base: number; changes: Map<IDBValidKey, unknown> } | null = null
-let saving: ReturnType<typeof setTimeout> | null = null
+let mine: Mine | null = null
+let timer: ReturnType<typeof setTimeout> | null = null
+let next: 'fold' | 'recopy' = 'fold'
 let saved: Promise<void> = Promise.resolve()
-export const COPY_DELAY = 2000
+// Safari before 15.4 (macOS 12.0 to 12.2) has none. Then this tab keeps no changes and recopies instead.
+const clone = typeof structuredClone === 'function' ? structuredClone : null
 
 const revOf = (v: unknown) => (typeof v === 'number' ? v : 0)
 const isCopy = (v: unknown): v is Copy => !!v && typeof v === 'object' && typeof (v as Copy).rev === 'number' && Array.isArray((v as Copy).rows)
@@ -129,13 +136,27 @@ function fold(rows: Row[], changes: Map<IDBValidKey, unknown>): Row[] {
   let added = false
   for (const [k, v] of changes) {
     if (v === GONE) m.delete(k)
-    else { if (!m.has(k)) added = true; m.set(k, structuredClone(v)) }
+    else { if (!m.has(k)) added = true; m.set(k, clone!(v)) }
   }
   const out = [...m]
   return added ? out.sort(byKey) : out
 }
 
-async function writeItems(apply: (s: IDBObjectStore) => void, changes: Row[]): Promise<void> {
+/** Runs `what` once writes have been quiet for DELAY; a recopy wins over a fold. */
+function soon(what: 'fold' | 'recopy') {
+  if (what === 'recopy') next = 'recopy'
+  if (timer) clearTimeout(timer)
+  timer = setTimeout(() => { timer = null; saved = run() }, DELAY)
+}
+async function run() {
+  // A save still under way decides whether there is anything left to do.
+  await saved
+  const what = next
+  next = 'fold'
+  await (what === 'recopy' ? recopy() : saveCopy()).catch(() => {})
+}
+
+async function writeItems(apply: (s: IDBObjectStore) => void, changes: () => Row[]): Promise<void> {
   const db = await open()
   let rev = 0
   await new Promise<void>((resolve, reject) => {
@@ -148,26 +169,24 @@ async function writeItems(apply: (s: IDBObjectStore) => void, changes: Row[]): P
     tx.onerror = () => reject(tx.error)
     tx.onabort = () => reject(tx.error)
   })
-  if (mine && mine.rev === rev) {
-    for (const [k, v] of changes) mine.changes.set(k, v)
+  if (mine && mine.rev === rev && clone) {
+    for (const [k, v] of changes()) mine.changes.set(k, v)
     mine.rev = rev + 1
-    saveSoon()
-  } else mine = null
-}
-
-function saveSoon() {
-  if (saving) clearTimeout(saving)
-  saving = setTimeout(() => { saving = null; saved = saveCopy().catch(() => {}) }, COPY_DELAY)
+    soon('fold')
+  } else {
+    mine = null
+    soon('recopy')
+  }
 }
 
 /** Folds this tab's changes into the copy, if nothing else wrote items since. */
 async function saveCopy() {
-  if (!mine) return
-  const db = await open()
   const want = mine
+  if (!want || !want.changes.size) return
+  const db = await open()
   const at = want.rev
   const sent = new Map(want.changes)
-  await new Promise<void>((resolve, reject) => {
+  const ok = await new Promise<boolean>((resolve, reject) => {
     const tx = db.transaction('kv', 'readwrite')
     const kv = tx.objectStore('kv')
     const r = kv.get(REV), c = kv.get(COPY)
@@ -175,32 +194,66 @@ async function saveCopy() {
       if (revOf(r.result) !== at || !isCopy(c.result) || c.result.rev !== want.base) { tx.abort(); return }
       kv.put({ rev: at, rows: fold(c.result.rows, sent) } satisfies Copy, COPY)
     }
-    tx.oncomplete = () => resolve()
+    tx.oncomplete = () => resolve(true)
     tx.onerror = () => reject(tx.error)
-    tx.onabort = () => { if (mine === want) mine = null; resolve() }
+    tx.onabort = () => resolve(false)
   })
-  // Changes made while it saved stay for the next save.
   if (mine !== want) return
-  want.base = at
-  for (const [k, v] of sent) if (want.changes.get(k) === v) want.changes.delete(k)
+  if (ok) {
+    // Changes made while it saved stay for the next save.
+    want.base = at
+    for (const [k, v] of sent) if (want.changes.get(k) === v) want.changes.delete(k)
+  } else if (want.rev !== at) soon('fold') // only this tab wrote meanwhile: fold again at the new rev
+  else { mine = null; soon('recopy') }
+}
+
+/** Reads the store, with the rev before it, and saves it as the copy unless the rev moved. */
+async function fromStore(db: IDBDatabase): Promise<Row[]> {
+  const rev = await new Promise<number>((resolve, reject) => {
+    const tx = db.transaction('kv', 'readonly')
+    const r = tx.objectStore('kv').get(REV)
+    r.onsuccess = () => resolve(revOf(r.result))
+    tx.onerror = () => reject(tx.error)
+  })
+  return readStore(db, rev)
+}
+
+// The store alone, so kv is not held for the seconds this takes. saveRead checks the rev again.
+async function readStore(db: IDBDatabase, rev: number): Promise<Row[]> {
+  const rows = await new Promise<Row[]>((resolve, reject) => {
+    const tx = db.transaction('items', 'readonly')
+    const s = tx.objectStore('items')
+    const ks = s.getAllKeys(), vs = s.getAll()
+    vs.onsuccess = () => resolve(ks.result.map((k, i): Row => [k, vs.result[i]]))
+    tx.onerror = () => reject(tx.error)
+  })
+  // A copy that cannot be saved never fails the read (a closed connection, a full disk).
+  try { saveRead(db, rev, rows) } catch { mine = null }
+  return rows
+}
+
+async function recopy() {
+  if (mine) return
+  await fromStore(await open())
+  await saved
 }
 
 /**
  * Saves what a read of the store found as the copy, unless items changed since the rev read before
- * it. Starts this tab's change list from it, or drops the list when the copy is not saved.
+ * it. Starts this tab's change list from it, or recopies later when the copy is not saved.
  */
 function saveRead(db: IDBDatabase, rev: number, rows: Row[]) {
-  const want = { rev, base: rev, changes: new Map<IDBValidKey, unknown>() }
-  mine = want
+  const want: Mine = { rev, base: rev, changes: new Map() }
   const tx = db.transaction('kv', 'readwrite')
   const kv = tx.objectStore('kv')
+  mine = want
   // The put clones the rows now, before a caller can change the items it is handed.
   const r = kv.get(REV)
   kv.put({ rev, rows } satisfies Copy, COPY)
   r.onsuccess = () => { if (revOf(r.result) !== rev) tx.abort() }
   saved = new Promise((resolve) => {
     tx.oncomplete = () => resolve()
-    tx.onabort = tx.onerror = () => { if (mine === want) mine = null; resolve() }
+    tx.onabort = tx.onerror = () => { if (mine === want) { mine = null; soon('recopy') } resolve() }
   })
 }
 
@@ -218,21 +271,14 @@ async function readItems<T>(): Promise<T[]> {
     return copy.rows.map((x) => x[1] as T)
   }
   if (copy && mine && mine.rev === rev && mine.base === copy.rev) return fold(copy.rows, mine.changes).map((x) => x[1] as T)
-  // The store alone, so kv is not held for the seconds this takes. The rev read again after it tells
-  // whether a write landed meanwhile; then this read is not saved as a copy.
-  const rows = await new Promise<Row[]>((resolve, reject) => {
-    const tx = db.transaction('items', 'readonly')
-    const s = tx.objectStore('items')
-    const ks = s.getAllKeys(), vs = s.getAll()
-    vs.onsuccess = () => resolve(ks.result.map((k, i): Row => [k, vs.result[i]]))
-    tx.onerror = () => reject(tx.error)
-  })
-  saveRead(db, rev, rows)
-  return rows.map((x) => x[1] as T)
+  return (await readStore(db, rev)).map((x) => x[1] as T)
 }
 
-/** Tests: resolves once a pending copy save has finished. */
+/** Tests only: runs a pending save now and waits for it, and for any save it leads to. */
 export async function copySettled(): Promise<void> {
-  if (saving) { clearTimeout(saving); saving = null; saved = saveCopy().catch(() => {}) }
-  await saved
+  for (let i = 0; i < 5; i++) {
+    if (timer) { clearTimeout(timer); timer = null; saved = run() }
+    await saved
+    if (!timer) return
+  }
 }
