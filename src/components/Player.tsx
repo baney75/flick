@@ -10,12 +10,12 @@ import { isDesktop, isMobileApp, hasOpfs, invoke } from '../lib/platform'
 import { kodiLive, urlLive } from '../lib/servers'
 import { barFor, oneRetry, openToolStream, stopToolStream } from '../lib/plugins/runtime'
 import { Icon } from './icons'
+import { useEscape } from '../lib/escape'
 import { Readout } from './Readout'
 import { Delayed, KEEPS_STALLING, kindOf, OPENING, waitLine, Watchdog } from '../lib/stalls'
 import { note, sourceOf } from '../lib/playlog'
-import { afterError, cardButtons, convertLine, followed, withServerFallback, DESKTOP_ONLY, isHls, planStream, playsHere, planSeek, probeStream, probes, Remux, SAFE, writtenOf, type Live, type StreamProbe, cuesAt, messageOf } from '../lib/playback'
+import { afterError, cardButtons, convertLine, followed, withServerFallback, DESKTOP_ONLY, isHls, planStream, playsHere, planSeek, probeStream, probes, Remux, SAFE, SPEEDS, writtenOf, type Live, type StreamProbe, cuesAt, messageOf } from '../lib/playback'
 
-const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
 
 type HlsLike = { destroy(): void; loadSource(u: string): void; attachMedia(v: HTMLMediaElement): void; on(e: string, cb: (...a: any[]) => void): void }
 
@@ -73,6 +73,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   const [idle, setIdle] = useState(false)
   const [full, setFull] = useState(false)
   const [menu, setMenu] = useState<null | 'speed' | 'subs' | 'help'>(null)
+  // The key handler below is registered after paint, so an Escape right after a menu opens saw it closed.
+  useEscape(menu !== null, () => setMenu(null))
   const [subs, setSubs] = useState<LoadedSub[]>([])
   const [subOn, setSubOn] = useState(-1)
   const [osd, setOsd] = useState<{ text: string; n: number } | null>(null)
@@ -612,8 +614,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         case 'n': case 'N': goNext(); break
         case '?': setMenu((m) => (m === 'help' ? null : 'help')); break
         case 'Escape':
-          if (menu) setMenu(null)
-          else if (document.fullscreenElement) document.exitFullscreen()
+          // An open menu closes through useEscape above, which stops the key before it gets here.
+          if (document.fullscreenElement) document.exitFullscreen()
           else close()
           break
         default:

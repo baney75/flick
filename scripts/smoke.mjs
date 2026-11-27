@@ -404,6 +404,11 @@ try {
   check(drawn, 'book reopens on its saved page in a fresh tab')
   await fresh.screenshot({ path: 'test-media/shots/reader.png' })
   await fresh.close()
+  // Escape with nothing open goes back one page, not two (the app's Back and the reader's own).
+  await page.evaluate(() => document.activeElement?.blur())
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(400)
+  check(page.url().endsWith('#/library'), `Escape in the book reader goes back one page (${page.url().split('#')[1]})`)
 
   // Audiobooks: store an M4B, see its chapters, cover and sleep timer; speed stays with the book.
   await page.goto(`${BASE}/#/library`)
@@ -445,6 +450,15 @@ try {
   check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'audiobook player fits a phone without sideways scroll')
   await page.screenshot({ path: 'test-media/shots/phone-audiobook.png' })
   await page.setViewportSize({ width: 1280, height: 800 })
+  const listenUrl = page.url()
+  await page.getByRole('button', { name: 'Speed' }).click()
+  await page.locator('.listen-pop').waitFor()
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(300)
+  check(await page.locator('.listen-pop').count() === 0 && page.url() === listenUrl, `Escape closes the audiobook speed menu and stays on the book (${page.url().split('#')[1]})`)
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(400)
+  check(page.url().endsWith('#/library'), `Escape on the audiobook goes back one page (${page.url().split('#')[1]})`)
   // EPUB: store one, see its cover, page through it, use the contents, and prove the book's scripts never run.
   await page.goto(`${BASE}/#/library`)
   await page.evaluate(() => { window.__pwned = []; addEventListener('message', (e) => { if (e.data?.pwned) window.__pwned.push(e.data.pwned) }) })
@@ -587,6 +601,14 @@ try {
   await fresh2.goto(epubUrl)
   check(await fresh2.locator('.reader-title .t2', { hasText: 'Chapter Two' }).waitFor({ timeout: 10000 }).then(() => true, () => false), 'EPUB reopens in the chapter it was left in')
   await fresh2.close()
+  await page.getByRole('button', { name: 'Contents' }).click()
+  await page.locator('.epub-toc').waitFor()
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(300)
+  check(await page.locator('.epub-toc').count() === 0 && page.url() === epubUrl, `Escape closes the EPUB contents and stays in the book (${page.url().split('#')[1]})`)
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(400)
+  check(page.url().endsWith('#/library'), `Escape in the EPUB goes back one page (${page.url().split('#')[1]})`)
   await page.goto(`${BASE}/#/`)
   check(await page.locator('.card', { hasText: 'Test Epub' }).first().waitFor({ timeout: 5000 }).then(() => true, () => false), 'EPUB shows in Continue')
 
@@ -772,6 +794,12 @@ try {
   check(await page.waitForFunction(() => { const v = document.querySelector('.player video'); return v && v.currentTime > 0.5 }, null, { timeout: 8000 }).then(() => true, () => false), 'a plugin stream plays in the player')
   await page.evaluate(() => { const v = document.querySelector('.player video'); v.pause(); v.currentTime = 12 })
   await page.waitForFunction(() => Math.abs(document.querySelector('.player video').currentTime - 12) < 0.5)
+  await page.mouse.move(640, 400)
+  await page.locator('.player').getByRole('button', { name: 'Speed' }).click()
+  await page.locator('.player .pop').waitFor()
+  await page.keyboard.press('Escape')
+  await page.waitForTimeout(200)
+  check(await page.locator('.player .pop').count() === 0 && await page.locator('.player').count() === 1, 'Escape closes the player speed menu and leaves the player open')
   await page.keyboard.press('Escape')
   await page.locator('.player').waitFor({ state: 'detached' })
   await page.locator('.play-best', { hasText: 'Resume' }).waitFor({ timeout: 5000 }).catch(() => {})
@@ -1344,6 +1372,56 @@ try {
   check(await gridAtEnd() && wrongArt.length === 0, `each grid card keeps its own poster as the grid scrolls (${[...new Set(wrongArt)].slice(0, 4).join('; ') || 'all match'})`)
   await gp.context().close()
 
+  // Escape closes the newest open menu or sheet and stops there; with nothing open it goes back one page.
+  {
+    const ep = await photoPage()
+    await ep.goto(`${BASE}/#/settings`)
+    await ep.goto(`${BASE}/#/library`)
+    await ep.waitForTimeout(500)
+    await ep.evaluate(() => new Promise((res, rej) => {
+      const r = indexedDB.open('flick')
+      r.onsuccess = () => {
+        const tx = r.result.transaction(['items', 'kv'], 'readwrite')
+        tx.objectStore('items').put({ id: 'menu-1', title: 'Menu track', kind: 'audio', src: { t: 'url', url: 'http://127.0.0.1:9/menu.mp3' }, origin: 'local', size: 1, mtime: 0, addedAt: 1 }, 'menu-1')
+        const kv = tx.objectStore('kv')
+        const rev = kv.get('items.rev')
+        rev.onsuccess = () => kv.put((rev.result ?? 0) + 1, 'items.rev')
+        tx.oncomplete = res
+        tx.onerror = () => rej(tx.error)
+      }
+    }))
+    await ep.reload()
+    await ep.locator('.toolbar .chip', { hasText: /^All/ }).click()
+    await ep.locator('.vgrid .card', { hasText: 'Menu track' }).click({ button: 'right' })
+    await ep.locator('.ctx').waitFor()
+    await ep.keyboard.press('Escape')
+    await ep.waitForTimeout(300)
+    check(await ep.locator('.ctx').count() === 0 && ep.url().endsWith('#/library'), `Escape closes the Library card menu and stays in the Library (${ep.url().split('#')[1]})`)
+    await ep.goto(`${BASE}/#/settings/plugins`)
+    const addBtn = ep.locator('#plugins').getByRole('button', { name: 'Add' })
+    const addSheet = ep.getByRole('dialog', { name: 'Add to Flick' })
+    await addBtn.click()
+    await addSheet.waitFor()
+    await ep.keyboard.press('Escape')
+    await ep.waitForTimeout(300)
+    check(await addSheet.count() === 0 && ep.url().endsWith('#/settings/plugins'), `Escape closes the Add sheet and stays on the page (${ep.url().split('#')[1]})`)
+    await addBtn.click()
+    await addSheet.getByLabel('Plugin address').fill(`${FLICK_URL}/grid-plugin.js`)
+    await addSheet.getByRole('button', { name: 'Add', exact: true }).click()
+    const review = ep.getByRole('dialog', { name: /^Install / })
+    await review.waitFor({ timeout: 15000 })
+    await ep.keyboard.press('Escape')
+    await ep.waitForTimeout(300)
+    check(await review.count() === 0 && await addSheet.count() === 1 && ep.url().endsWith('#/settings/plugins'), `Escape closes the install review and goes back to the Add sheet (${ep.url().split('#')[1]})`)
+    await ep.keyboard.press('Escape')
+    await addSheet.waitFor({ state: 'detached', timeout: 3000 }).catch(() => {})
+    await ep.evaluate(() => document.activeElement?.blur())
+    await ep.keyboard.press('Escape')
+    await ep.waitForTimeout(400)
+    check(ep.url().endsWith('#/library'), `Escape with nothing open goes back one page (${ep.url().split('#')[1]})`)
+    await ep.context().close()
+  }
+
   // Home and Library list the same things to continue: no item the library no longer has, and no show
   // whose newest episode is finished. Remove from library takes the item's place with it.
   const cp = await photoPage()
@@ -1389,6 +1467,30 @@ try {
   const keptPlace = await cp.evaluate(() => new Promise((res) => { const r = indexedDB.open('flick'); r.onsuccess = () => { const q = r.result.transaction('progress').objectStore('progress').get('kept-1'); q.onsuccess = () => res(q.result ?? null) } }))
   const afterHome = await homeCont()
   check(keptPlace === null && afterHome.length === 0, `Remove from library clears the item's place, and Home has nothing to continue (${afterHome.join(', ') || 'none'})`)
+
+  // Library keeps its search and sort for the session: after Back, and after a reload.
+  await cp.goto(`${BASE}/#/library`)
+  await cp.getByLabel('Search library').fill('Tw')
+  await cp.getByLabel('Sort').selectOption('title')
+  await cp.goto(`${BASE}/#/settings`)
+  await cp.goBack()
+  const libState = async () => [await cp.getByLabel('Search library').inputValue(), await cp.getByLabel('Sort').inputValue()].join()
+  await cp.getByLabel('Sort').waitFor()
+  const afterBack = await libState()
+  await cp.reload()
+  await cp.getByLabel('Sort').waitFor()
+  const afterReload = await libState()
+  check(afterBack === 'Tw,title' && afterReload === 'Tw,title', `Library keeps its search and sort after Back and a reload (${afterBack}; ${afterReload})`)
+
+  // Default speed lists the player's speeds, and a saved speed is never shown blank.
+  const speedShown = async (speed) => {
+    await cp.evaluate((v) => localStorage.setItem('flick.settings', JSON.stringify({ ...JSON.parse(localStorage.getItem('flick.settings') || '{}'), speed: v })), speed)
+    await cp.goto(`${BASE}/#/settings`)
+    await cp.reload()
+    return cp.getByLabel('Default speed').evaluate((s) => s.selectedOptions[0]?.textContent ?? '')
+  }
+  const shown = [await speedShown(2.5), await speedShown(1.2)]
+  check(shown.join() === '2.5×,1.2×', `Default speed shows a speed set in the player and one off its list (${shown.join(', ') || 'blank'})`)
   await cp.context().close()
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.join(' | ') : ''}`)
