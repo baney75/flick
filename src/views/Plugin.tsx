@@ -26,7 +26,9 @@ const shape = (m: Meta) => (m.posterShape === 'landscape' ? 'wide' : m.posterSha
 export function MetaCard({ rec, m }: { rec: Source; m: Meta }) {
   const pct = m.progress?.dur ? m.progress.pos / m.progress.dur : undefined
   const ep = m.progress?.videoId && m.type === 'series' ? m.progress.videoId : undefined
-  return <Card image={m.poster} title={m.name} sub={m.year} shape={shape(m)} pct={pct} onClick={() => go(titlePath(rec.id, m.type, m.id, ep))} />
+  const wide = m.posterShape === 'landscape'
+  return <Card image={m.poster} title={m.name} sub={m.subtitle ?? m.year} info={m.badges?.join(' · ')} time={wide ? m.runtime : undefined} wrap={wide}
+    shape={shape(m)} pct={pct} onClick={() => go(titlePath(rec.id, m.type, m.id, ep))} />
 }
 
 export function PluginIcon({ rec, size = 20 }: { rec: { manifest: object }; size?: number }) {
@@ -187,7 +189,7 @@ export function PluginTitle({ p, type, id, videoId }: { p: string; type: string;
         {meta.poster && <img class="detail-poster" src={meta.poster} alt="" />}
         <div class="detail-info">
           <h1>{meta.name}</h1>
-          <div class="facts">{[meta.year, meta.runtime, ...(meta.genres ?? []).slice(0, 3)].filter(Boolean).map((f) => <span>{f}</span>)}</div>
+          <div class="facts">{[meta.year, meta.runtime, ...(meta.badges ?? []), ...(meta.genres ?? []).slice(0, 3)].filter(Boolean).map((f) => <span>{f}</span>)}</div>
           {meta.description && <p class="desc">{meta.description}</p>}
           <p class="small dim"><PluginIcon rec={rec} size={14} /> {rec.manifest.name}</p>
         </div>

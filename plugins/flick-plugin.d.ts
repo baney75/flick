@@ -30,6 +30,10 @@ export interface Meta {
   year?: string
   genres?: string[]
   runtime?: string
+  /** One line under the name on a card: a channel, an author. */
+  subtitle?: string
+  /** Up to 4 short facts (40 characters each) on a card and the title page: "1.2M views", "3 years ago". */
+  badges?: string[]
   videos?: Video[]
   progress?: { pos: number; dur: number; at: number; videoId?: string }
 }

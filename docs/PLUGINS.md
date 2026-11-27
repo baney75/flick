@@ -136,8 +136,11 @@ values go only to that one `action()` call and are not saved; keep what you need
 
 - `type`: `movie`, `series`, `video`, `channel`, `audio`, `audiobook`, `book`.
 - `Meta`: `{ id, type, name, poster?, posterShape? ('poster'|'square'|'landscape'), background?,
-  description?, year?, genres?, runtime?, videos?: Video[], progress?: { pos, dur, at, videoId? } }`.
-  `id` is the plugin's own id, at most 512 characters.
+  description?, year?, genres?, runtime?, subtitle?, badges?, videos?: Video[], progress?: { pos, dur,
+  at, videoId? } }`. `id` is the plugin's own id, at most 512 characters. `subtitle` is one line under
+  the name on a card (a channel, an author; it replaces the year there). `badges` are up to 4 short
+  facts, 40 characters each, under it and on the title page ("1.2M views", "3 years ago"). A
+  `landscape` card shows `runtime` on its thumbnail and gives the name two lines.
 - `Video` (an episode, part or chapter): `{ id, title, season?, episode?, released?, thumbnail?, overview? }`.
 - `Stream`: `{ url, title?, quality?, kind? ('video'|'audio'|'book'), subs?: { url, lang, label? }[],
   needsDesktop?: true, external?: true, group? }`. `url` is `https:`, `http:` (desktop, or LAN), or
