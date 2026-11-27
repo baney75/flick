@@ -795,7 +795,7 @@ fn find_master_within(env: &Env, page: &str, limit: Duration) -> ytmaster::Found
         let (ok, out, err) =
             crate::playback::output_within(Command::new(bin).args(ytmaster::args(page)), limit)
                 .map_err(|e| {
-                    if e == crate::playback::SLOW_SERVER {
+                    if e == crate::playback::TIMED_OUT {
                         format!("yt-dlp found no stream within {} s.", limit.as_secs())
                     } else {
                         e
