@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Manager, Url};
@@ -119,7 +120,8 @@ fn unpack(zip: &Path, dir: &Path, sum: &str) -> Result<(), String> {
         std::fs::rename(&live, &old).map_err(|e| e.to_string())?;
     }
     std::fs::rename(&new, &live).map_err(|e| e.to_string())?;
-    let _ = std::fs::remove_dir_all(&old);
+    // The previous copy stays in .old until the next update: a search or stream still running from it
+    // loads its modules from those files.
     if let Some(l) = legacy_path(dir) {
         let _ = std::fs::remove_file(&l);
         let _ = std::fs::remove_file(l.with_extension("updated"));
@@ -218,19 +220,50 @@ fn install(dir: &Path, base: &str, state: &Mutex<Fetch>) -> Result<(), String> {
     std::fs::rename(&part, managed_path(dir)).map_err(|e| e.to_string())
 }
 
-/// An update in the background, at most once a day (the stamp file's age says when it last ran):
-/// `yt-dlp -U`, or for the unpacked macOS build, which cannot update itself, the release again when
-/// its checksum changed.
+/// When the daily update last ran. On macOS it sits beside the unpacked build's folder, not in it,
+/// so an update that replaces the folder keeps it.
+fn stamp_path(dir: &Path, bin: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        return dir.join(format!("{MAC_DIR}.updated"));
+    }
+    bin.with_extension("updated")
+}
+
+/// Holds the one daily update slot until dropped. Home asks for several rows at once, and two macOS
+/// installs at the same time would unpack over each other.
+struct Claim(&'static AtomicBool);
+impl Claim {
+    fn take(flag: &'static AtomicBool) -> Option<Self> {
+        (!flag.swap(true, Ordering::SeqCst)).then_some(Claim(flag))
+    }
+}
+impl Drop for Claim {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+static UPDATING: AtomicBool = AtomicBool::new(false);
+
+/// An update in the background, at most once a day (the stamp file's age says when it last ran) and
+/// one at a time: `yt-dlp -U`, or for the unpacked macOS build, which cannot update itself, the
+/// release again when its checksum changed.
 fn update_daily(dir: &Path, bin: &Path) {
-    let stamp = bin.with_extension("updated");
+    let stamp = stamp_path(dir, bin);
     let fresh = std::fs::metadata(&stamp)
         .and_then(|m| m.modified())
         .is_ok_and(|t| t.elapsed().is_ok_and(|a| a < DAY));
-    if fresh || std::fs::write(&stamp, b"").is_err() {
+    if fresh {
+        return;
+    }
+    let Some(claim) = Claim::take(&UPDATING) else {
+        return;
+    };
+    if std::fs::write(&stamp, b"").is_err() {
         return;
     }
     let (dir, bin) = (dir.to_path_buf(), bin.to_path_buf());
     std::thread::spawn(move || {
+        let _claim = claim;
         if cfg!(target_os = "macos") {
             let kept = std::fs::read_to_string(dir.join(MAC_DIR).join(SUM_FILE)).ok();
             let published = release_sums(&agent(), RELEASES)
@@ -1556,6 +1589,26 @@ mod tests {
         assert_eq!(asset(), Some("yt-dlp_macos.zip"));
         assert_eq!(managed_path(d), d.join("yt-dlp_macos/yt-dlp_macos"));
         assert_eq!(legacy_path(d), Some(d.join("yt-dlp")));
+        // Outside the folder an update replaces, so it survives the update.
+        assert_eq!(
+            stamp_path(d, &managed_path(d)),
+            d.join("yt-dlp_macos.updated")
+        );
+    }
+
+    #[test]
+    fn one_daily_update_at_a_time() {
+        static FLAG: AtomicBool = AtomicBool::new(false);
+        let first = Claim::take(&FLAG).expect("the first update gets the slot");
+        assert!(
+            Claim::take(&FLAG).is_none(),
+            "a second update waits for the next call"
+        );
+        drop(first);
+        assert!(
+            Claim::take(&FLAG).is_some(),
+            "the slot frees when the update ends"
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -1601,7 +1654,17 @@ mod tests {
             std::fs::read_to_string(dir.join("yt-dlp_macos/release.sha256")).unwrap(),
             "sum2"
         );
-        assert!(!dir.join("yt-dlp_macos.new").exists() && !dir.join("yt-dlp_macos.old").exists());
+        assert!(!dir.join("yt-dlp_macos.new").exists());
+        // The copy it replaced stays until the next update, for a search still running from it.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("yt-dlp_macos.old/_internal/lib")).unwrap(),
+            "one"
+        );
+        unpack(&make_zip("three"), &dir, "sum3").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("yt-dlp_macos.old/_internal/lib")).unwrap(),
+            "two"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
