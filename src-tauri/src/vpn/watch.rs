@@ -1,11 +1,14 @@
 // Rule 26, when the gate runs: the route checks before a torrent starts and every 2 seconds while
 // one plays; the exit check at first use, after any route change and every 5 minutes. A failure
 // while anything plays stops every player through the change event.
+//
+// The 2-second rounds never wait on an exit check (two HTTPS requests): a due recheck runs on its
+// own thread while the rounds keep checking routes, and the last pass stands until it answers.
 
 use super::{exit_check, route_check, Fail, GateState, Probe, System};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
 
@@ -13,44 +16,83 @@ use tauri::Emitter;
 pub const EVENT: &str = "vpn-gate";
 const EXIT_EVERY: Duration = Duration::from_secs(300);
 const ROUND: Duration = Duration::from_secs(2);
+/// A recheck that fails without a verdict (offline, no usable answer) tries once more after this.
+const RETRY: Duration = Duration::from_secs(1);
 
 /// The exit check's last pass and the route it passed on.
 struct Exit {
+    iface: String,
     route: String,
     at: Instant,
     ip: IpAddr,
 }
 
-/// When the exit check reruns; the clock is a parameter so tests can move it.
+/// What the cached exit check allows on the current route.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Plan {
+    /// It passed on this route less than 5 minutes ago.
+    Pass(IpAddr),
+    /// It passed on this tunnel, but it is due (5 minutes, or the tunnel's addresses changed).
+    Due(IpAddr),
+    /// No pass on this tunnel: it must run before anything plays.
+    Check,
+}
+
+/// The exit check's cache; the clock is a parameter so tests can move it.
 #[derive(Default)]
 pub struct Schedule {
     exit: Option<Exit>,
 }
 
+/// The tunnel and its addresses: a reconnect to another server usually changes them.
+fn route_key(p: &dyn Probe, iface: &str) -> String {
+    format!("{iface} {:?}", p.addrs(iface))
+}
+
 impl Schedule {
-    /// The gate at `now`. `force` reruns the exit check ("Check again").
+    pub fn plan(&self, iface: &str, route: &str, now: Instant, force: bool) -> Plan {
+        match &self.exit {
+            Some(e) if e.iface == iface && !force => {
+                let fresh = e.route == route && now.duration_since(e.at) < EXIT_EVERY;
+                if fresh {
+                    Plan::Pass(e.ip)
+                } else {
+                    Plan::Due(e.ip)
+                }
+            }
+            _ => Plan::Check,
+        }
+    }
+
+    fn store(&mut self, iface: String, route: String, now: Instant, ip: IpAddr) {
+        self.exit = Some(Exit {
+            iface,
+            route,
+            at: now,
+            ip,
+        });
+    }
+
+    /// The gate at `now`, running the exit check inline when the plan asks (tests drive the clock
+    /// through it). `force` reruns the
+    /// exit check ("Check again").
+    #[cfg(test)]
     pub fn tick(&mut self, p: &dyn Probe, now: Instant, force: bool) -> GateState {
         let iface = match route_check(p) {
             Ok(i) => i,
             Err(f) => return self.fail(f),
         };
-        // The tunnel and its addresses: a reconnect to another server changes them.
-        let route = format!("{iface} {:?}", p.addrs(&iface));
-        let fresh = self
-            .exit
-            .as_ref()
-            .filter(|e| !force && e.route == route && now.duration_since(e.at) < EXIT_EVERY);
-        let ip = match fresh {
-            Some(e) => e.ip,
-            None => match exit_check(p) {
-                Ok(ip) => {
-                    self.exit = Some(Exit { route, at: now, ip });
-                    ip
-                }
-                Err(f) => return self.fail(f),
-            },
-        };
-        GateState::pass(iface, ip)
+        let route = route_key(p, &iface);
+        if let Plan::Pass(ip) = self.plan(&iface, &route, now, force) {
+            return GateState::pass(iface, ip);
+        }
+        match exit_check(p) {
+            Ok(ip) => {
+                self.store(iface.clone(), route, now, ip);
+                GateState::pass(iface, ip)
+            }
+            Err(f) => self.fail(f),
+        }
     }
 
     fn fail(&mut self, f: Fail) -> GateState {
@@ -59,73 +101,223 @@ impl Schedule {
     }
 }
 
+/// A recheck failure that says nothing about the VPN: the request didn't get through.
+fn transient(f: Fail) -> bool {
+    matches!(f, Fail::Offline | Fail::Unchecked)
+}
+
 type Hook = Box<dyn Fn(&GateState) + Send + Sync>;
+
+/// The gate's answers so far: the cache, the last answer and how many failures there have been.
+#[derive(Default)]
+struct State {
+    sched: Schedule,
+    last: Option<GateState>,
+    fails: u64,
+    rechecking: bool,
+}
 
 /// The gate for the whole app: its last answer, who is playing through it, and who to tell.
 pub struct Watch {
     probe: Box<dyn Probe + Send + Sync>,
     supported: bool,
-    state: Mutex<(Schedule, Option<GateState>)>,
-    holders: Mutex<HashSet<String>>,
-    on_change: Hook,
+    state: Mutex<State>,
+    /// One exit check at a time.
+    exiting: Mutex<()>,
+    /// Who plays through the gate, with the failure count when they passed.
+    holders: Mutex<HashMap<String, u64>>,
+    hooks: Mutex<Vec<Hook>>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl Watch {
     /// `supported` is false where the gate has no detection (Windows): it then never passes.
     pub fn new(probe: Box<dyn Probe + Send + Sync>, supported: bool, on_change: Hook) -> Self {
-        let (state, holders) = (Mutex::default(), Mutex::default());
         Watch {
             probe,
             supported,
-            state,
-            holders,
-            on_change,
+            state: Mutex::default(),
+            exiting: Mutex::default(),
+            holders: Mutex::default(),
+            hooks: Mutex::new(vec![on_change]),
         }
     }
 
-    /// The gate now. Tells `on_change` when the answer differs from the last one.
-    pub fn now(&self, force: bool) -> GateState {
-        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let s = if self.supported {
-            g.0.tick(&*self.probe, Instant::now(), force)
-        } else {
-            GateState::fail(Fail::Unchecked)
+    /// Records an answer and tells every hook when it differs from the last one. Returns the
+    /// answer and the failure count after it. Hooks run under the state lock, so they hear the
+    /// answers in order; they must not call back into the gate.
+    fn publish(&self, r: Result<(String, IpAddr), Fail>) -> (GateState, u64) {
+        self.record(&mut lock(&self.state), r)
+    }
+
+    fn record(&self, g: &mut State, r: Result<(String, IpAddr), Fail>) -> (GateState, u64) {
+        let s = match r {
+            Ok((iface, ip)) => GateState::pass(iface, ip),
+            Err(f) => {
+                g.fails += 1;
+                g.sched.fail(f)
+            }
         };
-        let changed = g.1.as_ref() != Some(&s);
-        g.1 = Some(s.clone());
-        drop(g);
-        if changed {
-            (self.on_change)(&s);
+        if g.last.as_ref() != Some(&s) {
+            g.last = Some(s.clone());
+            for hook in lock(&self.hooks).iter() {
+                hook(&s);
+            }
         }
-        s
+        (s, g.fails)
+    }
+
+    fn route(&self) -> Result<(String, String), Fail> {
+        if !self.supported {
+            return Err(Fail::Unchecked);
+        }
+        let iface = route_check(&*self.probe)?;
+        let route = route_key(&*self.probe, &iface);
+        Ok((iface, route))
+    }
+
+    /// The full gate: route checks, then the exit check when due, run outside the state lock so
+    /// rounds go on meanwhile. `patient` retries once a failure without a verdict.
+    fn check(&self, force: bool, patient: bool) -> (GateState, u64) {
+        let before = lock(&self.state).fails;
+        let (iface, route) = match self.route() {
+            Ok(r) => r,
+            Err(f) => return self.publish(Err(f)),
+        };
+        let plan = || {
+            lock(&self.state)
+                .sched
+                .plan(&iface, &route, Instant::now(), force)
+        };
+        if let Plan::Pass(ip) = plan() {
+            return self.pass_since(before, iface, ip);
+        }
+        let mut tries = if patient { 2 } else { 1 };
+        let ip = loop {
+            let one = lock(&self.exiting);
+            // Another caller may have just run it.
+            if let (false, Plan::Pass(ip)) = (force, plan()) {
+                return self.pass_since(before, iface, ip);
+            }
+            let r = exit_check(&*self.probe);
+            drop(one);
+            tries -= 1;
+            match r {
+                Ok(ip) => break ip,
+                Err(f) if tries > 0 && transient(f) => std::thread::sleep(RETRY),
+                Err(f) => return self.publish(Err(f)),
+            }
+        };
+        // The route may have changed during the exit check: pass only on the one it checked.
+        match self.route() {
+            Ok((i, r)) if i == iface && r == route => {}
+            // Another address on the same tunnel: the last answer stands and a round rechecks.
+            Ok((i, _)) if patient && i == iface => return self.current(),
+            Ok(_) => return self.publish(Err(Fail::Unchecked)),
+            Err(f) => return self.publish(Err(f)),
+        }
+        let mut g = lock(&self.state);
+        if g.fails != before {
+            return current(&g);
+        }
+        g.sched.store(iface.clone(), route, Instant::now(), ip);
+        self.record(&mut g, Ok((iface, ip)))
+    }
+
+    /// A pass seen since failure number `before`. A failure published meanwhile (a dropped VPN
+    /// that may have come back) stands, so the pass is dropped; failures are always published.
+    fn pass_since(&self, before: u64, iface: String, ip: IpAddr) -> (GateState, u64) {
+        let mut g = lock(&self.state);
+        if g.fails != before {
+            return current(&g);
+        }
+        self.record(&mut g, Ok((iface, ip)))
+    }
+
+    fn current(&self) -> (GateState, u64) {
+        current(&lock(&self.state))
+    }
+
+    /// The gate now. `force` reruns the exit check ("Check again").
+    pub fn now(&self, force: bool) -> GateState {
+        self.check(force, false).0
     }
 
     /// A stream may start: the gate passes now, and `id` is watched until released.
     pub fn hold(&self, id: &str) -> GateState {
-        let s = self.now(false);
+        let (s, fails) = self.check(false, false);
         if s.ok {
-            self.holders().insert(id.to_string());
+            lock(&self.holders).insert(id.to_string(), fails);
         }
         s
     }
 
     pub fn release(&self, id: &str) {
-        self.holders().remove(id);
+        lock(&self.holders).remove(id);
     }
 
-    fn holders(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
-        self.holders.lock().unwrap_or_else(|e| e.into_inner())
+    /// Every hold that passed before failure number `fails` ends.
+    pub(super) fn drop_holds(&self, fails: u64) {
+        lock(&self.holders).retain(|_, at| *at >= fails);
     }
 
-    /// One round: while anything plays, recheck. A failure reaches every player through
-    /// `on_change`, and nothing stays held, so the next stream must pass the gate again.
-    pub fn round(&self) {
-        if self.holders().is_empty() {
+    #[cfg(test)]
+    pub(super) fn held(&self) -> Vec<String> {
+        lock(&self.holders).keys().cloned().collect()
+    }
+
+    /// One round while anything plays: the route checks only. A due exit check runs on its own
+    /// thread and the last pass stands until it answers; a new tunnel fails until checked. A
+    /// failure reaches every player through the hooks and ends every hold that passed before it.
+    pub fn round(self: &Arc<Self>) {
+        if lock(&self.holders).is_empty() {
             return;
         }
-        if !self.now(false).ok {
-            self.holders().clear();
+        let before = lock(&self.state).fails;
+        let (s, fails) = match self.route() {
+            Err(f) => self.publish(Err(f)),
+            Ok((iface, route)) => {
+                let plan = lock(&self.state)
+                    .sched
+                    .plan(&iface, &route, Instant::now(), false);
+                match plan {
+                    Plan::Pass(ip) => self.pass_since(before, iface, ip),
+                    Plan::Due(ip) => {
+                        self.recheck();
+                        self.pass_since(before, iface, ip)
+                    }
+                    Plan::Check => {
+                        let failed = self.publish(Err(Fail::Unchecked));
+                        self.recheck();
+                        failed
+                    }
+                }
+            }
+        };
+        if !s.ok {
+            self.drop_holds(fails);
         }
+    }
+
+    /// Runs the exit check on its own thread, unless one is already running.
+    fn recheck(self: &Arc<Self>) {
+        let mut g = lock(&self.state);
+        if g.rechecking {
+            return;
+        }
+        g.rechecking = true;
+        drop(g);
+        let w = Arc::clone(self);
+        std::thread::spawn(move || {
+            let _done = Rechecked(&w);
+            let (s, fails) = w.check(false, true);
+            if !s.ok {
+                w.drop_holds(fails);
+            }
+        });
     }
 
     /// Runs a round every `every` for the life of the app.
@@ -135,6 +327,24 @@ impl Watch {
             std::thread::sleep(every);
             w.round();
         });
+    }
+}
+
+/// The last answer, or `unchecked` before the first.
+fn current(g: &State) -> (GateState, u64) {
+    let last = g.last.clone();
+    (
+        last.unwrap_or_else(|| GateState::fail(Fail::Unchecked)),
+        g.fails,
+    )
+}
+
+/// Lets the next round start a recheck, even when this one panicked.
+struct Rechecked<'a>(&'a Watch);
+
+impl Drop for Rechecked<'_> {
+    fn drop(&mut self) {
+        lock(&self.0.state).rechecking = false;
     }
 }
 

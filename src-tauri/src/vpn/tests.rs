@@ -1,4 +1,4 @@
-use super::watch::{Schedule, Watch};
+use super::watch::{Plan, Schedule, Watch};
 use super::*;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -557,18 +557,54 @@ fn the_exit_check_reruns_after_5_minutes_a_route_change_or_check_again() {
     let moved = p.clone().addr("utun4", "10.2.0.9");
     sched.tick(&moved, t0 + Duration::from_secs(305), false);
     assert_eq!(runs(), 4, "the tunnel's addresses changed");
-    let down = p.clone().route("1.1.1.1", "en0");
+    sched.tick(&moved, t0 + Duration::from_secs(306), false);
+    assert_eq!(runs(), 4, "the new addresses passed");
+    let down = moved.clone().route("1.1.1.1", "en0");
     assert!(!sched.tick(&down, t0 + Duration::from_secs(307), false).ok);
-    assert!(sched.tick(&p, t0 + Duration::from_secs(309), false).ok);
-    assert_eq!(runs(), 5, "the VPN came back");
+    assert!(sched.tick(&moved, t0 + Duration::from_secs(309), false).ok);
+    assert_eq!(
+        runs(),
+        5,
+        "a drop clears the pass, so the VPN coming back reruns it"
+    );
 }
 
-/// A system the test changes while the watch runs.
-struct Live(Mutex<Fake>);
+/// A system the test changes while the watch runs: `delay` slows the tunnel trace, and `flaky`
+/// fails that many tunnel traces.
+struct Live {
+    sys: Mutex<Fake>,
+    delay: Mutex<Duration>,
+    flaky: AtomicUsize,
+}
 
 impl Live {
+    fn new(f: Fake) -> Arc<Live> {
+        let (sys, delay, flaky) = (Mutex::new(f), Mutex::default(), AtomicUsize::new(0));
+        Arc::new(Live { sys, delay, flaky })
+    }
     fn get(&self) -> Fake {
-        self.0.lock().unwrap().clone()
+        self.sys.lock().unwrap().clone()
+    }
+    fn set(&self, f: impl FnOnce(&mut Fake)) {
+        f(&mut self.sys.lock().unwrap());
+    }
+}
+
+/// A watch on `sys` and the reasons its hook heard, in order.
+type Heard = Arc<Mutex<Vec<Option<Fail>>>>;
+
+fn watched(sys: &Arc<Live>) -> (Arc<Watch>, Heard) {
+    let events = Arc::new(Mutex::new(vec![]));
+    let seen = Arc::clone(&events);
+    let on_change = Box::new(move |s: &GateState| seen.lock().unwrap().push(s.reason));
+    let w = Arc::new(Watch::new(Box::new(Arc::clone(sys)), true, on_change));
+    (w, events)
+}
+
+fn wait_for(done: impl Fn() -> bool, limit: Duration) {
+    let start = Instant::now();
+    while !done() && start.elapsed() < limit {
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -595,6 +631,17 @@ impl Probe for Arc<Live> {
         false
     }
     fn trace(&self, v6: bool, bind: Option<&str>) -> Result<IpAddr, TraceErr> {
+        if bind.is_none() {
+            std::thread::sleep(*self.delay.lock().unwrap());
+            let fail = |n: usize| n.checked_sub(1);
+            if self
+                .flaky
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, fail)
+                .is_ok()
+            {
+                return Err(TraceErr::Net);
+            }
+        }
         Probe::trace(&self.get(), v6, bind)
     }
 }
@@ -607,25 +654,21 @@ impl Fake {
 
 #[test]
 fn a_vpn_that_drops_mid_play_stops_everything_within_a_round() {
-    let sys = Arc::new(Live(Mutex::new(vpn())));
-    let events = Arc::new(Mutex::new(vec![]));
-    let seen = Arc::clone(&events);
-    let on_change = Box::new(move |s: &GateState| seen.lock().unwrap().push(s.reason));
-    let w = Arc::new(Watch::new(Box::new(Arc::clone(&sys)), true, on_change));
+    let sys = Live::new(vpn());
+    let (w, events) = watched(&sys);
     let heard = || events.lock().unwrap().clone();
     assert!(w.hold("player").ok);
     w.spawn(Duration::from_millis(20));
-    sys.0.lock().unwrap().addrs.remove("utun4");
-    let start = Instant::now();
-    while heard().len() < 2 && start.elapsed() < Duration::from_secs(2) {
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    sys.set(|f| {
+        f.addrs.remove("utun4");
+    });
+    wait_for(|| heard().len() >= 2, Duration::from_secs(2));
     assert_eq!(
         heard(),
         [None, Some(Fail::NoVpn)],
         "the player heard the drop"
     );
-    *sys.0.lock().unwrap() = vpn();
+    sys.set(|f| *f = vpn());
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(heard().len(), 2, "nothing is held now, so the rounds stop");
 }
@@ -639,6 +682,7 @@ fn nothing_holds_the_gate_while_it_fails_or_where_it_cannot_check() {
     });
     let off = Watch::new(Box::new(vpn().route("1.1.1.1", "en0")), true, on_change);
     assert_eq!(off.hold("player").reason, Some(Fail::NoVpn));
+    let off = Arc::new(off);
     off.round();
     off.round();
     assert_eq!(
@@ -648,4 +692,146 @@ fn nothing_holds_the_gate_while_it_fails_or_where_it_cannot_check() {
     );
     let windows = Watch::new(Box::new(vpn()), false, Box::new(|_| {}));
     assert_eq!(windows.now(false).reason, Some(Fail::Unchecked));
+}
+
+#[test]
+fn a_due_exit_check_waits_on_this_tunnel_and_a_new_tunnel_checks_first() {
+    let mut sched = Schedule::default();
+    let (p, t0) = (vpn(), Instant::now());
+    assert!(sched.tick(&p, t0, false).ok);
+    let ip = ip("185.65.134.20");
+    let at = |s: u64| t0 + Duration::from_secs(s);
+    assert_eq!(
+        sched.plan("utun4", "utun4 [10.2.0.2]", at(2), false),
+        Plan::Pass(ip)
+    );
+    assert_eq!(
+        sched.plan("utun4", "utun4 [10.2.0.2]", at(301), false),
+        Plan::Due(ip)
+    );
+    assert_eq!(
+        sched.plan("utun4", "utun4 [10.2.0.9]", at(2), false),
+        Plan::Due(ip)
+    );
+    assert_eq!(
+        sched.plan("utun5", "utun5 [10.2.0.2]", at(2), false),
+        Plan::Check
+    );
+    assert_eq!(
+        sched.plan("utun4", "utun4 [10.2.0.2]", at(2), true),
+        Plan::Check
+    );
+}
+
+#[test]
+fn rounds_keep_checking_routes_while_a_slow_exit_check_runs() {
+    let sys = Live::new(vpn());
+    let (w, events) = watched(&sys);
+    assert!(w.hold("player").ok);
+    *sys.delay.lock().unwrap() = Duration::from_secs(2);
+    w.spawn(Duration::from_millis(20));
+    // A new address on the same tunnel: the exit check is due and runs slowly on its own thread.
+    sys.set(|f| *f = f.clone().addr("utun4", "10.2.0.9"));
+    std::thread::sleep(Duration::from_millis(100));
+    let dropped = Instant::now();
+    sys.set(|f| *f = f.clone().route("1.1.1.1", "en0"));
+    wait_for(|| events.lock().unwrap().len() >= 2, Duration::from_secs(3));
+    assert_eq!(events.lock().unwrap()[..], [None, Some(Fail::NoVpn)]);
+    assert!(
+        dropped.elapsed() < Duration::from_millis(500),
+        "heard within a round, not after the 2 s exit check"
+    );
+}
+
+#[test]
+fn a_recheck_that_fails_without_a_verdict_retries_before_stopping_playback() {
+    let sys = Live::new(vpn());
+    let (w, events) = watched(&sys);
+    assert!(w.hold("player").ok);
+    sys.flaky.store(1, Ordering::SeqCst);
+    sys.set(|f| *f = f.clone().addr("utun4", "10.2.0.9"));
+    w.round();
+    wait_for(
+        || sys.flaky.load(Ordering::SeqCst) == 0,
+        Duration::from_secs(1),
+    );
+    std::thread::sleep(RETRY_TEST);
+    assert_eq!(
+        events.lock().unwrap()[..],
+        [None],
+        "no stop for one lost request"
+    );
+    assert_eq!(w.held(), ["player"]);
+}
+
+#[test]
+fn a_hold_that_passes_after_a_failure_outlives_that_failure() {
+    let sys = Live::new(vpn());
+    let (w, _) = watched(&sys);
+    assert!(w.hold("player").ok);
+    sys.set(|f| *f = f.clone().route("1.1.1.1", "en0"));
+    w.round();
+    assert!(w.held().is_empty(), "the drop ended the hold");
+    sys.set(|f| *f = vpn());
+    assert!(
+        w.hold("player").ok,
+        "the VPN came back and the player held again"
+    );
+    // A round that saw the drop clears late: holds from before failure 1 end, the new one stays.
+    w.drop_holds(1);
+    assert_eq!(w.held(), ["player"]);
+}
+
+/// Longer than the watch's one retry after a lost request.
+const RETRY_TEST: Duration = Duration::from_millis(1500);
+
+#[test]
+fn a_failure_during_a_recheck_stands_and_clears_the_pass() {
+    let sys = Live::new(vpn());
+    let (w, events) = watched(&sys);
+    let exits = Arc::clone(&sys.get().exits);
+    assert!(w.hold("player").ok);
+    *sys.delay.lock().unwrap() = Duration::from_millis(400);
+    sys.set(|f| *f = f.clone().addr("utun4", "10.2.0.9"));
+    w.round();
+    std::thread::sleep(Duration::from_millis(100));
+    sys.set(|f| *f = f.clone().route("1.1.1.1", "en0"));
+    w.round();
+    // The VPN comes back before the slow recheck answers; its pass is older than the drop.
+    sys.set(|f| *f = f.clone().route("1.1.1.1", "utun4"));
+    std::thread::sleep(Duration::from_millis(700));
+    assert_eq!(events.lock().unwrap()[..], [None, Some(Fail::NoVpn)]);
+    *sys.delay.lock().unwrap() = Duration::ZERO;
+    let n = exits.load(Ordering::SeqCst);
+    assert!(w.hold("player").ok);
+    assert_eq!(
+        exits.load(Ordering::SeqCst),
+        n + 1,
+        "the drop cleared the pass, so the next hold checks the exit again"
+    );
+}
+
+#[test]
+fn another_address_during_a_recheck_keeps_playing_and_checks_again() {
+    let sys = Live::new(vpn());
+    let (w, events) = watched(&sys);
+    let exits = Arc::clone(&sys.get().exits);
+    assert!(w.hold("player").ok);
+    *sys.delay.lock().unwrap() = Duration::from_millis(300);
+    sys.set(|f| *f = f.clone().addr("utun4", "10.2.0.9"));
+    w.round();
+    std::thread::sleep(Duration::from_millis(100));
+    sys.set(|f| *f = f.clone().addr("utun4", "10.2.0.10"));
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(events.lock().unwrap()[..], [None], "no stop");
+    assert_eq!(w.held(), ["player"]);
+    *sys.delay.lock().unwrap() = Duration::ZERO;
+    let n = exits.load(Ordering::SeqCst);
+    w.round();
+    wait_for(|| exits.load(Ordering::SeqCst) > n, Duration::from_secs(1));
+    assert_eq!(
+        exits.load(Ordering::SeqCst),
+        n + 1,
+        "the next round rechecked"
+    );
 }
