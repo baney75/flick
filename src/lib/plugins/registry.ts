@@ -277,7 +277,10 @@ export async function checkUpdates(now = Date.now(), deps: Deps = live, force = 
       } else {
         stopPlugin(rec.id)
         const { pending: _, ...rest } = rec
-        await save({ ...rest, code, sha256: sum, manifest: c.manifest, checkedAt: now })
+        const next = { ...rest, code, sha256: sum, manifest: c.manifest, checkedAt: now }
+        await save(next)
+        // An update may drop hosts or tools; the desktop app must stop allowing them now, not at the next launch.
+        await registerHosts(next).catch(() => {})
       }
     } catch (e) {
       await save({ ...rec, checkedAt: now })

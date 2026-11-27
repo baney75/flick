@@ -157,7 +157,9 @@ let rows = m.catalogs.filter((c) => !c.search)
 if (m.has.userCatalogs) {
   const dyn = await call('userCatalogs', [], V.validateCatalogDefs, 'userCatalogs()')
   if (dyn) {
-    check(dyn.length > 0, `userCatalogs(): ${dyn.length} rows`)
+    // Rows that depend on the user can be none: signed out, or no list filled yet (#157). A wrong shape still fails above.
+    check(true, `userCatalogs(): ${dyn.length} rows`)
+    if (!dyn.length) console.log('     note: no user rows; sign in or fill a list to check them')
     rows = [...rows, ...dyn.filter((c) => !c.search)]
   }
 }
