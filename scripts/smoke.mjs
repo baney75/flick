@@ -254,6 +254,26 @@ try {
   await page.getByText('Drop anything here to play it.').waitFor()
   check(Date.now() - t0 < 3000, `first screen in ${Date.now() - t0} ms`)
   await page.screenshot({ path: 'test-media/shots/home-empty.png' })
+  // SPEC-playback case 12: on the website an MKV link the browser cannot open says so at once, with no
+  // spinner, and is never fetched. Chromium opens Matroska by type, so this page answers as Safari does.
+  let mkvFetched = 0
+  await page.route('**/never-fetched.mkv', (route) => { mkvFetched++; return route.abort() })
+  await page.evaluate(() => {
+    const own = HTMLMediaElement.prototype.canPlayType
+    window.__ownCanPlayType = own
+    HTMLMediaElement.prototype.canPlayType = function (t) { return t === 'video/x-matroska' ? '' : own.call(this, t) }
+  })
+  {
+    await page.getByLabel('Stream URL').fill(`${BASE}/never-fetched.mkv`)
+    await page.getByRole('button', { name: 'Play', exact: true }).click()
+    const card = page.locator('.player .error-card')
+    check(await card.getByText('This file plays in the Flick desktop app.').waitFor({ timeout: 3000 }).then(() => true, () => false)
+      && !(await page.locator('.player .status .spinner').count()) && mkvFetched === 0
+      && await card.getByRole('button', { name: 'Try another source' }).isVisible(), 'a website MKV link says it plays in the desktop app, with no spinner and no fetch')
+    await card.getByRole('button', { name: 'Try another source' }).click()
+    await page.locator('.player').waitFor({ state: 'detached' })
+    await page.evaluate(() => { HTMLMediaElement.prototype.canPlayType = window.__ownCanPlayType })
+  }
   await page.goto(`${BASE}/#/library`)
   const addBtn = page.locator('.empty .btn.primary', { hasText: 'Add a folder' })
   await addBtn.waitFor()

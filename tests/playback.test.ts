@@ -1,6 +1,6 @@
 // SPEC-playback cases 4, 5 and 6: where a seek goes, the remux run's clock, and the probe cache.
 import { describe, expect, it, vi } from 'vitest'
-import { convertLine, DWELL_MS, intent, planSeek, probeStream, Remux, SLOW_SERVER, writtenOf, type StreamProbe } from '../src/lib/playback'
+import { convertLine, DWELL_MS, intent, planSeek, playsHere, probeStream, Remux, SLOW_SERVER, writtenOf, type StreamProbe } from '../src/lib/playback'
 
 const mkv: StreamProbe = {
   duration: 5700, container: 'matroska,webm', video: 'h264', audio: 'ac3', channels: 6,
@@ -128,5 +128,18 @@ describe('intent (rule 1: probe early, never on sight)', () => {
     const h = intent(() => n++, () => 10_000)
     h.onFocus()
     expect(n).toBe(0)
+  })
+})
+
+describe('playsHere (rule 8, case 12)', () => {
+  const safari = (t: string) => (t === 'video/mp4' || t === 'video/quicktime' ? 'maybe' : '')
+  it('an MKV link on a browser that cannot open MKV does not play here', () => {
+    expect(playsHere('https://x/a/Movie.2024.mkv?token=1', safari)).toBe(false)
+    expect(playsHere('/films/a.AVI', safari)).toBe(false)
+  })
+  it('what the browser can open, or a link with no known extension, plays', () => {
+    expect(playsHere('https://x/a.mp4', safari)).toBe(true)
+    expect(playsHere('https://x/resolve/abc/123', safari)).toBe(true)
+    expect(playsHere('https://x/a.mkv', () => 'maybe')).toBe(true)
   })
 })
