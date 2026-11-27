@@ -205,6 +205,9 @@ try {
       if (Date.now() > end) { notes.push(`${size}: the app saved no copy of the seeded items within 30 s, so each run starts as the first after an update`); break }
       await new Promise((r) => setTimeout(r, 250))
     }
+    // Playwright's Linux WebKit quits when its last page closes, and each run below closes its page
+    // before the next opens: one blank page stays open until the context closes.
+    await ctx.newPage()
     await first.close()
     console.log(`${size}: seeded ${n} items, ${seed.thumbs.length} thumbnails, a plugin with ${seed.library.length} titles, and one with a 1,000 row shelf`)
 
