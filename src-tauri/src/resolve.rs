@@ -1,7 +1,8 @@
 // SPEC-playback-2 rule 1: an http(s) stream is opened once, here, before anything else reads it. A
 // debrid addon link adds the torrent on its first GET and answers with a redirect only once the file is
 // ready, often 10 to 30 s later, so this waits up to 90 s for the first byte. The probe, the remux and
-// direct play then all read the final URL, so the slow resolve is paid once. Kept for the session.
+// direct play then all read the final URL, so the slow resolve is paid once. A final URL is reused for
+// 10 minutes: debrid links are signed and expire, so a later play resolves again.
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -13,6 +14,8 @@ use ureq::ResponseExt;
 use super::basic;
 
 pub const RESOLVE_LIMIT: Duration = Duration::from_secs(90);
+/// How long a resolve is reused: long enough for a warm-up and Play, short of a debrid link expiring.
+pub const FRESH: Duration = Duration::from_secs(600);
 const MAX_REDIRECTS: u32 = 10;
 
 pub fn no_answer() -> String {
@@ -64,7 +67,8 @@ pub fn resolve(input: &str, auth: Option<&str>, limit: Duration) -> Result<Resol
         Err(e) => return Err(format!("The server could not be reached ({e}).")),
     };
     let s = r.status();
-    if s.as_u16() >= 400 {
+    // 416: the server refuses the range, not the stream; a plain read still plays.
+    if s.as_u16() >= 400 && s.as_u16() != 416 {
         let reason = s.canonical_reason().map(|w| format!(" {w}"));
         return Err(format!(
             "The server answered {}{}.",
@@ -97,9 +101,22 @@ pub fn resolve(input: &str, auth: Option<&str>, limit: Duration) -> Result<Resol
     })
 }
 
-/// Resolves for this session, by source URL and login.
+/// Recent resolves, by source URL and login, with when each was made.
 #[derive(Default)]
-pub struct Resolves(Mutex<HashMap<String, Resolved>>);
+pub struct Resolves(Mutex<HashMap<String, (Instant, Resolved)>>);
+
+impl Resolves {
+    /// The resolve of `key` made within FRESH, if any.
+    fn fresh(&self, key: &str) -> Option<Resolved> {
+        let m = self.0.lock().unwrap();
+        m.get(key)
+            .filter(|(at, _)| at.elapsed() < FRESH)
+            .map(|(_, r)| r.clone())
+    }
+    fn keep(&self, key: String, r: &Resolved, at: Instant) {
+        self.0.lock().unwrap().insert(key, (at, r.clone()));
+    }
+}
 
 #[tauri::command]
 pub async fn resolve_stream(
@@ -112,11 +129,11 @@ pub async fn resolve_stream(
         let auth = basic(&user.unwrap_or_default(), &pass.unwrap_or_default());
         let key = format!("{url}\n{}", auth.as_deref().unwrap_or(""));
         let st = app.state::<Resolves>();
-        if let Some(r) = st.0.lock().unwrap().get(&key) {
-            return Ok(r.clone());
+        if let Some(r) = st.fresh(&key) {
+            return Ok(r);
         }
         let r = resolve(&url, auth.as_deref(), RESOLVE_LIMIT)?;
-        st.0.lock().unwrap().insert(key, r.clone());
+        st.keep(key, &r, Instant::now());
         Ok(r)
     })
     .await
@@ -200,6 +217,37 @@ mod tests {
         );
         let e = resolve(&format!("{}/addon/3", s.base), None, RESOLVE_LIMIT).unwrap_err();
         assert_eq!(e, "The server answered 404 Not Found.");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // Review F1 of #165: a resolve is reused for 10 minutes, then made again (debrid links expire).
+    #[test]
+    fn a_resolve_is_reused_for_ten_minutes_then_made_again() {
+        assert_eq!(FRESH, Duration::from_secs(600));
+        let st = Resolves::default();
+        let r = Resolved {
+            url: "https://cdn.example/a.mkv".into(),
+            ..Default::default()
+        };
+        st.keep("k".into(), &r, Instant::now());
+        assert_eq!(st.fresh("k"), Some(r.clone()));
+        st.keep(
+            "k".into(),
+            &r,
+            Instant::now() - FRESH - Duration::from_secs(1),
+        );
+        assert_eq!(st.fresh("k"), None);
+        assert_eq!(st.fresh("other"), None);
+    }
+
+    // Review F5 of #165: a server that answers the range with 416 still resolves, as one without ranges.
+    #[test]
+    fn a_refused_range_still_resolves() {
+        let dir = scratch("416");
+        let s = serve_routes(dir.clone(), vec![("live/7", Route::RangeRefused)]);
+        let r = resolve(&format!("{}/live/7", s.base), None, RESOLVE_LIMIT).unwrap();
+        assert_eq!((r.status, r.ranges), (416, false));
+        assert_eq!(r.url, format!("{}/live/7", s.base));
         let _ = std::fs::remove_dir_all(dir);
     }
 

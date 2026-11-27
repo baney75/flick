@@ -348,6 +348,8 @@ pub mod fixtures {
         Garbage,
         /// The file's headers, then nothing more.
         StallBody,
+        /// 416 to any range.
+        RangeRefused,
     }
 
     pub fn redirect(after: Duration, to: &str) -> Route {
@@ -438,6 +440,10 @@ pub mod fixtures {
                         Some(Route::StallBody) => {
                             let _ = w.write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Type: video/x-matroska\r\nContent-Range: bytes 0-0/50000000\r\nAccept-Ranges: bytes\r\nContent-Length: 50000000\r\n\r\n");
                             std::thread::sleep(Duration::from_secs(30));
+                            return;
+                        }
+                        Some(Route::RangeRefused) => {
+                            let _ = w.write_all(b"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */0\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                             return;
                         }
                         None => {}
