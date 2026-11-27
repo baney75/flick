@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { items, loaded, playItem, shows, go, notify, reloadItems, progress, episodeLabel, clearProgress } from '../lib/store'
 import { ItemCard, VirtualGrid, VirtualList, useThumb } from '../components/Card'
 import { TitleCard } from '../components/Titles'
@@ -41,11 +41,18 @@ export function Library({ start }: { start?: Tab } = {}) {
   const picked = useRef(!!(start || saved))
   useEffect(() => { if (!picked.current && cont.length) { picked.current = true; setTab('continue') } }, [cont.length])
   useEffect(() => { if (start) setTab(start) }, [start])
-  const [q, setQ] = useState('')
-  const [sort, setSort] = useState<Sort>('added')
+  // The search and the sorts last the session, so Back to Library finds them as they were.
+  const [q, setQ] = useState(() => sessionGet('flick.library.q') ?? '')
+  const [sort, setSort] = useState<Sort>(() => (sessionGet('flick.library.sort') as Sort | null) ?? 'added')
   // A shelf keeps its own order until the Sort menu is used on that shelf: a sort picked on another tab
   // does not carry in.
-  const [shelfSorts, setShelfSorts] = useState<Partial<Record<ShelfKey, Sort>>>({})
+  const [shelfSorts, setShelfSorts] = useState<Partial<Record<ShelfKey, Sort>>>(() => JSON.parse(sessionGet('flick.library.shelfSorts') ?? '{}'))
+  // Saved as the change renders: a plain effect waits for the next paint, and Back before then lost it.
+  useLayoutEffect(() => {
+    sessionSet('flick.library.q', q)
+    sessionSet('flick.library.sort', sort)
+    sessionSet('flick.library.shelfSorts', JSON.stringify(shelfSorts))
+  }, [q, sort, shelfSorts])
   const [folders, setFolders] = useState<Folder[]>([])
   const [showFolders, setShowFolders] = useState(false)
   const [menu, setMenu] = useState<{ it: Item; x: number; y: number } | null>(null)
