@@ -66,7 +66,8 @@ export interface Debrid {
 /** A stream with SPEC-torrent rule 2's torrent in place of a playable url. */
 export type StreamIn = Omit<Stream, 'url'> & { url?: string; torrent?: { infoHash: string; fileIdx?: number } }
 
-const hostOf = (url: string) => { try { return new URL(url).hostname.toLowerCase() } catch { return '' } }
+// A fully qualified name's trailing dot is the same host.
+const hostOf = (url: string) => { try { return new URL(url).hostname.toLowerCase().replace(/\.+$/, '') } catch { return '' } }
 const onHost = (host: string, hosts: string[]) => !!host && hosts.some((h) => host === h || host.endsWith(`.${h}`))
 
 /** How a stream's bytes arrive: a torrent through a service or peers, a link on a debrid host, or direct. */

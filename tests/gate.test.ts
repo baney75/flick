@@ -28,9 +28,9 @@ const hash = 'A'.repeat(40)
 
 describe('how a stream arrives', () => {
   it('a link on a service download host is that service, subdomains too (SPEC-debrid rule 6)', () => {
-    const cs = streamCandidates('k', [{ url: 'https://cdn3.torbox.app/f/1.mkv' }, { url: 'https://dl.other.net/x' }, { url: 'https://nottorbox.app/x' }, { url: 'https://cdn.example/x' }], { debrid: debrid() })
+    const cs = streamCandidates('k', [{ url: 'https://cdn3.torbox.app/f/1.mkv' }, { url: 'https://dl.other.net/x' }, { url: 'https://dl.other.net./x' }, { url: 'https://nottorbox.app/x' }, { url: 'https://cdn.example/x' }], { debrid: debrid() })
     expect(cs.map((c) => [c.via, c.service, c.vpnOptional])).toEqual([
-      ['debrid-cached', 'org.torbox', true], ['debrid-cached', 'org.other', false], ['direct', undefined, undefined], ['direct', undefined, undefined],
+      ['debrid-cached', 'org.torbox', true], ['debrid-cached', 'org.other', false], ['debrid-cached', 'org.other', false], ['direct', undefined, undefined], ['direct', undefined, undefined],
     ])
   })
   it('a torrent with no service set up is peer to peer', () =>
@@ -79,11 +79,13 @@ describe('the built-in engine by platform', () => {
 
 describe('playing through the gate', () => {
   const req = (key: string) => ({ key, title: 'T', kind: 'video' as const, url: 'https://dl.other.net/x', ref: { t: 'url' as const, url: 'x' } })
-  const released = (id: string) => shell.calls.some(([c, a]) => c === 'vpn_gate_release' && (a as { id: string }).id === id)
+  // Holds are per tap: `${key}#${tap}`.
+  const sent = (cmd: string, key: string) => shell.calls.some(([c, a]) => c === cmd && (a as { id: string }).id.startsWith(`${key}#`))
+  const released = (key: string) => sent('vpn_gate_release', key)
   it('holds before it plays; a drop stops the player, says why and lets the hold go', async () => {
     shell.answer = { ok: true }
     expect((await holdGate('a')).ok).toBe(true)
-    expect(shell.calls).toContainEqual(['vpn_gate_hold', { id: 'a' }])
+    expect(sent('vpn_gate_hold', 'a')).toBe(true)
     nowPlaying.value = req('a')
     shell.emit!({ ok: false, message: 'No VPN' })
     expect(nowPlaying.value).toBeNull()
@@ -128,6 +130,20 @@ describe('playing through the gate', () => {
     expect(await slow).toEqual({ ok: false, message: VPN_DROPPED })
     expect(released('f')).toBe(true)
   })
+  it('two taps whose holds answer together: only the newer plays and stays held, even on the same video', async () => {
+    shell.answer = { ok: true }
+    nowPlaying.value = null
+    const { tap, current } = await import('../src/lib/picking')
+    const t1 = tap(), first = holdGate('v', t1)
+    const t2 = tap(), second = holdGate('v', t2)
+    const [g1, g2] = await Promise.all([first, second])
+    expect([g1.ok, current(t1), g2.ok, current(t2)]).toEqual([false, false, true, true])
+    expect(shell.calls).toContainEqual(['vpn_gate_release', { id: `v#${t1}` }])
+    expect(shell.calls).not.toContainEqual(['vpn_gate_release', { id: `v#${t2}` }])
+    nowPlaying.value = req('v')
+    shell.emit!({ ok: false })
+    expect(nowPlaying.value).toBeNull()
+  })
   it('on the website there is no gate: it fails without asking', async () => {
     shell.desktop = false
     const before = shell.calls.length
@@ -135,12 +151,16 @@ describe('playing through the gate', () => {
     expect(shell.calls.length).toBe(before)
     shell.desktop = true
   })
-  it('with no way to hear a drop, nothing gated plays', async () => {
+  it('with no way to hear a drop, nothing gated plays, and the gate never reads as passing', async () => {
     vi.resetModules()
     shell.listenFails = true
+    shell.answer = { ok: true }
     const fresh = await import('../src/lib/picking')
+    fresh.watchGate()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(fresh.gate.value).toEqual({ ok: false, message: NO_WATCH })
     expect(await fresh.holdGate('j')).toEqual({ ok: false, message: NO_WATCH })
-    expect(shell.calls).not.toContainEqual(['vpn_gate_hold', { id: 'j' }])
+    expect(shell.calls.some(([c, a]) => c === 'vpn_gate_hold' && (a as { id: string }).id.startsWith('j#'))).toBe(false)
     shell.listenFails = false
   })
 })
@@ -169,8 +189,8 @@ describe('no gate on this platform', () => {
 })
 
 describe('installed services', () => {
-  it('their download hosts compare in lowercase, without a leading dot', () => {
-    installed.value = [{ id: 'org.x', kind: 'service', manifest: { name: 'X', vpnOptional: false, debridHosts: ['.DL.X.net'] } } as never]
+  it('their download hosts compare in lowercase, without leading or trailing dots', () => {
+    installed.value = [{ id: 'org.x', kind: 'service', manifest: { name: 'X', vpnOptional: false, debridHosts: ['.DL.X.net.'] } } as never]
     expect(debridNow().known).toEqual([{ id: 'org.x', vpnOptional: false, debridHosts: ['dl.x.net'] }])
     expect(streamCandidates('k', [{ url: 'https://a.dl.x.net/f' }], { debrid: debridNow() })[0].via).toBe('debrid-cached')
     installed.value = []

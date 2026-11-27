@@ -16,7 +16,7 @@ import type { CatalogDef, Meta, Stream, Video } from '../lib/plugins/validate'
 import { sections, qualityOf, hdrOf, sizeOf, downloadable } from '../lib/plugins/streams'
 import { rank, pickLine, subLangFor, needsGate, type Ranked } from '../lib/pick'
 import { streamCandidates } from '../lib/candidates'
-import { ctxNow, debridNow, deviceFor, holdGate, prefsNow, releaseGate, serviceName, shutFor, watchGate } from '../lib/picking'
+import { ctxNow, current, debridNow, deviceFor, holdGate, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
 import { langCode } from '../lib/release'
@@ -272,6 +272,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   const top = best ? streamOf(best) : null
 
   const start = async (s: Stream, startAt?: number) => {
+    const t = tap()
     // A stream behind the VPN gate never opens on a tap while the gate fails, nor outside its hold.
     const r = rowOf.get(s)
     const shut = shutBy(r)
@@ -290,9 +291,13 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     subs.sort((a, b) => want(b) - want(a))
     // The hold comes last, with nothing awaited between it and play, so a drop cannot slip between.
     if (gated(r)) {
-      const g = await holdGate(key)
-      if (!g.ok) { notify(g.message || 'Turn on your VPN'); return }
-    } else releaseGate()
+      const g = await holdGate(key, t)
+      if (!g.ok) { if (current(t)) notify(g.message || 'Turn on your VPN'); return }
+    } else {
+      // A newer tap plays instead of this one.
+      if (!current(t)) return
+      releaseGate()
+    }
     play({
       key,
       title: meta.name,

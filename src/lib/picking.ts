@@ -42,8 +42,14 @@ export const OUTSIDE_GATE = "Opens outside Flick, where the VPN gate can't cover
 export const NO_WATCH = "Flick can't watch the VPN right now, so it won't play this. Restart Flick and try again."
 /** Resolves true once the change event is heard, false if it cannot be; null before watchGate. */
 let listening: Promise<boolean> | null = null
-/** What plays through the gate now (a PlayRequest key), so a failure stops it. */
-let held: string | null = null
+/** What plays through the gate now: the shell's hold id and the PlayRequest key, so a failure stops it. */
+let held: { id: string; key: string } | null = null
+/** Taps on streams so far; a newer tap supersedes one still on its way to play. */
+let taps = 0
+/** A tap on a stream starts here, and carries its number to holdGate and play. */
+export const tap = () => ++taps
+/** Whether tap `t` is still the newest, so it may play. */
+export const current = (t: number) => t === taps
 /** Failures the change event has reported, so a hold in flight knows one came meanwhile. */
 let drops = 0
 
@@ -51,7 +57,7 @@ const release = (id: string) => { invoke('vpn_gate_release', { id }).catch(() =>
 
 /** Lets the held stream go: it stopped, or a stream that needs no gate replaced it. */
 export function releaseGate() {
-  if (held) release(held)
+  if (held) release(held.id)
   held = null
 }
 
@@ -68,24 +74,25 @@ function onGate(g: Gate) {
 
 export function watchGate() {
   if (listening || !isDesktop || isMobileApp) return
-  let heard = false
+  let heard = false, deaf = false
   listening = onDesktopEvent<Gate>('vpn-gate', (g) => { heard = true; onGate(g) }).then(() => true, () => {
     // No drop can reach a player, so nothing gated may play; the next page tries again.
+    deaf = true
     listening = null
     gate.value = { ok: false, message: NO_WATCH }
     return false
   })
   // The first answer, unless a change event already came with a newer one.
   invoke<Gate>('vpn_gate', { force: false }).then(
-    (g) => { if (!heard) gate.value = g },
-    (e) => { if (!heard) gate.value = { ok: false, message: String(e) } },
+    (g) => { if (!heard && !deaf) gate.value = g },
+    (e) => { if (!heard && !deaf) gate.value = { ok: false, message: String(e) } },
   )
 }
 
 // Leaving the held stream lets it go, so the next one must pass the gate again.
 effect(() => {
   const now = nowPlaying.value
-  if (held && now?.key !== held) releaseGate()
+  if (held && now?.key !== held.key) releaseGate()
 })
 
 /**
@@ -93,21 +100,28 @@ effect(() => {
  * fails and nothing plays. On the website and phones there is no gate, so it always fails. A drop
  * reported while the hold is on its way fails it too; the user presses Play again.
  */
-export async function holdGate(key: string): Promise<Gate> {
+export async function holdGate(key: string, t = tap()): Promise<Gate> {
   if (!isDesktop || isMobileApp) return { ok: false, message: DESKTOP_ONLY }
   watchGate()
   if (!(await listening)) return { ok: false, message: NO_WATCH }
+  // Each tap holds under its own id, so a stale tap letting go never frees a newer one's hold.
+  const id = `${key}#${t}`
   const seen = drops
-  const g = await invoke<Gate>('vpn_gate_hold', { id: key }).catch((e): Gate => ({ ok: false, message: String(e) }))
+  const g = await invoke<Gate>('vpn_gate_hold', { id }).catch((e): Gate => ({ ok: false, message: String(e) }))
+  // A newer tap won while this hold was on its way: it plays nothing and holds nothing.
+  if (!current(t)) {
+    if (g.ok) release(id)
+    return { ok: false, message: null }
+  }
   if (drops !== seen) {
-    if (g.ok) release(key)
+    if (g.ok) release(id)
     return { ok: false, message: VPN_DROPPED }
   }
   gate.value = g
   if (!g.ok) return g
   // The old hold goes only once the new one holds; a failed tap leaves what plays alone.
-  if (held && held !== key) release(held)
-  held = key
+  if (held) release(held.id)
+  held = { id, key }
   return g
 }
 
@@ -160,7 +174,7 @@ const services = () => installed.value.filter((p) => p.kind === 'service')
 export function debridNow(): Debrid {
   const known = services().map((p) => {
     const m = p.manifest as PluginManifest
-    return { id: p.id, vpnOptional: m.vpnOptional === true, debridHosts: (m.debridHosts ?? []).map((h) => h.toLowerCase().replace(/^\.+/, '')) }
+    return { id: p.id, vpnOptional: m.vpnOptional === true, debridHosts: (m.debridHosts ?? []).map((h) => h.toLowerCase().replace(/^\.+|\.+$/g, '')) }
   })
   return { known, order: [] }
 }
