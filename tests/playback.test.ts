@@ -1,6 +1,6 @@
 // SPEC-playback cases 4, 5 and 6: where a seek goes, the remux run's clock, and the probe cache.
 import { describe, expect, it, vi } from 'vitest'
-import { cardButtons, FRESH_MS, onMediaError, resolveStream, convertLine, cuesAt, messageOf, DWELL_MS, intent, NO_ANSWER, planSeek, planStream, playsDirectly, playsHere, probeStream, Remux, RESOLVE_LIMIT_S, SAFE, serverWait, warmProbe, writtenOf, type Resolved, type StreamProbe } from '../src/lib/playback'
+import { cardButtons, withServerFallback, FRESH_MS, onMediaError, resolveStream, convertLine, cuesAt, messageOf, DWELL_MS, intent, NO_ANSWER, planSeek, planStream, playsDirectly, playsHere, probeStream, Remux, RESOLVE_LIMIT_S, SAFE, serverWait, warmProbe, writtenOf, type Resolved, type StreamProbe } from '../src/lib/playback'
 
 const mkv: StreamProbe = {
   duration: 5700, container: 'matroska,webm', video: 'h264', audio: 'ac3', channels: 6,
@@ -289,6 +289,28 @@ describe('planStream (rules 1 and 2)', () => {
     expect(r.known).toBe(true)
     expect(r.duration(60)).toBe(7200)
     expect(r.clamp(9000, r.duration(60))).toBe(7199)
+  })
+  // Review r2 second-F5: WebKit gives a growing playlist an Infinity or NaN length; no seek may reach the shell as one.
+  it('a safe run never seeks to Infinity or NaN', async () => {
+    const f = fake()
+    const r = new Remux('https://cdn.example/x.mkv', SAFE, '', '', f.call, true)
+    const opened = r.open(2400)
+    f.answer(0)
+    await opened
+    expect(r.duration(Infinity)).toBe(2400)
+    expect(r.duration(NaN)).toBe(2400)
+    expect(r.clamp(Infinity, Infinity)).toBe(2400)
+    expect(r.clamp(NaN, 2400)).toBe(2400)
+    void r.open(Infinity)
+    expect(f.pending[1].at).toBe(2400)
+  })
+  // Review r2 second-F4: a Jellyfin or Plex link keeps its server's fallback when the probe fails.
+  it('a source with a server fallback plays its link instead of the safe remux', () => {
+    const live = { input: 'https://nas.example/Videos/1/stream', user: '', pass: '' }
+    expect(withServerFallback({ remux: live, probe: SAFE, safe: true })).toEqual({ direct: live.input, fallback: null })
+    expect(withServerFallback({ direct: live.input, fallback: live })).toEqual({ direct: live.input, fallback: null })
+    const read = { remux: live, probe: mkv, safe: false }
+    expect(withServerFallback(read)).toBe(read)
   })
   it('playsDirectly reads the type or the extension', () => {
     expect(playsDirectly('https://x/dl/1', 'video/mp4')).toBe(true)

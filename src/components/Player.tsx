@@ -12,7 +12,7 @@ import { barFor, oneRetry, openToolStream } from '../lib/plugins/runtime'
 import { Icon } from './icons'
 import { Readout } from './Readout'
 import { Delayed, KEEPS_STALLING, kindOf, OPENING, waitLine, Watchdog } from '../lib/stalls'
-import { cardButtons, convertLine, onMediaError, DESKTOP_ONLY, isHls, planStream, playsHere, planSeek, probeStream, probes, Remux, SAFE, writtenOf, type Live, type StreamProbe, cuesAt, messageOf } from '../lib/playback'
+import { cardButtons, convertLine, onMediaError, withServerFallback, DESKTOP_ONLY, isHls, planStream, playsHere, planSeek, probeStream, probes, Remux, SAFE, writtenOf, type Live, type StreamProbe, cuesAt, messageOf } from '../lib/playback'
 
 const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
 
@@ -128,8 +128,9 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         if (input) {
           // One resolve (a 4xx, 5xx or 90 s of silence stops here), then the final URL plays as it is or
           // through the remux; a probe that fails never stops the play (SPEC-playback-2 rules 1 and 2).
-          const plan = await planStream(input, !!liveIn, (line) => !cancelled && setStatus(line), closed.signal)
-          if (cancelled || !plan) return
+          const planned = await planStream(input, !!liveIn, (line) => !cancelled && setStatus(line), closed.signal)
+          if (cancelled || !planned) return
+          const plan = req.fallbackUrl ? withServerFallback(planned) : planned
           if ('direct' in plan) {
             url = plan.direct
             fallback.current = plan.fallback

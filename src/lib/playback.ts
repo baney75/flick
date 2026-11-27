@@ -179,6 +179,13 @@ export async function planStream(input: Live, remux: boolean, wait: (line: strin
   return { remux: src, probe: SAFE, safe: true }
 }
 
+/** A server with its own fallback stream (Jellyfin, Plex) keeps it: a failed probe plays the link, and a
+ *  media error goes to the server's transcode, not the local safe remux. A probe that read it stands. */
+export function withServerFallback(plan: Plan): Plan {
+  if ('direct' in plan) return { direct: plan.direct, fallback: null }
+  return plan.safe ? { direct: plan.remux.input, fallback: null } : plan
+}
+
 /** The safe remux a media error switches to: a decode or unsupported error on a direct play that has one. */
 export function onMediaError(code: number | undefined, fallback: Live | null): Live | null {
   return fallback && (code === 3 || code === 4) ? fallback : null
@@ -258,7 +265,7 @@ export class Remux {
   async open(at: number): Promise<string | null> {
     const n = ++this.n
     const max = this.length > 1 ? this.length - 1 : Infinity
-    const from = Math.min(Math.max(0, at), max)
+    const from = Number.isFinite(at) ? Math.min(Math.max(0, at), max) : this.at
     try {
       const r = await this.call<{ url: string; at: number }>('remux_start', { url: this.url, user: this.user, pass: this.pass, at: from, owner: this.owner, safe: this.safe })
       if (n !== this.n) return null
@@ -278,11 +285,13 @@ export class Remux {
   /** The source's length, since a growing playlist does not know it. Unknown, it is the source time the
    *  run has written to (`fallback` is the run's own length), so the clock never passes it. */
   duration(fallback: number): number {
-    return this.known ? this.length : this.at + (fallback || 0)
+    // A growing playlist's own length can be Infinity or NaN: then only the run's start is known.
+    return this.known ? this.length : this.at + (Number.isFinite(fallback) ? fallback : 0)
   }
 
   /** Where a seek to `t` lands: inside a known length; anywhere ahead when the length is unknown. */
   clamp(t: number, d: number): number {
+    if (!Number.isFinite(t)) return this.at
     return Math.max(0, this.known && d > 1 ? Math.min(t, d - 1) : t)
   }
 
