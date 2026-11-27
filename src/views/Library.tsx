@@ -194,7 +194,8 @@ export function Library({ start }: { start?: Tab } = {}) {
           ))}
         </div>
         {tab !== 'shows' && tab !== 'photos' && tab !== 'continue' && (
-          <select value={sort} onChange={(e) => { setSort((e.target as HTMLSelectElement).value as Sort); setSorted(true) }} aria-label="Sort">
+          <select value={shelf && !sorted ? '' : sort} onChange={(e) => { const v = (e.target as HTMLSelectElement).value as Sort | ''; if (v) setSort(v); setSorted(!!v) }} aria-label="Sort">
+            {shelf && <option value="">Shelf order</option>}
             <option value="added">Recently added</option>
             <option value="title">Title</option>
             <option value="year">Year</option>

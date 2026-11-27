@@ -15,7 +15,7 @@ const call = vi.hoisted(() => {
 vi.mock('../src/lib/plugins/runtime', async (orig) => ({ ...(await orig<typeof import('../src/lib/plugins/runtime')>()), callPlugin: call }))
 const { onChange } = await import('../src/lib/plugins/runtime')
 const { installed } = await import('../src/lib/plugins/registry')
-await import('../src/lib/plugins/use')
+const { libraries, loadLibrary, sources } = await import('../src/lib/plugins/use')
 
 const meta = (id: string, over: Partial<V.Meta> = {}): V.Meta => ({ id, type: 'video', name: id, ...over })
 const lib = (shelves: V.Shelf[], items: V.Meta[]): V.Library => ({ shelves, items })
@@ -30,6 +30,9 @@ describe('shelf chips (rules 8 and 9)', () => {
     expect(chips).toHaveLength(1)
     expect(chips[0].name).toBe('Watch later')
     expect(ids(chips[0])).toEqual(['a:1', 'a:2', 'b:3'])
+    // Two shelves of one plugin with one name hold an item once.
+    const twice = shelfChips([{ p: 'a', lib: lib([{ id: 'x', name: 'Liked' }, { id: 'y', name: 'liked' }], [meta('1', { shelves: ['x', 'y'] })]) }])
+    expect(ids(twice[0])).toEqual(['a:1'])
   })
   it('case 11: a shelf with no items has no chip', () => {
     expect(shelfChips([{ p: 'a', lib: lib([{ id: 'liked', name: 'Liked' }], [meta('1')]) }])).toEqual([])
@@ -65,8 +68,8 @@ describe('Flick\'s own chips by type (rule 7)', () => {
     expect(Object.fromEntries(t.map((x) => [x.name, typeChip(x)]))).toEqual({ v: 'videos', c: 'videos', b: 'books', ab: 'audiobooks', m: null, r: null })
     expect(titles([meta('m', { type: 'movie' })]).map(typeChip)).toEqual([null])
   })
-  it('a plugin item\'s added dates its title for "Recently added"', () => {
-    expect(titles([meta('v', { added: 5 })])[0].addedAt).toBe(5)
+  it('a plugin item\'s added dates its title for "Recently added", in milliseconds like a file\'s', () => {
+    expect(titles([V.validateMeta(meta('v', { added: 1732600000 }))])[0].addedAt).toBe(1732600000000)
   })
 })
 
@@ -76,12 +79,41 @@ describe('search and refresh (rules 11 and 12)', () => {
     for (const w of ['Zelda', 'Nintendo', '2023', 'Switch']) expect(t).toContain(w)
     expect(t).not.toContain('Platform')
   })
-  it('after an action, progress or title action the plugin\'s library reloads at once', async () => {
-    const m = V.validateManifest({ api: 1, id: 'org.example.yt', name: 'YT', version: '1', catalogs: [{ id: 'a', name: 'A', type: 'video' }] }, ['catalog', 'meta', 'streams', 'library'])
+  const yt = (id: string) => {
+    const m = V.validateManifest({ api: 1, id, name: 'YT', version: '1', catalogs: [{ id: 'a', name: 'A', type: 'video' }] }, ['catalog', 'meta', 'streams', 'library'])
     installed.value = [{ id: m.id, kind: 'source', enabled: true, manifest: m } as Installed]
+    call.mockReset()
     call.mockResolvedValue({ shelves: [], items: [] })
-    for (const f of onChange) f(m.id)
-    for (const f of onChange) f(m.id)
+    return m.id
+  }
+  const fire = (id: string, fn: string) => { for (const f of onChange) f(id, fn) }
+  it('rule 12: an action or title action reloads the library at once, every time', () => {
+    const id = yt('org.example.act')
+    fire(id, 'action'); fire(id, 'titleAction')
     expect(call.mock.calls.map((c) => c[1])).toEqual(['library', 'library'])
+  })
+  it('rule 12: progress reloads at most once a minute, with one trailing reload', async () => {
+    vi.useFakeTimers()
+    try {
+      const id = yt('org.example.prog')
+      fire(id, 'progress'); fire(id, 'progress'); fire(id, 'progress')
+      expect(call).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(59_000)
+      expect(call).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(call).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
+  })
+  it('overlapping loads keep the newest result, even when the older one answers last', async () => {
+    yt('org.example.race')
+    const rec = sources.value[0]
+    let first!: (v: V.Library) => void
+    call.mockReset()
+    call.mockImplementationOnce(() => new Promise((r) => { first = r })).mockResolvedValueOnce(lib([], [meta('new')]))
+    const a = loadLibrary(rec, true)
+    await loadLibrary(rec, true)
+    first(lib([], [meta('old')]))
+    await a
+    expect(libraries.value[rec.id].items.map((m) => m.id)).toEqual(['new'])
   })
 })

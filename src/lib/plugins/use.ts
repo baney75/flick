@@ -33,21 +33,41 @@ export async function startPlugins() {
 // library() results, kept a few minutes so Home and the plugin page share one call.
 export const libraries = signal<Record<string, Library>>({})
 const libraryAt = new Map<string, number>()
+// Overlapping loads (a Like during a load) apply only the newest one's result.
+const librarySeq = new Map<string, number>()
 export async function loadLibrary(rec: Source, force = false) {
   if (!rec.manifest.has.library) return
   if (!force && Date.now() - (libraryAt.get(rec.id) ?? 0) < 5 * 60_000) return
   libraryAt.set(rec.id, Date.now())
+  const seq = (librarySeq.get(rec.id) ?? 0) + 1
+  librarySeq.set(rec.id, seq)
   try {
     const lib = await callPlugin(rec, 'library', [])
+    if (librarySeq.get(rec.id) !== seq) return
     libraries.value = { ...libraries.value, [rec.id]: lib }
   } catch (e) {
+    if (librarySeq.get(rec.id) !== seq) return
     libraryAt.delete(rec.id)
     // A result of neither shape empties that plugin's library; a failed call keeps what it had.
     if (e instanceof PluginError) libraries.value = { ...libraries.value, [rec.id]: { shelves: [], items: [] } }
   }
 }
-// After a Like or a saved position, that plugin's library reloads at once, not after the 5 minute cache.
-onChange.add((id) => { const rec = sourceById(id); if (rec) loadLibrary(rec, true) })
+// After a Like or a saved position, that plugin's library reloads, not after the 5 minute cache.
+// An action reloads at once. progress() comes every 30 seconds while playing, so it reloads at most
+// once a minute, with one trailing reload for the last save.
+const PROGRESS_GAP = 60_000
+const progressAt = new Map<string, number>()
+const progressLater = new Set<string>()
+export function libraryChanged(id: string, fn: string) {
+  const reload = () => { const rec = sourceById(id); if (rec) loadLibrary(rec, true) }
+  if (fn !== 'progress') return reload()
+  if (progressLater.has(id)) return
+  const wait = (progressAt.get(id) ?? -Infinity) + PROGRESS_GAP - Date.now()
+  if (wait <= 0) { progressAt.set(id, Date.now()); return reload() }
+  progressLater.add(id)
+  setTimeout(() => { progressLater.delete(id); progressAt.set(id, Date.now()); reload() }, wait)
+}
+onChange.add(libraryChanged)
 /** Library items with a saved position, newest first. */
 export const continueOf = (list: Meta[]) => list.filter((m) => (m.progress?.pos ?? 0) > 0).sort((a, b) => (b.progress!.at ?? 0) - (a.progress!.at ?? 0))
 

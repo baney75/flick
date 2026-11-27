@@ -14,17 +14,21 @@ export const isShelfKey = (t: string): t is ShelfKey => t.startsWith('shelf:')
 
 /** Plugin libraries in install order: one chip per shelf name with items, after Flick's own chips. */
 export function shelfChips(libs: { p: string; lib: Library }[]): ShelfChip[] {
-  const out = new Map<ShelfKey, ShelfChip & { set: Partial<Shelf> }>()
-  for (const { p, lib } of libs) for (const s of lib.shelves) {
-    const key = shelfKey(s.name)
-    const chip = out.get(key) ?? { key, name: s.name, layout: 'poster', order: 'plugin', items: [], set: {} }
-    // The first shelf that says a layout or order decides it; the first spelling names the chip.
-    chip.set.layout ??= s.layout
-    chip.set.order ??= s.order
-    for (const m of lib.items) if (m.shelves?.includes(s.id) && !chip.items.some((x) => x.p === p && x.m.id === m.id)) chip.items.push({ p, m })
-    out.set(key, chip)
+  const out = new Map<ShelfKey, ShelfChip & { set: Partial<Shelf>; seen: Set<string> }>()
+  for (const { p, lib } of libs) {
+    const on = new Map<string, Meta[]>()
+    for (const m of lib.items) for (const id of m.shelves ?? []) on.set(id, [...(on.get(id) ?? []), m])
+    for (const s of lib.shelves) {
+      const key = shelfKey(s.name)
+      const chip = out.get(key) ?? { key, name: s.name, layout: 'poster', order: 'plugin', items: [], set: {}, seen: new Set() }
+      // The first shelf that says a layout or order decides it; the first spelling names the chip.
+      chip.set.layout ??= s.layout
+      chip.set.order ??= s.order
+      for (const m of on.get(s.id) ?? []) if (!chip.seen.has(`${p}\n${m.id}`)) { chip.seen.add(`${p}\n${m.id}`); chip.items.push({ p, m }) }
+      out.set(key, chip)
+    }
   }
-  return [...out.values()].filter((c) => c.items.length).map(({ set, ...c }) => ({ ...c, layout: set.layout ?? commonShape(c.items), order: set.order ?? 'plugin' }))
+  return [...out.values()].filter((c) => c.items.length).map(({ set, seen: _, ...c }) => ({ ...c, layout: set.layout ?? commonShape(c.items), order: set.order ?? 'plugin' }))
 }
 
 function commonShape(items: ShelfItem[]): ShelfChip['layout'] {

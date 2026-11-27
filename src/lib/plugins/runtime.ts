@@ -216,21 +216,23 @@ export interface Results {
 
 /** Calls after which a plugin's library may have changed: an action, a saved position, a title action (a Like). */
 const CHANGES = new Set(['action', 'progress', 'titleAction'])
-/** Told the plugin id after each of those calls succeeds; use.ts reloads that plugin's library. */
-export const onChange = new Set<(id: string) => void>()
+/** Told the plugin id and call after each of those calls succeeds; use.ts reloads that plugin's library. */
+export const onChange = new Set<(id: string, fn: string) => void>()
 
 /** Call one plugin function and check what it returns. A bad result is dropped with a log line. */
 export async function callPlugin<K extends keyof Results>(rec: Installed, fn: K, args: unknown[]): Promise<Results[K]> {
   const fr = await frameFor(rec)
   const raw = await fr.rpc.call('call', [fn, args]).catch((e: Error) => { logLine(rec.id, `${fn}() failed: ${e.message}`); throw e })
+  let out: Results[K]
   try {
-    const out = CHECKS[fn](raw, rec.manifest as V.PluginManifest, args, (t) => logLine(rec.id, `${fn}(): ${t}`)) as Results[K]
-    if (CHANGES.has(fn)) for (const f of onChange) f(rec.id)
-    return out
+    out = CHECKS[fn](raw, rec.manifest as V.PluginManifest, args, (t) => logLine(rec.id, `${fn}(): ${t}`)) as Results[K]
   } catch (e) {
     logLine(rec.id, `Dropped a bad ${fn}() result: ${(e as Error).message}`)
     throw e
   }
+  // A listener that throws never turns a good result into a failed call.
+  if (CHANGES.has(fn)) for (const f of onChange) try { f(rec.id, fn) } catch (e) { logLine(rec.id, `Library refresh failed: ${(e as Error).message}`) }
+  return out
 }
 
 /** Start a plugin's sandbox and wait for one round trip; the self-test times this as the first call. */
