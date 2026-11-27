@@ -14,11 +14,13 @@ export function note(line: string) {
 export async function selftestIfAsked() {
   const h = hook()
   const m = isDesktop
-    ? await invoke<{ mode: string; launchedAt: number; setupAt?: number } | null>('selftest_mode').catch(() => null)
+    ? await invoke<{ mode: string; launchedAt: number; setupAt?: number; media?: string | null } | null>('selftest_mode').catch(() => null)
     : h?.browser ? { mode: h.mode, launchedAt: h.launchedAt } : null
   if (!m) return
   note(`self-test ${m.mode} started`)
-  const report = await (m.mode === 'perf'
+  const report = await (m.mode === 'playback'
+    ? import('./playback-selftest').then((x) => x.runPlayback('media' in m ? m.media : null))
+    : m.mode === 'perf'
     ? import('./perf/realapp').then((x) => x.runPerf(m.launchedAt, 'setupAt' in m ? m.setupAt : undefined))
     : import('./plugins/selftest').then((x) => (m.mode === 'youtube' ? x.runYoutubeSelftest() : x.runPluginSelftest()) as Promise<unknown>)
   ).catch((e) => ({ error: String((e as Error)?.message ?? e) }))
