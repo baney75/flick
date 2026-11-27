@@ -24,6 +24,21 @@ export function useThumb(it: Item | undefined) {
   return plain ?? (got && got.id === it?.id ? got.url : null)
 }
 
+/** A grid's rows hold the items from `from` on; the items in [vis[0], vis[1]) are on screen. */
+type GridRows = HTMLDivElement & { from?: number; vis?: [number, number] }
+
+/**
+ * A loaded card image fades in, unless it loaded in a row the grid drew ahead of the scroll: nobody sees that
+ * fade, and WebKit drops frames running one on every card a fast scroll brings in. The grid says which items
+ * are on screen, so this reads no layout, and it sets the classes itself, so a load re-renders nothing.
+ */
+function shown(img: HTMLImageElement) {
+  const cell = img.closest('.vgrid-inner > *')
+  const rows = cell?.parentElement as GridRows | null | undefined
+  const i = rows?.vis && rows.from != null ? rows.from + Array.prototype.indexOf.call(rows.children, cell) : -1
+  img.classList.add(...(rows?.vis && (i < rows.vis[0] || i >= rows.vis[1]) ? ['in', 'now'] : ['in']))
+}
+
 export function Card(props: {
   image?: string | null
   title: string
@@ -44,12 +59,11 @@ export function Card(props: {
   onMore?: (e: MouseEvent) => void
 }) {
   const { image, title, sub, shape = 'wide', pct, icon = 'film', badge, time, info, wrap, target, onClick, onMore } = props
-  const [loaded, setLoaded] = useState(false)
   const hold = useLongPress(onMore)
   return (
     <button class={`card ${shape}`} data-target={target} onClick={(e) => { if (hold.fired()) e.stopPropagation(); else onClick() }} onContextMenu={onMore ? (e) => { e.preventDefault(); onMore(e) } : undefined} title={title} {...hold.events}>
       <div class="art">
-        {image ? <img src={image} alt="" loading="lazy" decoding="async" class={loaded ? 'in' : ''} onLoad={() => setLoaded(true)} /> : <div class="art-ph"><Icon name={icon} size={30} /></div>}
+        {image ? <img src={image} alt="" loading="lazy" decoding="async" onLoad={(e) => shown(e.currentTarget)} /> : <div class="art-ph"><Icon name={icon} size={30} /></div>}
         {badge && <span class="badge">{badge}</span>}
         {time && <span class="card-time">{time}</span>}
         <span class="play-hint"><Icon name="play" size={22} /></span>
@@ -189,7 +203,7 @@ export function VirtualGrid<T>({ list, min = 220, ratio = 9 / 16, extra = 54, ke
   render: (t: T) => ComponentChildren
 }) {
   const box = useRef<HTMLDivElement>(null)
-  const inner = useRef<HTMLDivElement>(null)
+  const inner = useRef<GridRows>(null)
   const [w, setW] = useState(0)
   const [range, setRange] = useState<[number, number]>([0, 12])
   // A row's height as drawn, once a row is in the page. The estimate below is only for the first frame:
@@ -239,14 +253,17 @@ export function VirtualGrid<T>({ list, min = 220, ratio = 9 / 16, extra = 54, ke
     const update = () => {
       if (!el.isConnected) return
       const top = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top
-      const start = Math.max(0, Math.floor(-top / rowH) - 3)
-      const end = Math.min(rows, Math.ceil((-top + scroller.clientHeight) / rowH) + 3)
+      const first = Math.max(0, Math.floor(-top / rowH)), past = Math.ceil((-top + scroller.clientHeight) / rowH)
+      inner.current!.vis = [first * cols, past * cols]
+      const start = Math.max(0, first - 3)
+      const end = Math.min(rows, past + 3)
       setRange((r) => (r[0] === start && r[1] === end ? r : [start, end]))
     }
     update()
     scroller.addEventListener('scroll', update, { passive: true })
     return () => scroller.removeEventListener('scroll', update)
-  }, [rowH, rows])
+  }, [rowH, rows, cols])
+  useLayoutEffect(() => { inner.current!.from = range[0] * cols })
 
   const slice = list.slice(range[0] * cols, range[1] * cols)
   return (
