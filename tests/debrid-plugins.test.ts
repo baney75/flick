@@ -63,7 +63,7 @@ describe('Real-Debrid plugin', () => {
     expect(V.validateResolve(await rd.resolve(ctx, T), m.hosts)).toEqual({ wait: { pct: 0, message: 'Real-Debrid is starting it' } })
     expect(ctx.requests.find((r) => r.url.includes('selectFiles'))!.body).toBe('files=2')
     expect(V.validateResolve(await rd.resolve(ctx, T), m.hosts)).toEqual({ wait: { pct: 40, message: 'Real-Debrid is downloading it' } })
-    expect(V.validateResolve(await rd.resolve(ctx, T), m.hosts)).toEqual({ url: 'https://41.download.real-debrid.com/d/ABCDEF/Show.S01E02.1080p.mkv' })
+    expect(V.validateResolve(await rd.resolve(ctx, T), m.hosts)).toEqual({ url: 'https://41.download.real-debrid.com/d/ABCDEF/Show.S01E02.1080p.mkv', bytes: 2200000000 })
     expect(ctx.requests.filter((r) => r.url.includes('addMagnet'))).toHaveLength(1)
     noTitle(ctx)
   })
@@ -86,7 +86,7 @@ describe('AllDebrid plugin', () => {
   it('resolve: uploads the hash, waits at 40%, then unlocks the named file', async () => {
     const ctx = fakeCtx({ apiKey: KEY }, script(adFx, [[/magnet\/upload/, ['upload']], [/magnet\/status/, ['status_40', 'status_ready']], [/magnet\/files/, ['files']], [/link\/unlock/, ['unlock']]]))
     expect(V.validateResolve(await ad.resolve(ctx, T), m.hosts)).toEqual({ wait: { pct: 40, message: 'AllDebrid is downloading it' } })
-    expect(V.validateResolve(await ad.resolve(ctx, T), m.hosts)).toEqual({ url: 'https://xk7rz2.debrid.it/dl/2kd9f/Show.S01E02.1080p.mkv' })
+    expect(V.validateResolve(await ad.resolve(ctx, T), m.hosts)).toEqual({ url: 'https://xk7rz2.debrid.it/dl/2kd9f/Show.S01E02.1080p.mkv', bytes: 2200000000 })
     expect(ctx.requests[0].body).toBe(`magnets%5B%5D=${HASH}`)
     expect(ctx.requests.at(-1)!.body).toBe(`link=${encodeURIComponent('https://alldebrid.com/f/BBB')}`)
     noTitle(ctx)
@@ -118,13 +118,13 @@ describe('Premiumize plugin', () => {
   })
   it('resolve: a cached torrent plays the named file at once', async () => {
     const ctx = fakeCtx({ apiKey: KEY }, script(pmFx, [[/directdl/, ['directdl_hit']]]))
-    expect(V.validateResolve(await pm.resolve(ctx, T), m.hosts)).toEqual({ url: 'https://a7.energycdn.com/dl/x2/Show.S01E02.1080p.mkv' })
+    expect(V.validateResolve(await pm.resolve(ctx, T), m.hosts)).toEqual({ url: 'https://a7.energycdn.com/dl/x2/Show.S01E02.1080p.mkv', bytes: 2200000000 })
     noTitle(ctx)
   })
   it('resolve: an uncached torrent becomes a transfer, waits at 40%, then plays', async () => {
     const ctx = fakeCtx({ apiKey: KEY }, script(pmFx, [[/directdl/, ['directdl_miss', 'directdl_hit']], [/transfer\/create/, ['create']], [/transfer\/list/, ['list_40']]]))
     expect(V.validateResolve(await pm.resolve(ctx, T), m.hosts)).toEqual({ wait: { pct: 40, message: 'Premiumize is downloading it' } })
-    expect(V.validateResolve(await pm.resolve(ctx, T), m.hosts)).toEqual({ url: 'https://a7.energycdn.com/dl/x2/Show.S01E02.1080p.mkv' })
+    expect(V.validateResolve(await pm.resolve(ctx, T), m.hosts)).toEqual({ url: 'https://a7.energycdn.com/dl/x2/Show.S01E02.1080p.mkv', bytes: 2200000000 })
     expect(ctx.requests.filter((r) => r.url.includes('transfer/create'))).toHaveLength(1)
     noTitle(ctx)
   })
@@ -144,10 +144,10 @@ describe('Premiumize plugin', () => {
     expect(ctx.requests.filter((r) => r.url.includes('transfer/create'))).toHaveLength(1)
     expect(await ctx.store.get('ids')).toEqual({ [HASH]: 'PMT9' })
   })
-  it('picks the file: the name, then fileIdx as a place in the list, then the largest video', () => {
+  it('picks the file: the name, then the largest video; a place in the list is not torrent order', () => {
     const files = (pmFx.directdl_hit.body as { content: { path: string }[] }).content
-    expect(pmPick(files, 0, 'Show.S01E02.1080p.mkv').path).toMatch(/E02/)
-    expect(pmPick(files, 0).path).toMatch(/E01/)
+    expect(pmPick(files, { fileIdx: 0, name: 'Show.S01E02.1080p.mkv' }).path).toMatch(/E02/)
+    expect(pmPick(files, { fileIdx: 0 }).path).toMatch(/E02/)
     expect(pmPick(files).path).toMatch(/E02/)
   })
   it('account: a lapsed plan shows as Free with no date', async () => {

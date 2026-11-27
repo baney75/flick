@@ -1,8 +1,8 @@
 // Premiumize for Flick: plays a torrent from Premiumize's servers as an https link.
 // API docs: https://www.premiumize.me/api (read 2026-11-26).
-// The docs do not say directdl's files follow the torrent's file order, so the file is picked by name
-// first, then by fileIdx as a place in that list, then the largest video. Download hosts (*.energycdn.com) are not in the docs; they come from
-// Premiumize links seen by StremThru (github.com/MunifTanjim/stremthru).
+// The docs do not say directdl's files follow the torrent's file order, so the file is picked by name,
+// then by the episode tag (see pickFile), never by fileIdx. Download hosts (*.energycdn.com) are not
+// in the docs; they come from Premiumize links seen by StremThru (github.com/MunifTanjim/stremthru).
 
 const API = 'https://www.premiumize.me/api'
 const VIDEO = /\.(mkv|mp4|m4v|mov|avi|webm|ts|m2ts|wmv|mpg|mpeg|flv)$/i
@@ -23,14 +23,35 @@ async function api(ctx, path, body) {
   return j
 }
 
-export function pickFile(files, fileIdx, name) {
-  const all = Array.isArray(files) ? files : []
-  const list = all.filter((f) => typeof f?.link === 'string')
-  if (!list.length) return null
-  if (name) { const f = list.find((x) => String(x.path ?? '').endsWith(name)); if (f) return f }
-  if (Number.isInteger(fileIdx) && typeof all[fileIdx]?.link === 'string') return all[fileIdx]
-  const videos = list.filter((x) => VIDEO.test(String(x.path ?? '')))
-  return (videos.length ? videos : list).reduce((a, b) => ((Number(b.size) || 0) > (Number(a.size) || 0) ? b : a))
+const base = (p) => String(p ?? '').split('/').pop()
+const isEp = (e) => Number.isSafeInteger(e?.season) && e.season > 0 && Number.isSafeInteger(e?.episode) && e.episode > 0
+const tag = (e) => `S${String(e.season).padStart(2, '0')}E${String(e.episode).padStart(2, '0')}`
+/** Whether a file name holds this episode's tag: S01E02 (any padding, any case, an optional . _ - or
+ *  space between) or 1x02, with no digit after it. */
+export function holdsEpisode(fileName, e) {
+  const n = base(fileName)
+  return new RegExp(`(?:^|[^a-z0-9])s0*${e.season}[ ._-]?e0*${e.episode}(?![0-9])`, 'i').test(n) || new RegExp(`(?:^|[^0-9])0*${e.season}x0*${e.episode}(?![0-9])`, 'i').test(n)
+}
+const sized = (url, n) => (Number.isSafeInteger(n) && n > 0 ? { url, bytes: n } : { url })
+
+/** The file to play from `want` ({ fileIdx, name, episode }): the exact name, then the largest video
+ *  holding the episode tag. Premiumize's docs do not say directdl keeps torrent order, so fileIdx is not
+ *  used. A series with no tagged file plays only a torrent's one video, never a pack's first or
+ *  largest file. */
+export function pickFile(files, want = {}) {
+  files = (Array.isArray(files) ? files : []).filter((f) => typeof f?.link === 'string')
+  if (!files.length) return null
+  const path = (x) => String(x.path ?? '')
+  const size = (x) => Number(x.size) || 0
+  if (want.name) { const f = files.find((x) => path(x) === want.name || base(path(x)) === want.name); if (f) return f }
+  const videos = files.filter((x) => VIDEO.test(path(x)))
+  const largest = (l) => l.reduce((a, b) => (size(b) > size(a) ? b : a))
+  if (isEp(want.episode)) {
+    const tagged = videos.filter((x) => holdsEpisode(path(x), want.episode))
+    if (tagged.length) return largest(tagged)
+    return videos.length === 1 ? videos[0] : null
+  }
+  return largest(videos.length ? videos : files)
 }
 
 async function ids(ctx) { return (await ctx.store.get('ids')) ?? {} }
@@ -43,12 +64,14 @@ async function remember(ctx, hash, id) {
   await ctx.store.set('ids', all)
 }
 
-/** A link for a torrent Premiumize has, or null when it does not have it. */
-async function direct(ctx, hash, fileIdx, name) {
+/** The result for a torrent Premiumize has: its file's link, or an error when no file fits. Null when
+ *  Premiumize does not have it. */
+async function direct(ctx, hash, want) {
   let j
   try { j = await api(ctx, '/transfer/directdl', `src=${encodeURIComponent(magnet(hash))}`) } catch (e) { if (e.refused) return null; throw e }
-  const f = pickFile(j.content, fileIdx, name)
-  return f ? f.link : null
+  const f = pickFile(j.content, want)
+  if (f) return sized(f.link, Number(f.size))
+  return isEp(want.episode) && Array.isArray(j.content) && j.content.length ? { error: `No file for ${tag(want.episode)} in this torrent.` } : null
 }
 
 export default {
@@ -88,10 +111,10 @@ export default {
     return hashes.filter((_, i) => yes[i] === true)
   },
 
-  async resolve(ctx, { infoHash, fileIdx, name }) {
-    const hash = String(infoHash).toLowerCase()
-    const now = await direct(ctx, hash, fileIdx, name)
-    if (now) { await remember(ctx, hash, null); return { url: now } }
+  async resolve(ctx, want) {
+    const hash = String(want.infoHash).toLowerCase()
+    const now = await direct(ctx, hash, want)
+    if (now) { await remember(ctx, hash, null); return now }
     let id = (await ids(ctx))[hash]
     let list = null
     if (id == null) {

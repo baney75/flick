@@ -11,11 +11,13 @@ import type { Ranked } from './pick'
 export interface Via { service: string; bytes?: number }
 
 /** The readout a row's stream gets: any stream through a service, torrent or link on its host.
- *  The size is the stream's listed size, so the speed is the file's average rate times buffer growth. */
-export function viaOf(r: Ranked, name: (id: string) => string): Via | undefined {
+ *  The size is the file's size from the service's resolve, else the stream's listed size, so the
+ *  speed is the file's average rate times buffer growth. */
+export function viaOf(r: Ranked, name: (id: string) => string, resolved?: number): Via | undefined {
   if (!r.c.service) return undefined
-  // An episode may come from a season pack, whose listed size is the whole pack: no speed then.
-  const bytes = r.c.episode ? undefined : r.c.sizeBytes ?? r.rel.bytes
+  // An episode may come from a season pack, whose listed size is the whole pack: only the size the
+  // service gives for the file it plays counts then.
+  const bytes = resolved ?? (r.c.episode ? undefined : r.c.sizeBytes ?? r.rel.bytes)
   return bytes ? { service: name(r.c.service), bytes } : { service: name(r.c.service) }
 }
 

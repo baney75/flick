@@ -28,15 +28,34 @@ async function api(ctx, path, init = {}) {
   return j.data
 }
 
-/** The file to play. Flick assumes TorBox's file ids follow the torrent's file order, like Stremio's
- *  fileIdx. TorBox's docs do not say so, so a file whose name matches wins over the id. */
-export function pickFile(files, fileIdx, name) {
+const base = (p) => String(p ?? '').split('/').pop()
+const isEp = (e) => Number.isSafeInteger(e?.season) && e.season > 0 && Number.isSafeInteger(e?.episode) && e.episode > 0
+const tag = (e) => `S${String(e.season).padStart(2, '0')}E${String(e.episode).padStart(2, '0')}`
+/** Whether a file name holds this episode's tag: S01E02 (any padding, any case, an optional . _ - or
+ *  space between) or 1x02, with no digit after it. */
+export function holdsEpisode(fileName, e) {
+  const n = base(fileName)
+  return new RegExp(`(?:^|[^a-z0-9])s0*${e.season}[ ._-]?e0*${e.episode}(?![0-9])`, 'i').test(n) || new RegExp(`(?:^|[^0-9])0*${e.season}x0*${e.episode}(?![0-9])`, 'i').test(n)
+}
+const sized = (url, n) => (Number.isSafeInteger(n) && n > 0 ? { url, bytes: n } : { url })
+
+/** The file to play from `want` ({ fileIdx, name, episode }): the exact name, then the largest video
+ *  holding the episode tag. TorBox's docs do not say its file ids follow torrent order, so fileIdx is not
+ *  used. A series with no tagged file plays only a torrent's one video, never a pack's first or
+ *  largest file. */
+export function pickFile(files, want = {}) {
   if (!Array.isArray(files) || !files.length) return null
-  const fname = (x) => x.short_name || x.name || ''
-  if (name) { const f = files.find((x) => fname(x).endsWith(name)); if (f) return f }
-  if (Number.isInteger(fileIdx)) { const f = files.find((x) => x.id === fileIdx); if (f) return f }
-  const videos = files.filter((x) => VIDEO.test(fname(x)))
-  return (videos.length ? videos : files).reduce((a, b) => ((b.size ?? 0) > (a.size ?? 0) ? b : a))
+  const path = (x) => String(x.name || x.short_name || '')
+  const size = (x) => Number(x.size) || 0
+  if (want.name) { const f = files.find((x) => path(x) === want.name || base(path(x)) === want.name); if (f) return f }
+  const videos = files.filter((x) => VIDEO.test(path(x)))
+  const largest = (l) => l.reduce((a, b) => (size(b) > size(a) ? b : a))
+  if (isEp(want.episode)) {
+    const tagged = videos.filter((x) => holdsEpisode(path(x), want.episode))
+    if (tagged.length) return largest(tagged)
+    return videos.length === 1 ? videos[0] : null
+  }
+  return largest(videos.length ? videos : files)
 }
 
 async function torrentIds(ctx) { return (await ctx.store.get('ids')) ?? {} }
@@ -102,7 +121,8 @@ export default {
     return (Array.isArray(d) ? d : []).map((x) => String(x?.hash ?? '').toLowerCase()).filter(Boolean)
   },
 
-  async resolve(ctx, { infoHash, fileIdx, name }) {
+  async resolve(ctx, want) {
+    const { infoHash, episode } = want
     const hash = String(infoHash).toLowerCase()
     let id = (await torrentIds(ctx))[hash]
     if (id == null) id = await addTorrent(ctx, hash)
@@ -126,11 +146,11 @@ export default {
     const state = String(t.download_state ?? '')
     if (/^(error|failed|missingFiles)/i.test(state)) { await rememberId(ctx, hash, null); return { error: `TorBox could not fetch this torrent (${state}).` } }
     if (t.download_finished && t.download_present) {
-      const f = pickFile(t.files, fileIdx, name)
-      if (!f) return { error: 'TorBox has this torrent but no file in it to play.' }
+      const f = pickFile(t.files, want)
+      if (!f) return { error: isEp(episode) ? `No file for ${tag(episode)} in this torrent.` : 'TorBox has this torrent but no file in it to play.' }
       const url = await api(ctx, `/torrents/requestdl?token=${encodeURIComponent(ctx.settings.apiKey)}&torrent_id=${encodeURIComponent(id)}&file_id=${encodeURIComponent(f.id)}&redirect=false`)
       if (typeof url !== 'string') throw new Error('TorBox gave no link.')
-      return { url }
+      return sized(url, Number(f.size))
     }
     const p = Number(t.progress)
     const wait = { message: STATES[state.split(' ')[0]] ?? 'TorBox is fetching it' }

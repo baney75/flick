@@ -11,6 +11,7 @@ import { callPlugin, logs, type Installed } from '../lib/plugins/runtime'
 import { themes } from '../lib/plugins/use'
 import type { ActionDef, Field, PluginManifest, ThemeManifest } from '../lib/plugins/validate'
 import { maskAddress } from '../lib/plugins/debrid-keys'
+import { noVpnFact } from '../lib/debrid-play'
 
 const DOCS = 'https://github.com/baney75/flick/blob/main/docs/PLUGINS.md'
 export const PROMPT = `Write a Flick plugin for: <the site, API or service you want in Flick>.
@@ -50,6 +51,7 @@ export function ReviewSheet({ c, extra, onDone }: { c: Candidate; extra?: string
           {src && <div><span class="dim">Reaches</span> {src.hosts.length ? src.hosts.map(hostWords).join(', ') : 'nothing'}</div>}
           {src && src.tools.length > 0 && <div><span class="dim">Desktop tools</span> {src.tools.join(', ')}</div>}
           {src && src.platforms.length < 3 && <div><span class="dim">Works on</span> {src.platforms.join(', ')}</div>}
+          {noVpnFact(c) && <div><span class="dim">VPN</span> {noVpnFact(c)}</div>}
         </div>
         {src?.description && <p class="small">{src.description}</p>}
         {extra && <p class="small dim">{extra}</p>}

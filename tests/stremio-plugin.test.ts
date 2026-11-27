@@ -51,6 +51,9 @@ describe('Stremio plugin protocol', () => {
     const s = { infoHash: H.toUpperCase(), fileIdx: 2, name: 'Addon', title: '1080p', sources: ['tracker:udp://t.example:80', 'dht:x', 'tracker:udp://t.example:80', 'tracker:http://192.168.1.1/announce', 'tracker:udp://127.1:80', 'tracker:http://localhost./announce', 'tracker:udp://stremio.localhost.:80', 'tracker:ws://t.example', 'tracker:https://t.example/a'] }
     expect(S.toStream(s, 'X')).toEqual({ torrent: { infoHash: H, fileIdx: 2, trackers: ['udp://t.example:80', 'https://t.example/a'] }, title: 'Addon · 1080p', group: 'X', subs: [] })
     expect(S.toStream({ infoHash: H }, 'X')?.torrent).toEqual({ infoHash: H })
+    // behaviorHints.filename names the file, so a service finds the episode in a season pack.
+    expect(S.toStream({ infoHash: H, fileIdx: 7, behaviorHints: { filename: 'Show.S01E07.1080p.mkv' } }, 'X')?.torrent).toEqual({ infoHash: H, fileIdx: 7, name: 'Show.S01E07.1080p.mkv' })
+    expect(S.toStream({ infoHash: H, behaviorHints: { filename: 'n'.repeat(600) } }, 'X')?.torrent).toEqual({ infoHash: H })
     expect(S.toStream({ infoHash: H, fileIdx: -1 }, 'X')?.torrent).toEqual({ infoHash: H })
     expect(S.toStream({ infoHash: 'abc' }, 'X')).toBeNull()
     const many = Array.from({ length: 60 }, (_, i) => `tracker:udp://t${i}.example:80`)

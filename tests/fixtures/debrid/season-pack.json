@@ -1,0 +1,168 @@
+{
+  "_source": "A 10-episode season pack (nfo, E01..E10, an E07 sample and subtitle) in each service's documented shapes (same docs as the other fixtures, 2026-11-26). Torrent order is nfo, E01..E10, sample, srt, so E07 is fileIdx 7. TorBox, AllDebrid and Premiumize list the files in another order, where place 7 (and TorBox id 7) is E03. Values are made up.",
+  "torbox_mylist": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "error": null,
+      "detail": "Torrent list retrieved.",
+      "data": {
+        "id": 4711,
+        "hash": "cccccccccccccccccccccccccccccccccccccccc",
+        "download_state": "cached",
+        "progress": 1,
+        "download_finished": true,
+        "download_present": true,
+        "files": [
+          {"id": 0, "name": "Show.S01.1080p/Show.S01E10.1080p.mkv", "short_name": "Show.S01E10.1080p.mkv", "size": 1010000000},
+          {"id": 1, "name": "Show.S01.1080p/Show.S01E07.1080p.mkv", "short_name": "Show.S01E07.1080p.mkv", "size": 1007000000},
+          {"id": 2, "name": "Show.S01.1080p/Show.S01E07.1080p.en.srt", "short_name": "Show.S01E07.1080p.en.srt", "size": 40000},
+          {"id": 3, "name": "Show.S01.1080p/Show.S01E01.1080p.mkv", "short_name": "Show.S01E01.1080p.mkv", "size": 1001000000},
+          {"id": 4, "name": "Show.S01.1080p/Show.S01.nfo", "short_name": "Show.S01.nfo", "size": 2000},
+          {"id": 5, "name": "Show.S01.1080p/Show.S01E05.1080p.mkv", "short_name": "Show.S01E05.1080p.mkv", "size": 1005000000},
+          {"id": 6, "name": "Show.S01.1080p/Show.S01E09.1080p.mkv", "short_name": "Show.S01E09.1080p.mkv", "size": 1009000000},
+          {"id": 7, "name": "Show.S01.1080p/Show.S01E03.1080p.mkv", "short_name": "Show.S01E03.1080p.mkv", "size": 1003000000},
+          {"id": 8, "name": "Show.S01.1080p/Show.S01E07.sample.mkv", "short_name": "Show.S01E07.sample.mkv", "size": 50000000},
+          {"id": 9, "name": "Show.S01.1080p/Show.S01E02.1080p.mkv", "short_name": "Show.S01E02.1080p.mkv", "size": 1002000000},
+          {"id": 10, "name": "Show.S01.1080p/Show.S01E06.1080p.mkv", "short_name": "Show.S01E06.1080p.mkv", "size": 1006000000},
+          {"id": 11, "name": "Show.S01.1080p/Show.S01E04.1080p.mkv", "short_name": "Show.S01E04.1080p.mkv", "size": 1004000000},
+          {"id": 12, "name": "Show.S01.1080p/Show.S01E08.1080p.mkv", "short_name": "Show.S01E08.1080p.mkv", "size": 1008000000}
+        ]
+      }
+    }
+  },
+  "torbox_requestdl": {
+    "status": 200,
+    "body": {"success": true, "error": null, "detail": "Download link generated.", "data": "https://store-031.weur.tb-cdn.st/dld/4711/x?token=signed"}
+  },
+  "rd_add": {"status": 201, "body": {"id": "RDP1", "uri": "https://api.real-debrid.com/rest/1.0/torrents/info/RDP1"}},
+  "rd_info_select": {
+    "status": 200,
+    "body": {
+      "id": "RDP1",
+      "hash": "cccccccccccccccccccccccccccccccccccccccc",
+      "status": "waiting_files_selection",
+      "progress": 0,
+      "links": [],
+      "files": [
+        {"id": 1, "path": "/Show.S01.1080p/Show.S01.nfo", "bytes": 2000, "selected": 0},
+        {"id": 2, "path": "/Show.S01.1080p/Show.S01E01.1080p.mkv", "bytes": 1001000000, "selected": 0},
+        {"id": 3, "path": "/Show.S01.1080p/Show.S01E02.1080p.mkv", "bytes": 1002000000, "selected": 0},
+        {"id": 4, "path": "/Show.S01.1080p/Show.S01E03.1080p.mkv", "bytes": 1003000000, "selected": 0},
+        {"id": 5, "path": "/Show.S01.1080p/Show.S01E04.1080p.mkv", "bytes": 1004000000, "selected": 0},
+        {"id": 6, "path": "/Show.S01.1080p/Show.S01E05.1080p.mkv", "bytes": 1005000000, "selected": 0},
+        {"id": 7, "path": "/Show.S01.1080p/Show.S01E06.1080p.mkv", "bytes": 1006000000, "selected": 0},
+        {"id": 8, "path": "/Show.S01.1080p/Show.S01E07.1080p.mkv", "bytes": 1007000000, "selected": 0},
+        {"id": 9, "path": "/Show.S01.1080p/Show.S01E08.1080p.mkv", "bytes": 1008000000, "selected": 0},
+        {"id": 10, "path": "/Show.S01.1080p/Show.S01E09.1080p.mkv", "bytes": 1009000000, "selected": 0},
+        {"id": 11, "path": "/Show.S01.1080p/Show.S01E10.1080p.mkv", "bytes": 1010000000, "selected": 0},
+        {"id": 12, "path": "/Show.S01.1080p/Show.S01E07.sample.mkv", "bytes": 50000000, "selected": 0},
+        {"id": 13, "path": "/Show.S01.1080p/Show.S01E07.1080p.en.srt", "bytes": 40000, "selected": 0}
+      ]
+    }
+  },
+  "rd_select": {"status": 204, "body": null},
+  "rd_info_done": {
+    "status": 200,
+    "body": {
+      "id": "RDP1",
+      "hash": "cccccccccccccccccccccccccccccccccccccccc",
+      "status": "downloaded",
+      "progress": 100,
+      "links": ["https://real-debrid.com/d/PACK07"],
+      "files": [
+        {"id": 1, "path": "/Show.S01.1080p/Show.S01.nfo", "bytes": 2000, "selected": 0},
+        {"id": 2, "path": "/Show.S01.1080p/Show.S01E01.1080p.mkv", "bytes": 1001000000, "selected": 0},
+        {"id": 3, "path": "/Show.S01.1080p/Show.S01E02.1080p.mkv", "bytes": 1002000000, "selected": 0},
+        {"id": 4, "path": "/Show.S01.1080p/Show.S01E03.1080p.mkv", "bytes": 1003000000, "selected": 0},
+        {"id": 5, "path": "/Show.S01.1080p/Show.S01E04.1080p.mkv", "bytes": 1004000000, "selected": 0},
+        {"id": 6, "path": "/Show.S01.1080p/Show.S01E05.1080p.mkv", "bytes": 1005000000, "selected": 0},
+        {"id": 7, "path": "/Show.S01.1080p/Show.S01E06.1080p.mkv", "bytes": 1006000000, "selected": 0},
+        {"id": 8, "path": "/Show.S01.1080p/Show.S01E07.1080p.mkv", "bytes": 1007000000, "selected": 1},
+        {"id": 9, "path": "/Show.S01.1080p/Show.S01E08.1080p.mkv", "bytes": 1008000000, "selected": 0},
+        {"id": 10, "path": "/Show.S01.1080p/Show.S01E09.1080p.mkv", "bytes": 1009000000, "selected": 0},
+        {"id": 11, "path": "/Show.S01.1080p/Show.S01E10.1080p.mkv", "bytes": 1010000000, "selected": 0},
+        {"id": 12, "path": "/Show.S01.1080p/Show.S01E07.sample.mkv", "bytes": 50000000, "selected": 0},
+        {"id": 13, "path": "/Show.S01.1080p/Show.S01E07.1080p.en.srt", "bytes": 40000, "selected": 0}
+      ]
+    }
+  },
+  "rd_unrestrict": {
+    "status": 200,
+    "body": {
+      "id": "PACK07",
+      "filename": "Show.S01E07.1080p.mkv",
+      "filesize": 1007000000,
+      "link": "https://real-debrid.com/d/PACK07",
+      "host": "real-debrid.com",
+      "download": "https://41.download.real-debrid.com/d/PACK07/Show.S01E07.1080p.mkv"
+    }
+  },
+  "ad_files": {
+    "status": 200,
+    "body": {
+      "status": "success",
+      "data": {
+        "magnets": [
+          {
+            "id": 9002,
+            "files": [
+              {
+                "n": "Show.S01.1080p",
+                "e": [
+                  {"n": "Show.S01E10.1080p.mkv", "s": 1010000000, "l": "https://alldebrid.com/f/P10"},
+                  {"n": "Show.S01E07.1080p.mkv", "s": 1007000000, "l": "https://alldebrid.com/f/P07"},
+                  {"n": "Show.S01E07.1080p.en.srt", "s": 40000, "l": "https://alldebrid.com/f/P12"},
+                  {"n": "Show.S01E01.1080p.mkv", "s": 1001000000, "l": "https://alldebrid.com/f/P01"},
+                  {"n": "Show.S01.nfo", "s": 2000, "l": "https://alldebrid.com/f/P00"},
+                  {"n": "Show.S01E05.1080p.mkv", "s": 1005000000, "l": "https://alldebrid.com/f/P05"},
+                  {"n": "Show.S01E09.1080p.mkv", "s": 1009000000, "l": "https://alldebrid.com/f/P09"},
+                  {"n": "Show.S01E03.1080p.mkv", "s": 1003000000, "l": "https://alldebrid.com/f/P03"},
+                  {"n": "Show.S01E07.sample.mkv", "s": 50000000, "l": "https://alldebrid.com/f/P11"},
+                  {"n": "Show.S01E02.1080p.mkv", "s": 1002000000, "l": "https://alldebrid.com/f/P02"},
+                  {"n": "Show.S01E06.1080p.mkv", "s": 1006000000, "l": "https://alldebrid.com/f/P06"},
+                  {"n": "Show.S01E04.1080p.mkv", "s": 1004000000, "l": "https://alldebrid.com/f/P04"},
+                  {"n": "Show.S01E08.1080p.mkv", "s": 1008000000, "l": "https://alldebrid.com/f/P08"}
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "ad_unlock": {
+    "status": 200,
+    "body": {
+      "status": "success",
+      "data": {
+        "link": "https://xk7rz2.debrid.it/dl/p7/Show.S01E07.1080p.mkv",
+        "filename": "Show.S01E07.1080p.mkv",
+        "host": "alldebrid",
+        "filesize": 1007000000,
+        "id": "P07"
+      }
+    }
+  },
+  "pm_directdl": {
+    "status": 200,
+    "body": {
+      "status": "success",
+      "content": [
+        {"path": "Show.S01.1080p/Show.S01E10.1080p.mkv", "size": 1010000000, "link": "https://a7.energycdn.com/dl/p10/Show.S01E10.1080p.mkv"},
+        {"path": "Show.S01.1080p/Show.S01E07.1080p.mkv", "size": 1007000000, "link": "https://a7.energycdn.com/dl/p07/Show.S01E07.1080p.mkv"},
+        {"path": "Show.S01.1080p/Show.S01E07.1080p.en.srt", "size": 40000, "link": "https://a7.energycdn.com/dl/p12/Show.S01E07.1080p.en.srt"},
+        {"path": "Show.S01.1080p/Show.S01E01.1080p.mkv", "size": 1001000000, "link": "https://a7.energycdn.com/dl/p01/Show.S01E01.1080p.mkv"},
+        {"path": "Show.S01.1080p/Show.S01.nfo", "size": 2000, "link": "https://a7.energycdn.com/dl/p00/Show.S01.nfo"},
+        {"path": "Show.S01.1080p/Show.S01E05.1080p.mkv", "size": 1005000000, "link": "https://a7.energycdn.com/dl/p05/Show.S01E05.1080p.mkv"},
+        {"path": "Show.S01.1080p/Show.S01E09.1080p.mkv", "size": 1009000000, "link": "https://a7.energycdn.com/dl/p09/Show.S01E09.1080p.mkv"},
+        {"path": "Show.S01.1080p/Show.S01E03.1080p.mkv", "size": 1003000000, "link": "https://a7.energycdn.com/dl/p03/Show.S01E03.1080p.mkv"},
+        {"path": "Show.S01.1080p/Show.S01E07.sample.mkv", "size": 50000000, "link": "https://a7.energycdn.com/dl/p11/Show.S01E07.sample.mkv"},
+        {"path": "Show.S01.1080p/Show.S01E02.1080p.mkv", "size": 1002000000, "link": "https://a7.energycdn.com/dl/p02/Show.S01E02.1080p.mkv"},
+        {"path": "Show.S01.1080p/Show.S01E06.1080p.mkv", "size": 1006000000, "link": "https://a7.energycdn.com/dl/p06/Show.S01E06.1080p.mkv"},
+        {"path": "Show.S01.1080p/Show.S01E04.1080p.mkv", "size": 1004000000, "link": "https://a7.energycdn.com/dl/p04/Show.S01E04.1080p.mkv"},
+        {"path": "Show.S01.1080p/Show.S01E08.1080p.mkv", "size": 1008000000, "link": "https://a7.energycdn.com/dl/p08/Show.S01E08.1080p.mkv"}
+      ]
+    }
+  }
+}

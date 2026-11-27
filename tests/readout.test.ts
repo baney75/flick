@@ -63,6 +63,8 @@ describe('which streams get a readout', () => {
   it('an episode: no size, since a season pack lists the whole pack', () => {
     const [r] = rank(streamCandidates('k', [{ torrent: { infoHash: 'b'.repeat(40) }, title: 'Show S01 1080p 20.0 GB' }], { debrid, episode: true }), prefs, dev, ctx)
     expect(viaOf(r, name)).toEqual({ service: 'TorBox' })
+    // The service's size for the one file it plays counts, so the episode shows its speed.
+    expect(viaOf(r, name, 1_007_000_000)).toEqual({ service: 'TorBox', bytes: 1_007_000_000 })
   })
   it('a direct link gets none', () => expect(viaOf(rows([{ url: 'https://cdn.example/f.mp4' }])[0], name)).toBeUndefined())
 })

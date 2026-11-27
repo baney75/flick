@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'preact/hooks'
 import { askable, gate, mayAskNow } from '../lib/picking'
-import { CachedLookups, cancelFetch, fetching, torrentHashes, torrentUrl, type CachedMap } from '../lib/debrid-play'
+import { CachedLookups, cancelFetch, fetching, torrentHashes, torrentUrl, type CachedMap, type Episode } from '../lib/debrid-play'
 import { services as playable } from '../lib/plugins/services'
 import type { Stream } from '../lib/plugins/validate'
 import type { Ranked } from '../lib/pick'
@@ -38,5 +38,5 @@ export function DebridWait({ streamKey }: { streamKey: string }) {
 }
 
 /** Resolves a torrent row through its service, with the VPN rules read live. */
-export const playTorrent = (key: string, s: Stream, r: Ranked) =>
-  torrentUrl(key, s, r, { list: playable.value, may: mayAskNow, watch: (fn) => gate.subscribe(fn) })
+export const playTorrent = (key: string, s: Stream, r: Ranked, episode?: Episode) =>
+  torrentUrl(key, s, r, { list: playable.value, may: mayAskNow, watch: (fn) => gate.subscribe(fn), ...(episode ? { episode } : {}) })

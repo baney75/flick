@@ -100,6 +100,9 @@ export function torrentOf(s) {
   if (typeof s.infoHash !== 'string' || !/^[0-9a-f]{40}$/i.test(s.infoHash)) return null
   const t = { infoHash: s.infoHash.toLowerCase() }
   if (Number.isSafeInteger(s.fileIdx) && s.fileIdx >= 0) t.fileIdx = s.fileIdx
+  // The file's name lets a debrid service find the episode in a season pack.
+  const name = typeof s.behaviorHints?.filename === 'string' ? s.behaviorHints.filename.trim() : ''
+  if (name && name.length <= 512) t.name = name
   const trackers = (Array.isArray(s.sources) ? s.sources : [])
     .filter((x) => typeof x === 'string' && x.startsWith('tracker:'))
     .map((x) => x.slice('tracker:'.length))
