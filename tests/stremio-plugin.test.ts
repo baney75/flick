@@ -46,9 +46,18 @@ describe('Stremio plugin protocol', () => {
     expect(out.slice(1).every((s) => s.external)).toBe(true)
     expect(V.validateStreams(out)).toHaveLength(3)
   })
+  it('turns an infoHash stream into a torrent, trackers from its tracker: sources (SPEC-torrent rule 3)', () => {
+    const H = 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c'
+    const s = { infoHash: H.toUpperCase(), fileIdx: 2, name: 'Addon', title: '1080p', sources: ['tracker:udp://t.example:80', 'dht:x', 'tracker:udp://t.example:80', 'tracker:http://192.168.1.1/announce', 'tracker:udp://127.1:80', 'tracker:http://localhost./announce', 'tracker:udp://stremio.localhost.:80', 'tracker:ws://t.example', 'tracker:https://t.example/a'] }
+    expect(S.toStream(s, 'X')).toEqual({ torrent: { infoHash: H, fileIdx: 2, trackers: ['udp://t.example:80', 'https://t.example/a'] }, title: 'Addon · 1080p', group: 'X', subs: [] })
+    expect(S.toStream({ infoHash: H }, 'X')?.torrent).toEqual({ infoHash: H })
+    expect(S.toStream({ infoHash: H, fileIdx: -1 }, 'X')?.torrent).toEqual({ infoHash: H })
+    expect(S.toStream({ infoHash: 'abc' }, 'X')).toBeNull()
+    const many = Array.from({ length: 60 }, (_, i) => `tracker:udp://t${i}.example:80`)
+    expect(S.toStream({ infoHash: H, sources: many }, 'X')?.torrent?.trackers).toHaveLength(50)
+    expect(V.validateStreams([S.toStream(s, 'X')])[0].torrent?.infoHash).toBe(H)
+  })
   it('never plays a torrent around the VPN gate: no Stremio server URL, no hand-off', () => {
-    expect(S.toStream({ infoHash: 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c', fileIdx: 2 }, 'X')).toBeNull()
-    expect(S.toStream({ infoHash: 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c' }, 'X')).toBeNull()
     expect(code).not.toMatch(/11470|web\.stremio\.com|\/\/127\.0\.0\.1|'127\.0\.0\.1'/)
     expect(S.default.hosts).toEqual(['*'])
   })
@@ -80,25 +89,8 @@ describe('Stremio plugin protocol', () => {
       store: { get: async () => undefined, set: async () => {} },
     }
     const out = await S.default.streams(ctx, { type: 'movie', id: 'tt1', videoId: 'tt1' })
-    expect(out.map((s: { url: string }) => s.url)).toEqual(['https://cdn.example/a.mp4'])
+    expect(out.map((s: { url?: string; torrent?: { infoHash: string } }) => s.url ?? s.torrent?.infoHash)).toEqual(['dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c', 'https://cdn.example/a.mp4'])
     expect(seen.some((u) => /127\.0\.0\.1|:11470/.test(u))).toBe(false)
-  })
-  it('says why an addon with only torrent streams shows none', async () => {
-    const logs: string[] = []
-    const ctx = {
-      log: (m: string) => logs.push(m),
-      fetch: async (u: string) => {
-        const resources = u.startsWith('https://only.example/') ? ['stream'] : []
-        const body = u.endsWith('/manifest.json')
-          ? { id: 'y', name: 'Torrents Only', version: '1', types: ['movie'], idPrefixes: ['tt'], resources, catalogs: [] }
-          : { streams: [{ infoHash: 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c' }] }
-        return new Response(JSON.stringify(body), { status: 200 })
-      },
-      settings: { addons: ['https://only.example/manifest.json'] },
-      store: { get: async () => undefined, set: async () => {} },
-    }
-    expect(await S.default.streams(ctx, { type: 'movie', id: 'tt2', videoId: 'tt2' })).toEqual([])
-    expect(logs.some((m) => /Torrents Only offers only torrent streams/.test(m))).toBe(true)
   })
 })
 

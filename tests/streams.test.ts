@@ -46,6 +46,11 @@ describe('stream sections', () => {
     expect(best([s('x 1080p', { external: true })])).toBeNull()
     expect(best([])).toBeNull()
   })
+  it('never plays a torrent that has no url yet', () => {
+    const torrent = { title: 't 1080p', torrent: { infoHash: 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c' } }
+    expect(best([torrent, s('u 720p')])?.title).toBe('u 720p')
+    expect(best([torrent])).toBeNull()
+  })
 })
 
 // SPEC P4 rule 19: Download shows on one-file http(s) streams, and on yt-dlp streams in the desktop app only.
@@ -68,5 +73,6 @@ describe('downloadable', () => {
     ['another tool', { url: 'flick-tool:other/abc' }, desktop, null],
     ['a file only the desktop app converts, on the website', { url: 'https://archive.org/download/x/x.avi', needsDesktop: true }, web, null],
     ['a file only the desktop app converts, on the desktop app', { url: 'https://archive.org/download/x/x.avi', needsDesktop: true }, desktop, 'file'],
+    ['a torrent (SPEC-torrent rule 9)', { torrent: { infoHash: 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c' } }, desktop, null],
   ])('%s', (_, st, app, want) => expect(downloadable(st, app)).toBe(want))
 })

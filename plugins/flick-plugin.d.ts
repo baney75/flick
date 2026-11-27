@@ -47,8 +47,19 @@ export interface Meta {
 /** A chip in Library. At most 20; id is 1 to 40 of a-z 0-9 _ -, name 1 to 40 characters. */
 export interface Shelf { id: string; name: string; layout?: 'poster' | 'square' | 'landscape' | 'list'; order?: 'plugin' | 'added' | 'name' | 'year' }
 export interface Sub { url: string; lang: string; label?: string }
+/** A torrent the desktop app plays behind its VPN gate, or through a debrid service. */
+export interface StreamTorrent {
+  /** 40 hex characters. */
+  infoHash: string
+  /** The file to play, 0 or more; the largest video when absent. */
+  fileIdx?: number
+  /** At most 50 udp://, http:// or https:// trackers. */
+  trackers?: string[]
+}
+/** A stream has a `url`, or a `torrent` in its place. */
 export interface Stream {
-  url: string
+  url?: string
+  torrent?: StreamTorrent
   title?: string
   quality?: string
   kind?: 'video' | 'audio' | 'book'

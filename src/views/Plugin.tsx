@@ -16,7 +16,7 @@ import { isBuiltinType, type CatalogDef, type Meta, type Stream, type Video } fr
 import { sections, qualityOf, hdrOf, sizeOf, downloadable } from '../lib/plugins/streams'
 import { rank, pickLine, subLangFor, needsGate, type Ranked } from '../lib/pick'
 import { streamCandidates } from '../lib/candidates'
-import { ctxNow, current, debridNow, deviceFor, holdGate, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
+import { ctxNow, current, debridNow, deviceFor, holdGate, NO_ENGINE_YET, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
 import { langCode } from '../lib/release'
@@ -256,7 +256,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   } : undefined
 
   const save = (s: Stream) => {
-    const saved: Saved = { key, plugin: rec.id, title: meta.name, subtitle: label, poster: video?.thumbnail ?? meta.background ?? meta.poster, kind: s.kind === 'audio' ? 'audio' : 'video', url: s.url, ref }
+    const saved: Saved = { key, plugin: rec.id, title: meta.name, subtitle: label, poster: video?.thumbnail ?? meta.background ?? meta.poster, kind: s.kind === 'audio' ? 'audio' : 'video', url: s.url!, ref }
     saveStream(saved)
   }
 
@@ -273,7 +273,8 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   const streamOf = (r: Ranked) => shown[Number(r.c.id.slice(r.c.id.lastIndexOf('#') + 1))]
   const rowOf = new Map(rows.map((r) => [streamOf(r), r]))
   const shutBy = (r?: Ranked) => shutFor(r, ctx.vpnForDebrid)
-  const best = rows.find((r) => !r.blocked && !shutBy(r)) ?? null
+  // Play starts a stream with a url; a torrent waits for the engine or a debrid service to give it one.
+  const best = rows.find((r) => !r.blocked && !shutBy(r) && !!streamOf(r).url) ?? null
   const top = best ? streamOf(best) : null
 
   const start = async (s: Stream, startAt?: number) => {
@@ -282,9 +283,12 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     const r = rowOf.get(s)
     const shut = shutBy(r)
     if (shut) { notify(shut); return }
-    if (s.external) { window.open(s.url, '_blank', 'noopener'); return }
+    // A torrent has no url to open: it plays once the engine or a debrid service gives it one.
+    const url = s.url
+    if (!url) { notify(r?.blocked ?? NO_ENGINE_YET); return }
+    if (s.external) { window.open(url, '_blank', 'noopener'); return }
     if (s.kind === 'book') {
-      go(`/read-url?u=${encodeURIComponent(s.url)}&t=${encodeURIComponent(meta.name)}&r=${encodeURIComponent(JSON.stringify(ref))}`)
+      go(`/read-url?u=${encodeURIComponent(url)}&t=${encodeURIComponent(meta.name)}&r=${encodeURIComponent(JSON.stringify(ref))}`)
       return
     }
     const subs = [...(s.subs ?? [])]
@@ -308,7 +312,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       title: meta.name,
       subtitle: label,
       kind: s.kind === 'audio' ? 'audio' : 'video',
-      url: s.url,
+      url,
       poster: video?.thumbnail ?? meta.background ?? meta.poster,
       subs: subs.slice(0, 12).map((x) => ({ label: x.label ?? x.lang, lang: x.lang, url: x.url })),
       ref,

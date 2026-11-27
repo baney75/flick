@@ -45,6 +45,33 @@ describe('plugin validation', () => {
     expect(s.map((x) => x.url)).toEqual(['https://cdn.example/a.mp4', 'http://192.168.1.2/b.mkv', 'https://x.example/d'])
     expect(s[2].subs).toEqual([{ url: 'https://s/x.srt', lang: 'en' }])
   })
+  it('takes a torrent in place of a url, checked like the desktop engine checks it (SPEC-torrent rule 2)', () => {
+    const H = 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c'
+    const s = V.validateStreams([
+      { torrent: { infoHash: H.toUpperCase(), fileIdx: 2, trackers: ['udp://t.example:80', 'https://t.example/a'] }, title: 'T', group: 'G', kind: 'book', external: true, needsDesktop: true },
+      { torrent: { infoHash: H } },
+      { url: 'https://cdn.example/a.mp4', torrent: { infoHash: 'not a hash' } },
+    ])
+    expect(s[0]).toEqual({ torrent: { infoHash: H, fileIdx: 2, trackers: ['udp://t.example:80', 'https://t.example/a'] }, title: 'T', group: 'G' })
+    expect(s[1]).toEqual({ torrent: { infoHash: H } })
+    // A null torrent is an absent one, and an empty url is no url.
+    expect(V.validateStreams([{ url: 'https://cdn.example/a.mp4', torrent: null }, { url: undefined, torrent: null }])).toEqual([{ url: 'https://cdn.example/a.mp4' }])
+    expect(V.validateStreams([{ url: ' ', torrent: { infoHash: H } }])).toEqual([{ torrent: { infoHash: H } }])
+    expect(s[2]).toEqual({ url: 'https://cdn.example/a.mp4' })
+    const bad = (torrent: unknown) => () => V.validateStreams([{ torrent }])
+    expect(bad({ infoHash: H.slice(0, 39) })).toThrow('torrent.infoHash must be 40 hex characters.')
+    expect(bad({ infoHash: `${H.slice(0, 39)}g` })).toThrow('torrent.infoHash')
+    expect(bad({})).toThrow('torrent.infoHash')
+    expect(bad('magnet:?xt=urn:btih:x')).toThrow('torrent must be')
+    for (const fileIdx of [-1, 1.5, '2', null]) expect(bad({ infoHash: H, fileIdx })).toThrow('torrent.fileIdx')
+    for (const t of ['file:///etc/passwd', 'ws://t.example', 'UDP://t.example:80', 'udp://', 'udp://a b', 'http:t.example', 7])
+      expect(bad({ infoHash: H, trackers: [t] }), String(t)).toThrow('torrent.trackers takes udp, http and https trackers')
+    expect(bad({ infoHash: H, trackers: 'udp://t.example:80' })).toThrow('torrent.trackers must be a list.')
+    expect(bad({ infoHash: H, trackers: [`https://t.example/${'a'.repeat(2048)}`] })).toThrow('at most 2048 bytes')
+    const many = Array.from({ length: 51 }, (_, i) => `udp://t${i}.example:80`)
+    expect(bad({ infoHash: H, trackers: many })).toThrow('at most 50 trackers')
+    expect(V.validateStreams([{ torrent: { infoHash: H, trackers: many.slice(0, 50) } }])[0].torrent?.trackers).toHaveLength(50)
+  })
   it('skips bad metas, trims strings and caps items at 200', () => {
     const items = Array.from({ length: 250 }, (_, i) => ({ id: `m${i}`, type: 'movie', name: 'x'.repeat(3000), poster: 'javascript:1' }))
     items.splice(1, 0, { id: 'bad', type: 'Nope', name: 'Bad', poster: '' })

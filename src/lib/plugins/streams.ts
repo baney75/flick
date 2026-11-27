@@ -42,16 +42,18 @@ export function sections(list: Stream[]): Section[] {
     .filter((x) => x.streams.length)
 }
 
-/** The stream "Play" starts: the best quality that plays inside Flick, or null when every one is external. */
+/** The stream "Play" starts: the best quality with a url that plays inside Flick, or null when there is none. */
 export function best(list: Stream[]): Stream | null {
-  for (const x of sections(list)) { const s = x.streams.find((s) => !s.external); if (s) return s }
+  for (const x of sections(list)) { const s = x.streams.find((s) => !s.external && !!s.url); if (s) return s }
   return null
 }
 
 /** How a stream can be saved for offline: one http(s) file, a yt-dlp stream in the desktop app, or not at all.
- *  HLS and DASH playlists are many files, a book opens in the reader, and an external link is not Flick's. */
+ *  HLS and DASH playlists are many files, a book opens in the reader, an external link is not Flick's,
+ *  and a torrent never saves. */
 export function downloadable(s: Stream, app: { desktop: boolean; mobile: boolean }): 'file' | 'tool' | null {
-  if (s.external || s.kind === 'book') return null
+  // A torrent plays only while it streams behind the VPN gate (SPEC-torrent rule 9).
+  if (!s.url || s.external || s.kind === 'book') return null
   // MKV, AVI and the like play only where the desktop app converts them.
   if (s.needsDesktop && !app.desktop) return null
   if (s.url.startsWith('flick-tool:ytdlp/')) return app.desktop && !app.mobile ? 'tool' : null
