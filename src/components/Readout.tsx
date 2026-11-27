@@ -1,6 +1,7 @@
 // A small line under the player's title while a debrid stream plays: the service, the download
 // speed over the last 5 seconds, and whether the VPN gate passes now. For a torrent the built-in
-// engine plays, the engine's own speed and peers. It shows with the controls
+// engine plays, the engine's own speed and peers. For every source, the stall count once one
+// happened (SPEC-playback rule 6). It shows with the controls
 // and hides with them, so it never covers the picture.
 
 import { useEffect, useState } from 'preact/hooks'
@@ -9,7 +10,7 @@ import { RateMeter } from '../lib/speed'
 import { gate } from '../lib/picking'
 import { bufferedSeconds, counts, engineLine, engineNow, fetchedBytes, viaLine, type Via } from '../lib/readout'
 
-export function Readout({ video, via, url }: { video: RefObject<HTMLVideoElement | null>; via?: Via; url?: string }) {
+export function Readout({ video, via, url, stalls }: { video: RefObject<HTMLVideoElement | null>; via?: Via; url?: string; stalls?: string | null }) {
   const [mbps, setMbps] = useState<number | null>(null)
   useEffect(() => {
     const v = video.current
@@ -29,10 +30,9 @@ export function Readout({ video, via, url }: { video: RefObject<HTMLVideoElement
     const t = setInterval(() => { if (seen && counts(v.currentSrc, url, v.duration)) setMbps(meter.mbps(performance.now())); else setMbps(null) }, 1000)
     return () => { v.removeEventListener('progress', onProgress); clearInterval(t) }
   }, [])
-  if (!via) {
-    const e = engineNow.value
-    return e ? <div class="t2 readout">{engineLine(e)}</div> : null
-  }
   const g = gate.value
-  return <div class="t2 readout">{viaLine(via, mbps, g ? g.ok === true : null)}</div>
+  const e = engineNow.value
+  const line = via ? viaLine(via, mbps, g ? g.ok === true : null) : e ? engineLine(e) : null
+  const all = [line, stalls].filter(Boolean).join(' · ')
+  return all ? <div class="t2 readout">{all}</div> : null
 }

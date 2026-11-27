@@ -11,6 +11,7 @@ import { kodiConvert, convertUrl } from '../lib/servers'
 import { openToolStream } from '../lib/plugins/runtime'
 import { Icon } from './icons'
 import { Readout } from './Readout'
+import { Delayed, KEEPS_STALLING, kindOf, OPENING, WAITING, waitLine, Watchdog } from '../lib/stalls'
 import { convertLine, isHls, planSeek, probeStream, probes, Remux, SLOW_SERVER, writtenOf } from '../lib/playback'
 
 const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
@@ -36,8 +37,18 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   // A stream the web view cannot open plays through a live remux run; its start offsets the clock.
   const remux = useRef<Remux | null>(null)
   const restarting = useRef(false)
+  // What plays now, for a reload at the same place, and the watchdog over it (rule 6).
+  const playingUrl = useRef('')
+  const dog = useRef<Watchdog | null>(null)
+  const [stallLine, setStallLine] = useState<string | null>(null)
+  const [stuck, setStuck] = useState(false)
 
-  const [status, setStatus] = useState<string | null>('Loading')
+  const [status, setStatus] = useState<string | null>(OPENING)
+  // The words beside the spinner wait 1 s (rule 7); the spinner shows at once.
+  const [words, setWords] = useState<string | null>(null)
+  const delayed = useRef<Delayed | null>(null)
+  if (!delayed.current) delayed.current = new Delayed(setWords)
+  useEffect(() => { delayed.current!.set(status) }, [status])
   const [error, setError] = useState<string | null>(null)
   const [playing, setPlaying] = useState(false)
   const [time, setTime] = useState(0)
@@ -97,10 +108,11 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         let startAt = req.startAt
         if (probes(url)) {
           // Only a server that never answers stops here; any other probe failure plays the link as it is.
+          const slow = setTimeout(() => !cancelled && setStatus(WAITING), 3000)
           const p = await probeStream(url).catch((e) => {
             if (String((e as Error)?.message ?? e) === SLOW_SERVER) throw new Error(SLOW_SERVER)
             return null
-          })
+          }).finally(() => clearTimeout(slow))
           if (cancelled) return
           if (p && !p.direct) {
             const r = new Remux(url, p)
@@ -132,6 +144,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     return () => {
       cancelled = true
       remux.current?.stop()
+      dog.current?.stop()
+      delayed.current?.stop()
       hls.current?.destroy()
       resolved.current?.revoke?.()
     }
@@ -140,12 +154,16 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   async function attach(v: HTMLVideoElement, url: string, startAt = req.startAt) {
     hls.current?.destroy()
     hls.current = null
+    playingUrl.current = url
+    // Through a ref: the watchdog outlives this render, and a reload must use the current speed and volume.
+    if (!dog.current) dog.current = new Watchdog(kindOf(req, url, !!remux.current), { reload: () => onStuck.current.reload(), giveUp: () => onStuck.current.giveUp() })
+    dog.current.attached()
     // A local event playlist (a flick-tool: stream through ffmpeg) is still growing; start at the top, not the live edge.
     const local = isHls(url) && /^(asset:|https?:\/\/asset\.localhost\/)/.test(url)
     if (isHls(url) && !v.canPlayType('application/vnd.apple.mpegurl')) {
       const { default: Hls } = await import('hls.js')
       if (!Hls.isSupported()) throw new Error('This browser cannot play HLS streams.')
-      const h = new Hls({ enableWorker: true, lowLatencyMode: false, startFragPrefetch: true, maxBufferLength: 60, startPosition: local ? 0 : -1 }) as unknown as HlsLike
+      const h = new Hls({ enableWorker: true, lowLatencyMode: false, startFragPrefetch: true, maxBufferLength: 60, startPosition: startAt || (local ? 0 : -1) }) as unknown as HlsLike
       h.on(Hls.Events.ERROR, (_e: unknown, d: { fatal: boolean; details: string }) => {
         if (d.fatal) onFail(`Stream error: ${d.details}`)
       })
@@ -168,6 +186,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     const v = video.current!
     // A run being replaced loses its folder; the new run plays instead.
     if (restarting.current) return
+    // No reload behind an error card or a conversion; a failed reload says the stream keeps stalling.
+    if (dog.current?.failed()) return
     if (remux.current) { setStatus(null); setError(msg); return }
     const src = req.src
     // A URL with a server-side fallback stream (Jellyfin, Plex) uses that instead.
@@ -272,6 +292,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   async function restartAt(r: Remux, at: number) {
     const v = video.current!
     restarting.current = true
+    // A stall open before the seek ends with it; the new run is watched from its start, its first wait expected.
+    dog.current?.attached()
     v.pause()
     v.removeAttribute('src')
     v.load()
@@ -283,9 +305,46 @@ function PlayerInner({ req }: { req: PlayRequest }) {
       await attach(v, url, 0)
     } catch (e) {
       restarting.current = false
+      if (dog.current?.failed()) return
       setStatus(null)
       setError(String((e as Error)?.message ?? e))
     }
+  }
+
+  // ---- the stall watchdog: one reload at the same place, then point to another source ----
+  function reload() {
+    const v = video.current
+    if (!v) return
+    const at = clock()
+    if (remux.current) { restartAt(remux.current, at); return }
+    attach(v, playingUrl.current, at).catch((e) => { setStatus(null); setError(String((e as Error)?.message ?? e)) })
+  }
+  function giveUp() {
+    video.current?.pause()
+    setStatus(null)
+    setStuck(true)
+    setError(KEEPS_STALLING)
+  }
+  const onStuck = useRef({ reload, giveUp })
+  onStuck.current = { reload, giveUp }
+  const bufferedAt = (v: HTMLVideoElement) => {
+    for (let i = 0; i < v.buffered.length; i++) {
+      if (v.buffered.start(i) <= v.currentTime + 0.5 && v.currentTime <= v.buffered.end(i)) return [v.buffered.start(i), v.buffered.end(i)]
+    }
+    return [v.currentTime, v.currentTime]
+  }
+  const onWaiting = () => {
+    const v = video.current
+    if (!v || restarting.current) return
+    setStatus(waitLine(dog.current?.kind ?? 'plugin'))
+    const [from, to] = bufferedAt(v)
+    dog.current?.waiting(from, to, v.seeking)
+    setStallLine(dog.current?.summary() ?? null)
+  }
+  const onPlayingNow = () => {
+    setStatus(null)
+    dog.current?.playing()
+    setStallLine(dog.current?.summary() ?? null)
   }
 
   // ---- progress saving ----
@@ -545,9 +604,10 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         onClick={toggle}
         onDblClick={toggleFull}
         onPlay={() => { setPlaying(true); setStatus(null) }}
-        onPause={() => { setPlaying(false); save() }}
-        onWaiting={() => setStatus('Buffering')}
-        onPlaying={() => setStatus(null)}
+        onPause={() => { setPlaying(false); dog.current?.paused(); save() }}
+        onWaiting={onWaiting}
+        onPlaying={onPlayingNow}
+        onProgress={() => { const v = video.current; if (v) dog.current?.data(bufferedAt(v)[1]) }}
         onCanPlay={() => setStatus(null)}
         onLoadedMetadata={() => setDur(durOf())}
         onDurationChange={() => setDur(durOf())}
@@ -564,14 +624,16 @@ function PlayerInner({ req }: { req: PlayRequest }) {
       <video ref={preview} class="preview-src" muted preload="auto" playsInline />
       <div ref={cueBox} class="subs" aria-live="off" />
 
-      {status && !error && <div class="status"><span class="spinner" />{status}</div>}
+      {status && !error && <div class="status"><span class="spinner" />{words}</div>}
       {error && (
         <div class="error-card">
           <h3>Can't play this</h3>
           <p>{error}</p>
           <div class="row">
             {req.url && <a class="btn" href={req.url} target="_blank" rel="noreferrer">Open stream URL</a>}
-            <button class="btn primary" onClick={close}>Back</button>
+            {stuck
+              ? <button class="btn primary" onClick={() => { close(); setTimeout(() => document.querySelector<HTMLElement>('.streams .stream')?.focus(), 0) }}>Try another source</button>
+              : <button class="btn primary" onClick={close}>Back</button>}
           </div>
         </div>
       )}
@@ -582,7 +644,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         <div class="titles">
           <div class="t1">{req.title}</div>
           {req.subtitle && <div class="t2">{req.subtitle}</div>}
-          <Readout video={video} via={req.via} url={req.url} />
+          <Readout video={video} via={req.via} url={req.url} stalls={stallLine} />
         </div>
         {file && hasOpfs && req.src?.t === 'session' && (
           <button class="btn ghost" onClick={store} disabled={storing !== null}>
