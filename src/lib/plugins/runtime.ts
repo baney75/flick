@@ -122,7 +122,19 @@ export function ctxHandler(id: string, desktop = isDesktop, call: Invoke = invok
 interface Frame { rpc: Rpc; iframe: HTMLIFrameElement }
 const frames = new Map<string, Promise<Frame>>()
 
-export function openFrame(handle: Handler, doc: Document = document): Promise<Frame> {
+/** Why Flick ended a plugin's frame: it missed a ping, or the frame loaded again (it navigated away). */
+export type Ended = 'no answer' | 'navigated'
+
+/** How long a plugin gets to answer a ping after one of its calls passed its time limit. */
+export const PING_MS = 1500
+
+/**
+ * One sandboxed frame; the plugin's code runs in a Worker inside it (public/plugin-host.js). A call past
+ * its time limit fails alone while the plugin still answers a ping: it may only be waiting on a slow site.
+ * A plugin that can't answer one (stuck in a loop), or a frame that loads a second time (it navigated, so
+ * its port is gone), ends the frame and its Worker, and `onDead` tells the caller to start a new one.
+ */
+export function openFrame(handle: Handler, doc: Document = document, onDead?: (why: Ended) => void): Promise<Frame> {
   const iframe = doc.createElement('iframe')
   iframe.setAttribute('sandbox', SANDBOX)
   iframe.setAttribute('aria-hidden', 'true')
@@ -131,13 +143,32 @@ export function openFrame(handle: Handler, doc: Document = document): Promise<Fr
   iframe.src = HOST_PAGE
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => { iframe.remove(); reject(new Error('The plugin sandbox did not start.')) }, V.CALL_TIMEOUT_MS)
+    let rpc: Rpc | null = null
+    // Removing the frame ends its Worker too: WebKit at once, Chromium within about 2 s (measured).
+    let over = false
+    const end = (why: Ended) => {
+      if (over) return
+      over = true
+      rpc?.close()
+      iframe.remove()
+      onDead?.(why)
+    }
+    // The ping's own time limit lands here too, while `pinging` is set, and its rejection ends the frame.
+    let pinging = false
+    const stuck = () => {
+      if (pinging || !rpc) return
+      pinging = true
+      rpc.call('ping', [], PING_MS).then(() => { pinging = false }, () => end('no answer'))
+    }
     iframe.addEventListener('load', () => {
+      if (rpc) return end('navigated')
       clearTimeout(t)
       const ch = new MessageChannel()
       // The sandboxed page has an opaque origin, so '*' is the only target that reaches it.
       iframe.contentWindow!.postMessage({ flick: 'port' }, '*', [ch.port2])
-      resolve({ iframe, rpc: connect(ch.port1, handle) })
-    }, { once: true })
+      rpc = connect(ch.port1, handle, V.CALL_TIMEOUT_MS, stuck)
+      resolve({ iframe, rpc })
+    })
     doc.body.appendChild(iframe)
   })
 }
@@ -209,9 +240,26 @@ function frameFor(rec: Installed): Promise<Frame> {
       setSecrets(rec.id, rec)
       await registerHosts(rec)
       mark('start.hosts')
-      const fr = await openFrame(ctxHandler(rec.id, isDesktop, invoke, service))
+      // Until load answers, a frame that ends is a failed start, which the catch below reports.
+      let loaded = false
+      const fr = await openFrame(ctxHandler(rec.id, isDesktop, invoke, service), document, (why) => {
+        if (!loaded || frames.get(rec.id) !== f) return
+        frames.delete(rec.id)
+        logLine(rec.id, why === 'navigated'
+          ? 'Stopped: its page loaded again, so Flick lost touch with it. It starts again on the next call.'
+          : 'Stopped: it did not answer in time. It starts again on the next call.')
+      })
       mark('start.sandbox')
-      await fr.rpc.call('load', [rec.code, platformName(), rec.settings])
+      // A plugin that fails to load (no Worker, a bad export, top-level code past the time limit) loses its
+      // frame here: no one else holds it, and its Worker could still run and ask Flick for things.
+      try {
+        await fr.rpc.call('load', [rec.code, platformName(), rec.settings])
+        loaded = true
+      } catch (e) {
+        fr.rpc.close()
+        fr.iframe.remove()
+        throw e
+      }
       mark('start.load')
       return fr
     })()
