@@ -16,6 +16,7 @@ import { allServices, hasKey, moveService, removeService, type Service } from '.
 import type { PluginManifest, ThemeManifest } from '../lib/plugins/validate'
 import { FlickForm, JellyfinForm, KodiForm, PlexForm } from './Servers'
 import { ActionForm, SettingsForm, hostWords } from './Plugins'
+import { ExtensionsSection } from './Extensions'
 import { FromStremio, KeyForm, useAccount } from './Services'
 
 export const HUB = '/settings/plugins'
@@ -153,9 +154,11 @@ function PluginBody({ p }: { p: Installed }) {
       {p.kind === 'source' && src && (src.settings.length > 0 || src.actions.length > 0) && (
         <section class="panel">
           {src.actions.map((a) => <ActionForm p={p} a={a} />)}
-          {src.settings.length > 0 && <SettingsForm p={p} fields={src.settings} />}
+          {/* Keyed on the saved settings, so an addon added below shows here and a later Save keeps it. */}
+          {src.settings.length > 0 && <SettingsForm key={JSON.stringify(p.settings)} p={p} fields={src.settings} />}
         </section>
       )}
+      {p.kind === 'source' && src?.has.extensions && <section class="panel"><ExtensionsSection p={p} /></section>}
       {src && (
         <details class="panel">
           <summary class="small">Log</summary>

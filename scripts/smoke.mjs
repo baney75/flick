@@ -793,6 +793,58 @@ try {
   check(await page.locator('.nav-item.on').innerText() === 'Home', 'a plugin page sits under Home in the bar')
   const stremioPage = page.url()
 
+  // Stremio's Addons on its own page (SPEC-plugins-hub rule 10), signed out: Cinemeta built in, add by
+  // address with one confirm, Browse, Remove. Stremio's addon catalog and Torrentio answer from
+  // tests/fixtures/stremio/addons.json, so none of those requests leave this machine.
+  const stremioFx = JSON.parse(readFileSync('tests/fixtures/stremio/addons.json', 'utf8'))
+  const fxAddons = [...stremioFx.official.addons, ...stremioFx.community.addons]
+  await page.route(/^https:\/\/(v3-cinemeta\.strem\.io\/addon_catalog\/|torrentio\.strem\.fun\/|torrent-catalogs\.strem\.fun\/)/, (route) => {
+    const u = route.request().url()
+    const body = u.endsWith('/official.json') ? stremioFx.official : u.endsWith('/community.json') ? stremioFx.community
+      : /^https:\/\/torrentio\.strem\.fun\/.*manifest\.json$/.test(u) ? stremioFx.torrentio : fxAddons.find((a) => a.transportUrl === u)?.manifest
+    return route.fulfill({ status: body ? 200 : 404, headers: { 'access-control-allow-origin': '*' }, contentType: 'application/json', body: JSON.stringify(body ?? {}) })
+  })
+  await page.goto(`${BASE}/#/settings/plugins/dev.flick.stremio`)
+  const addonsSec = page.getByRole('region', { name: 'Addons' })
+  const named = (name) => addonsSec.locator('.ext-row', { has: page.getByText(name, { exact: true }) })
+  const cineRow = named('Cinemeta')
+  const cineOk = await cineRow.waitFor({ timeout: 20000 }).then(() => true, () => false) && await cineRow.getByRole('button', { name: /Remove/ }).count() === 0
+  check(cineOk, `Stremio's page lists Cinemeta under Addons with no Remove${cineOk ? '' : `: ${JSON.stringify(await page.locator('main').innerText())}`}`)
+  await addonsSec.getByLabel('Addon address').fill('stremio://torrentio.strem.fun/torbox=abc123XYZ9/manifest.json')
+  await addonsSec.getByRole('button', { name: 'Add', exact: true }).click()
+  const addSheet = page.getByRole('dialog', { name: 'Add Torrentio' })
+  await addSheet.waitFor({ timeout: 15000 })
+  const sheetText = await addSheet.innerText()
+  check(sheetText.includes('Movies') && sheetText.includes('torrentio.strem.fun') && sheetText.includes('torbox=\u2022\u2022\u2022XYZ9') && !sheetText.includes('abc123XYZ9'), 'adding Torrentio by address shows what it provides, its host and a masked key first')
+  check(!(await named('Torrentio').count()), 'nothing is added before the tap')
+  await addSheet.getByRole('button', { name: 'Add', exact: true }).click()
+  await addSheet.waitFor({ state: 'detached' })
+  const torRow = named('Torrentio')
+  check(await torRow.waitFor({ timeout: 15000 }).then(() => true, () => false) && (await torRow.innerText()).includes('\u2022\u2022\u2022XYZ9') && !(await torRow.innerText()).includes('abc123XYZ9'), 'the added addon is listed with its key masked')
+  check((await page.locator('textarea').first().inputValue()).includes('torrentio.strem.fun'), "the settings form shows the addon Stremio saved")
+  await addonsSec.getByRole('button', { name: 'Browse addons' }).click()
+  await addonsSec.getByLabel('Search addons').fill('torrentio')
+  const catRow = addonsSec.locator('.ext-browse .ext-row', { has: page.getByText('Torrent Catalogs', { exact: true }) })
+  check(await catRow.waitFor({ timeout: 15000 }).then(() => true, () => false)
+    && await page.waitForFunction(() => document.querySelectorAll('.ext-browse .ext-row').length === 1, null, { timeout: 5000 }).then(() => true, () => false), "Browse searches Stremio's addon catalog")
+  await page.setViewportSize({ width: 390, height: 844 })
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'the Addons section fits a phone without sideways scroll')
+  await page.screenshot({ path: 'test-media/shots/stremio-addons-phone.png' })
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await catRow.getByRole('button', { name: 'Add Torrent Catalogs' }).click()
+  await page.getByRole('dialog', { name: 'Add Torrent Catalogs' }).getByRole('button', { name: 'Add', exact: true }).click()
+  check(await catRow.getByText('Added').waitFor({ timeout: 15000 }).then(() => true, () => false)
+    && await addonsSec.locator('.ext-row:not(.ext-browse .ext-row)', { has: page.getByText('Torrent Catalogs', { exact: true }) }).count() === 1, 'Browse adds after the confirm and marks it Added')
+  page.once('dialog', (d) => d.accept())
+  await torRow.getByRole('button', { name: 'Remove Torrentio' }).click()
+  check(await torRow.waitFor({ state: 'detached', timeout: 15000 }).then(() => true, () => false), 'Remove takes the addon out')
+  await page.screenshot({ path: 'test-media/shots/stremio-addons.png' })
+  // Leave Stremio as it was, so later steps never ask Torrent Catalogs for rows.
+  page.once('dialog', (d) => d.accept())
+  await addonsSec.getByRole('button', { name: 'Remove Torrent Catalogs' }).click()
+  await named('Torrent Catalogs').first().waitFor({ state: 'detached', timeout: 15000 }).catch(() => {})
+  await page.unroute(/^https:\/\/(v3-cinemeta\.strem\.io\/addon_catalog\/|torrentio\.strem\.fun\/|torrent-catalogs\.strem\.fun\/)/)
+
   // Phone layout.
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(`${BASE}/#/library`)
