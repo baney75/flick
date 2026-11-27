@@ -59,7 +59,7 @@ export async function startSyncBinding() {
     ...[...prevPlugins].map(([k, v]) => [k, JSON.parse(v)] as [string, unknown]),
   ]
   await startSync((keys) => { applyRemote(keys).catch(() => {}) }, offer)
-  // A synced copy saved before a field turned secret here is written over once, so it stops travelling.
+  // A synced copy saved before a field turned secret here is rewritten without it once, so it stops travelling.
   publish(secretLeaks(installed.value, docValue))
 
   effect(() => {
@@ -180,7 +180,7 @@ async function applyPlugins() {
       if (Object.keys(patch).length) await setPluginSettings(rec.id, patch)
     }
     prevPlugins = pluginSnapshot(installed.value)
-    // A device on an older plugin can send a field this one keeps secret: write the synced copy back without it.
+    // A device on an older plugin can send a field this one keeps secret: rewrite the synced copy without it.
     publish(secretLeaks(installed.value, docValue))
   } finally {
     applying = false

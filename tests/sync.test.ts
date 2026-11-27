@@ -176,11 +176,10 @@ describe('sync keys', () => {
   it('a synced copy that still holds the addon list is written over without it, once', () => {
     const rec = stremioRec([KEYED])
     const key = [...pluginSnapshot([rec]).keys()][0]
-    const doc = new Map<string, unknown>([[key, { on: true, settings: { addons: [KEYED] } }]])
+    // Turned off on another device since: the rewrite keeps that.
+    const doc = new Map<string, unknown>([[key, { on: false, sha256: 'r', settings: { addons: [KEYED], lang: 'en' } }]])
     const fix = secretLeaks([rec], (k) => doc.get(k))
-    expect(fix).toHaveLength(1)
-    expect(fix[0][0]).toBe(key)
-    expect(JSON.stringify(fix[0][1])).not.toContain('abc123XYZ9')
+    expect(fix).toEqual([[key, { on: false, sha256: 'r', settings: { lang: 'en' } }]])
     // The value stays on this device; only the synced copy loses it.
     expect(rec.settings.addons).toEqual([KEYED])
     doc.set(fix[0][0], fix[0][1])

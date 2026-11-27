@@ -77,7 +77,8 @@ function Addons({ p }: { p: Installed }) {
   const load = async () => {
     try { setList(await listExtensions(p)); setErr('') } catch (e) { setErr((e as Error).message); setList([]) }
   }
-  useEffect(() => { void load() }, [p.id])
+  // Reload when the saved settings change, so a remove in the settings form shows here too.
+  useEffect(() => { void load() }, [p.id, JSON.stringify(p.settings)])
   useEffect(() => {
     if (!browsing) return
     let live = true

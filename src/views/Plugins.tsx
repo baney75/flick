@@ -80,14 +80,19 @@ export function ThemePicker() {
 function FieldInput({ f, value, set }: { f: Field; value: unknown; set: (v: unknown) => void }) {
   const id = `f-${f.key}`
   // A secret list (Stremio's addon addresses) is never shown or edited as raw text: each entry shows with
-  // any debrid key cut to its last 4, and the plugin's Addons section adds and removes them.
+  // any debrid key cut to its last 4. The plugin's Addons section adds them; Remove here also clears an
+  // entry that no longer loads, which Addons cannot list.
   if (f.type === 'list' && f.secret) {
     const entries = Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : []
     return (
       <div role="group" aria-label={f.label} style={{ display: 'grid', gap: '4px' }}>
         <span>{f.label}<span class="small dim"> (stays on this device)</span></span>
         {entries.length
-          ? <ul class="small" style={{ margin: 0, paddingLeft: '18px' }}>{entries.map((u) => <li key={u} style={{ overflowWrap: 'anywhere' }}>{maskUrl(u)}</li>)}</ul>
+          ? <ul class="small" style={{ margin: 0, paddingLeft: '18px' }}>{entries.map((u, i) => (
+            <li key={u} style={{ overflowWrap: 'anywhere' }}>
+              {maskUrl(u)} <button type="button" class="link-btn" aria-label={`Remove entry ${i + 1}, ${maskUrl(u)}`} onClick={() => set(entries.filter((x) => x !== u))}>Remove</button>
+            </li>
+          ))}</ul>
           : <span class="small dim">None yet.</span>}
         {f.help && <span class="small dim">{f.help}</span>}
       </div>

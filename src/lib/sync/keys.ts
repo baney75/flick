@@ -60,18 +60,18 @@ export function pluginSnapshot(list: Installed[]): Map<string, string> {
 }
 
 /**
- * Synced plugin entries that still hold a setting this device keeps secret, each with this device's copy
- * to write over it. A field that turned secret in an update (Stremio's addon list) leaves the synced
- * copy that way, so other devices stop receiving it; the value itself stays on each device.
+ * Synced plugin entries that still hold a setting this device keeps secret, each rewritten without it.
+ * A field that turned secret in an update (Stremio's addon list) leaves the synced copy that way, so
+ * other devices stop receiving it. The rest of the entry is kept as synced, so a newer change from
+ * another device (Stremio turned off there) is never undone; the value itself stays on each device.
  */
 export function secretLeaks(list: Installed[], read: (key: string) => unknown): [string, unknown][] {
-  const snap = pluginSnapshot(list)
   return list.flatMap((p): [string, unknown][] => {
     const url = p.url && p.kind !== 'service' ? portable(p.url) : null
     const k = url && `x:${url}`
     const v = k ? (read(k) as SyncedPlugin | null | undefined) : null
-    if (!k || !v?.settings || !snap.has(k)) return []
-    return Object.keys(v.settings).some((key) => isSecret(p, key)) ? [[k, JSON.parse(snap.get(k)!)]] : []
+    if (!k || !v?.settings || !Object.keys(v.settings).some((key) => isSecret(p, key))) return []
+    return [[k, { ...v, settings: Object.fromEntries(Object.entries(v.settings).filter(([key]) => !isSecret(p, key))) }]]
   })
 }
 

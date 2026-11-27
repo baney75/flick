@@ -235,7 +235,7 @@ export default {
   tools: [],
   settings: [
     // Secret: an addon address can hold a debrid key (Torrentio's torbox=...), so the list stays on this device.
-    { key: 'addons', label: 'Extra addon URLs', type: 'list', default: [], secret: true, help: 'Addons added while signed out. Add and remove them under Addons.' },
+    { key: 'addons', label: 'Extra addon URLs', type: 'list', default: [], secret: true, help: 'Addons added while signed out. Add them under Addons; Remove here also clears one that no longer loads.' },
   ],
   actions: [
     { id: 'signin', label: 'Sign in to Stremio', fields: [{ key: 'email', label: 'Email' }, { key: 'password', label: 'Password', type: 'password' }] },
