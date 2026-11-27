@@ -6,7 +6,7 @@ import { notify, settings, setSettings } from '../lib/store'
 import { Icon } from '../components/icons'
 import { isDesktop } from '../lib/platform'
 import { PluginIcon } from './Plugin'
-import { installed, prepare, install, remove, setEnabled, setPluginSettings, acceptUpdate, officialList, absolute, type Candidate, type OfficialEntry } from '../lib/plugins/registry'
+import { installed, prepare, install, remove, setEnabled, setPluginSettings, acceptUpdate, officialList, absolute, replaceLine, type Candidate, type OfficialEntry } from '../lib/plugins/registry'
 import { callPlugin, logs, type Installed } from '../lib/plugins/runtime'
 import { themes } from '../lib/plugins/use'
 import type { ActionDef, Field, PluginManifest, ThemeManifest } from '../lib/plugins/validate'
@@ -27,6 +27,9 @@ export function ReviewSheet({ c, extra, onDone }: { c: Candidate; extra?: string
   const [busy, setBusy] = useState(false)
   const m = c.manifest
   const src = c.kind !== 'theme' ? (m as PluginManifest) : null
+  const old = c.replaces
+  const swap = replaceLine(c)
+  const verb = swap ? 'Replace' : old ? 'Update' : 'Install'
   const go = async () => {
     setBusy(true)
     try {
@@ -39,9 +42,10 @@ export function ReviewSheet({ c, extra, onDone }: { c: Candidate; extra?: string
     }
   }
   return (
-    <div class="sheet-back" role="dialog" aria-modal="true" aria-label={`Install ${m.name}`}>
+    <div class="sheet-back" role="dialog" aria-modal="true" aria-label={`${verb} ${swap ? old!.manifest.name : m.name}`}>
       <div class="sheet panel">
-        <h3>{c.replaces ? `Update ${m.name}?` : `Install ${m.name}?`}</h3>
+        <h3>{verb} {swap ? old!.manifest.name : m.name}?</h3>
+        {swap && <p class="warn-box replaces">{swap}</p>}
         {!c.official && <p class="warn-box"><Icon name="external" size={16} /> Not from Flick. Install it only if you trust {m.author}.</p>}
         <div class="facts-list">
           <div><span class="dim">Kind</span> {c.kind === 'theme' ? 'Theme (colors only, runs no code)' : c.kind === 'service' ? 'Debrid service (set it up under Streaming services)' : 'Source plugin'}</div>
@@ -58,7 +62,7 @@ export function ReviewSheet({ c, extra, onDone }: { c: Candidate; extra?: string
         {src && <p class="small dim">It runs in a sandbox: it cannot read your library, other plugins, your sync key or your server tokens.</p>}
         {src && !isDesktop && <p class="small dim web-hosts">On the website the browser cannot hold a plugin to that list: it can also reach any site that allows it. The Flick apps enforce the list.</p>}
         <div class="row">
-          <button class="btn primary" onClick={go} disabled={busy}>{busy ? 'Installing…' : c.replaces ? 'Update' : 'Install'}</button>
+          <button class="btn primary" onClick={go} disabled={busy}>{busy ? 'Installing…' : verb}</button>
           <button class="btn ghost" onClick={() => onDone(false)} disabled={busy}>Cancel</button>
         </div>
       </div>
