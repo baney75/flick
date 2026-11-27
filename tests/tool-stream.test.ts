@@ -1,6 +1,7 @@
 // SPEC-youtube-play cases 7 to 9: the player's re-resolve after a failed stream, and a live stream's bar.
 import { describe, expect, it } from 'vitest'
 import { barFor, oneRetry, type ToolPlay } from '../src/lib/plugins/runtime'
+import { isHls } from '../src/lib/playback'
 
 const master = (n: number): ToolPlay => ({ url: `https://manifest.googlevideo.com/api/manifest/hls_variant/expire/${n}/file/index.m3u8`, live: false })
 
@@ -19,6 +20,12 @@ describe('a stream that fails while playing', () => {
     await expect(retry('flick-tool:ytdlp/t', 10)!).rejects.toThrow('yt-dlp: ERROR: [youtube] x: Video unavailable')
     expect(retry('flick-tool:ytdlp/t', 10)).toBeNull()
     expect(n).toBe(1)
+  })
+})
+
+describe('the master and the stream probe', () => {
+  it('is HLS, so the player hands it to the web view and never probes or remuxes it', () => {
+    expect(isHls(master(1).url)).toBe(true)
   })
 })
 
