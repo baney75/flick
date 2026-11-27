@@ -1,7 +1,7 @@
 // Library's Continue chip: every movie, episode, song or book left partway, wherever it plays from.
 
 import { useEffect, useMemo } from 'preact/hooks'
-import { progress, items, go } from '../lib/store'
+import { progress, items, loaded, go } from '../lib/store'
 import { Card } from '../components/Card'
 import { Icon } from '../components/icons'
 import { sources, libraries, loadLibrary, titlePath } from '../lib/plugins/use'
@@ -9,13 +9,16 @@ import { sources, libraries, loadLibrary, titlePath } from '../lib/plugins/use'
 import { continueEntries } from '../lib/continue'
 import { ResumeCard } from './Home'
 
-/** Everything left partway, one entry per title, newest first. */
+/** Everything left partway, one entry per title, newest first. Home and Library both show this. */
 export function useContinue() {
   const srcs = sources.value
   useEffect(() => { for (const rec of srcs) loadLibrary(rec) }, [srcs.map((r) => r.id).join()])
   const libs = useMemo(() => srcs.map((r) => ({ p: r.id, list: libraries.value[r.id]?.items ?? [] })), [srcs, libraries.value])
-  const showOf = useMemo(() => { const m = new Map(items.value.map((i) => [i.id, i.show])); return (id: string) => m.get(id) }, [items.value])
-  return useMemo(() => continueEntries(progress.value, libs, showOf), [progress.value, libs, showOf])
+  const lib = useMemo(() => {
+    const m = new Map(items.value.map((i) => [i.id, i.show]))
+    return { showOf: (id: string) => m.get(id), known: loaded.value ? (id: string) => m.has(id) : undefined }
+  }, [items.value, loaded.value])
+  return useMemo(() => continueEntries(progress.value, libs, lib.showOf, lib.known), [progress.value, libs, lib])
 }
 
 export function ContinueGrid({ list }: { list: ReturnType<typeof continueEntries> }) {

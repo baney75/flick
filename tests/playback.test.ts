@@ -1,6 +1,6 @@
 // SPEC-playback cases 4, 5 and 6: where a seek goes, the remux run's clock, and the probe cache.
 import { describe, expect, it, vi } from 'vitest'
-import { cardButtons, codecsPlayed, withServerFallback, FRESH_MS, onMediaError, resolveStream, convertLine, cuesAt, messageOf, DWELL_MS, intent, NO_ANSWER, planSeek, planStream, playsDirectly, playsHere, probeStream, Remux, RESOLVE_LIMIT_S, SAFE, serverWait, warmProbe, writtenOf, type Resolved, type StreamProbe } from '../src/lib/playback'
+import { afterError, cardButtons, codecsPlayed, followed, withServerFallback, FRESH_MS, onMediaError, onRemuxError, resolveStream, convertLine, cuesAt, messageOf, DWELL_MS, intent, NO_ANSWER, planSeek, planStream, playsDirectly, playsHere, probeStream, Remux, RESOLVE_LIMIT_S, SAFE, serverWait, warmProbe, writtenOf, type Resolved, type StreamProbe } from '../src/lib/playback'
 
 const mkv: StreamProbe = {
   duration: 5700, container: 'matroska,webm', video: 'h264', audio: 'ac3', channels: 6,
@@ -203,10 +203,20 @@ describe('planStream (rules 1 and 2)', () => {
     await resolveStream(u, '', '', call, () => t)
     expect(n).toBe(2)
   })
-  it('case 2: a redirect to an MP4 plays directly from the final URL', async () => {
+  it('case 2: a redirect to an MP4 plays directly from the final URL, with its remux to fall back on', async () => {
     const f = shell(async () => got({ url: 'https://cdn.example/f/c.mp4', contentType: 'video/mp4' }), async () => mp4)
-    expect(await go('https://addon.example/resolve/2/c', f)).toEqual({ direct: 'https://cdn.example/f/c.mp4', fallback: null })
+    expect(await go('https://addon.example/resolve/2/c', f)).toEqual({ direct: 'https://cdn.example/f/c.mp4', fallback: src('https://cdn.example/f/c.mp4'), probe: mp4 })
     expect(f.calls.find((c) => c.cmd === 'probe_stream')!.args).toHaveProperty('plays')
+  })
+  it('case 11: an MP4 the web view cannot open remuxes at the same spot with its probe, not the safe profile', async () => {
+    const f = shell(async () => got({ url: 'https://cdn.example/f/11.mp4', contentType: 'video/mp4' }), async () => mp4)
+    const plan = await go('https://addon.example/resolve/11', f)
+    if (!plan || !('direct' in plan)) throw new Error('expected a direct plan')
+    const fb = onMediaError(4, plan.fallback)!
+    const k = fake()
+    const r = new Remux(fb.input, plan.probe ?? SAFE, fb.user, fb.pass, k.call, !plan.probe)
+    void r.open(37)
+    expect(k.calls[0].args).toMatchObject({ url: 'https://cdn.example/f/11.mp4', at: 37, safe: false, transcode: false })
   })
   it('case 3: a 404 after the redirect is the error, with no probe', async () => {
     const f = shell(() => Promise.reject('The server answered 404 Not Found.'), async () => mkv)
@@ -336,11 +346,55 @@ describe('the error card (rule 6, case 14)', () => {
   })
 })
 
-// SPEC-playback-2 rule 4 (P14b): the probe is told what the web view decodes.
-describe('the codecs the web view plays', () => {
-  it('names VP9 and AV1 only when canPlayType accepts them', () => {
+// SPEC-playback-2 rules 4 and 5 (P14b): what the web view decodes, and the one restart after a decode error.
+describe('decode fallback (cases 10 and 11)', () => {
+  it('the probe is told which of VP9 and AV1 the web view decodes', () => {
     expect(codecsPlayed(() => '')).toEqual([])
     expect(codecsPlayed((t) => (t.includes('vp9') ? 'probably' : ''))).toEqual(['vp9'])
     expect(codecsPlayed((t) => (t.includes('av01') || t.includes('vp09') ? 'maybe' : ''))).toEqual(['vp9', 'av1'])
+  })
+  it('case 10: a decode error on a remux run restarts it once at the same spot, transcoded; a second shows the card', async () => {
+    const k = fake()
+    const r = new Remux('https://cdn.example/f/a.mkv', mkv, '', '', k.call)
+    const first = r.open(0)
+    k.answer(0)
+    await first
+    expect(k.calls[0].args).toMatchObject({ transcode: false })
+    expect(onRemuxError(2, r)).toBe(false)
+    expect(onRemuxError(3, r)).toBe(true)
+    r.transcode = true
+    void r.open(r.time(42))
+    expect(k.calls[1].args).toMatchObject({ at: 42, transcode: true, safe: false })
+    expect(onRemuxError(3, r)).toBe(false)
+    expect(onRemuxError(4, r)).toBe(false)
+  })
+  it('a safe run converts everything already, so its decode error shows the card', () => {
+    expect(onRemuxError(3, new Remux('https://cdn.example/f/b.mkv', SAFE, '', '', fake().call, true))).toBe(false)
+  })
+  it('a remux run never looks a plugin stream up again: transcode once, then the card', () => {
+    const r = new Remux('https://cdn.example/f/c.mkv', mkv, '', '', fake().call)
+    const lookUp = vi.fn(() => 'again')
+    expect(afterError(3, r, lookUp, null)).toEqual({ to: 'transcode' })
+    r.transcode = true
+    expect(afterError(3, r, lookUp, null)).toEqual({ to: 'card' })
+    expect(lookUp).not.toHaveBeenCalled()
+  })
+  it('a plugin stream is looked up again before its remux, and the remux then reads the new address', () => {
+    const fb = { input: 'https://debrid.example/old/d.mp4?sig=1', user: '', pass: '' }
+    let used = false
+    const lookUp = () => (used ? null : ((used = true), 'again'))
+    expect(afterError(3, null, lookUp, fb)).toEqual({ to: 'lookup', again: 'again' })
+    const next = followed(fb, 'https://debrid.example/new/d.mp4?sig=2')
+    expect(next).toEqual({ input: 'https://debrid.example/new/d.mp4?sig=2', user: '', pass: '' })
+    expect(afterError(3, null, lookUp, next)).toEqual({ to: 'remux', fb: next })
+    // A lookup that answers no http address leaves nothing to remux, and none is made where none was kept.
+    expect(followed(fb, 'magnet:?xt=urn:btih:abc')).toBeNull()
+    expect(followed(null, 'https://debrid.example/new/d.mp4')).toBeNull()
+  })
+  it('a direct play with no lookup left remuxes only on a decode or unsupported error', () => {
+    const fb = { input: 'https://cdn.example/f/e.mp4', user: '', pass: '' }
+    expect(afterError(4, null, null, fb)).toEqual({ to: 'remux', fb })
+    expect(afterError(2, null, null, fb)).toBeNull()
+    expect(afterError(3, null, null, null)).toBeNull()
   })
 })
