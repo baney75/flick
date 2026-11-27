@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto'
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import { flickConnect, flickMap, FLICK_UNREACHABLE, isLocalHost, needsLocalNetwork, type Server, type FlickLibrary } from '../src/lib/servers'
+import { flickConnect, flickInfo, flickItems, flickMap, FLICK_UNREACHABLE, isLocalHost, needsLocalNetwork, type Server, type FlickLibrary } from '../src/lib/servers'
 import { hash } from '../src/lib/library'
 
 const g = globalThis as Record<string, unknown>
@@ -104,5 +104,64 @@ describe('local network addresses', () => {
     expect(needsLocalNetwork('https://nas.tail1234.ts.net:8740', { hostname: 'flick-player.pages.dev' })).toBe(true)
     expect(needsLocalNetwork('https://quiet-river.trycloudflare.com', { hostname: 'flick-player.pages.dev' })).toBe(false)
     expect(needsLocalNetwork('https://nas.tail1234.ts.net:8740', { hostname: 'nas.tail1234.ts.net' })).toBe(false)
+  })
+})
+
+describe('a flick-server that never answers', () => {
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+  // Accepts the connection and then says nothing, the way a server with every worker busy does.
+  const silent = () => {
+    const signals: AbortSignal[] = []
+    vi.stubGlobal('fetch', (_u: string, init?: RequestInit) => new Promise<Response>((_ok, bad) => {
+      const sig = init?.signal
+      if (sig) { signals.push(sig); sig.addEventListener('abort', () => bad(sig.reason)) }
+    }))
+    return signals
+  }
+  const fails = async (p: Promise<unknown>, ms: number) => {
+    const out = p.then(() => 'answered', (e: Error) => e.message)
+    await vi.advanceTimersByTimeAsync(ms)
+    return Promise.race([out, Promise.resolve('still waiting')])
+  }
+
+  it('fails the connect after 10 seconds instead of spinning', async () => {
+    vi.useFakeTimers()
+    silent()
+    const p = flickConnect('https://nas.example', CODE)
+    expect(await fails(p, 9_000)).toBe('still waiting')
+    expect(await fails(p, 1_500)).toBe(FLICK_UNREACHABLE)
+  })
+  it('fails the connect when the library request never answers', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', (u: string, init?: RequestInit) => u.endsWith('/api/info')
+      ? Promise.resolve(Response.json({ app: 'flick-server', v: 1, name: 'NAS' }))
+      : new Promise((_ok, bad) => init?.signal?.addEventListener('abort', () => bad(init.signal!.reason))))
+    expect(await fails(flickConnect('https://nas.example', CODE), 10_500)).toBe(FLICK_UNREACHABLE)
+  })
+  it('fails a library load and an info check after 10 seconds', async () => {
+    vi.useFakeTimers()
+    silent()
+    expect(await fails(flickItems(nas), 10_500)).toBe(FLICK_UNREACHABLE)
+    expect(await fails(flickInfo('https://nas.example'), 10_500)).not.toBe('still waiting')
+  })
+  it('still stops early when the caller gives up first', async () => {
+    vi.useFakeTimers()
+    silent()
+    const quit = new AbortController()
+    setTimeout(() => quit.abort(), 3000)
+    expect(await fails(flickInfo('https://nas.example', quit.signal), 3_500)).not.toBe('still waiting')
+  })
+  it('does not cut off a large library that is still arriving', async () => {
+    vi.useFakeTimers()
+    const signals: AbortSignal[] = []
+    vi.stubGlobal('fetch', async (_u: string, init?: RequestInit) => {
+      signals.push(init!.signal!)
+      const body = new ReadableStream({ async pull(c) { await new Promise((r) => setTimeout(r, 30_000)); c.enqueue(new TextEncoder().encode(JSON.stringify(lib))); c.close() } })
+      return new Response(body, { headers: { 'content-type': 'application/json' } })
+    })
+    const p = flickItems(nas)
+    await vi.advanceTimersByTimeAsync(31_000)
+    expect((await p).length).toBe(4)
+    expect(signals[0].aborted).toBe(false)
   })
 })
