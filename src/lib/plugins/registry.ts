@@ -58,8 +58,10 @@ function defaults(m: V.PluginManifest | V.ThemeManifest): Record<string, unknown
 // ---------- the official list ----------
 export interface OfficialEntry { url: string; name: string; description?: string; kind?: 'source' | 'service' | 'theme'; hosts?: string[] }
 let official: Promise<OfficialEntry[]> | null = null
+/** True while the last read of the official list failed. */
+let listFailed = false
 export function officialList(): Promise<OfficialEntry[]> {
-  official ??= fetch(OFFICIAL_INDEX).then((r) => r.json()).then((j) => (Array.isArray(j?.plugins) ? j.plugins : [])).catch(() => { official = null; return [] })
+  official ??= fetch(OFFICIAL_INDEX).then((r) => r.json()).then((j) => { listFailed = false; return Array.isArray(j?.plugins) ? j.plugins : [] }).catch(() => { official = null; listFailed = true; return [] })
   return official
 }
 /**
@@ -81,9 +83,12 @@ export function portable(url: string): string | null {
 export function absolute(url: string): string {
   try { return new URL(url, typeof location === 'undefined' ? 'https://flick-player.pages.dev' : location.href).href } catch { return url }
 }
-async function isOfficial(url: string | null): Promise<boolean> {
+/** Whether a URL is on Flick's own list; null when the list could not be read. */
+async function isOfficial(url: string | null): Promise<boolean | null> {
   if (!url) return false
-  return (await officialList()).some((e) => absolute(e.url) === absolute(url))
+  const list = await officialList()
+  if (listFailed) return null
+  return list.some((e) => absolute(e.url) === absolute(url))
 }
 
 // ---------- install ----------
@@ -115,7 +120,9 @@ export async function prepare(src: { url?: string; text?: string }, deps: Deps =
   const replaces = installed.value.find((p) => p.id === manifest.id)
   const sum = await sha256(code)
   mark('sha')
-  const isOff = await isOfficial(url)
+  // An unreadable list never makes an update from the same address look like a takeover.
+  const same = replaces?.url != null && url != null && absolute(replaces.url) === absolute(url)
+  const isOff = (await isOfficial(url)) ?? (same ? replaces!.official : false)
   mark('official')
   return { kind, url, code, sha256: sum, manifest, official: isOff, replaces }
 }
@@ -163,7 +170,6 @@ export async function install(c: Candidate, settings?: Record<string, unknown>):
   const old = c.replaces ?? installed.value.find((p) => p.id === c.manifest.id)
   if (old) stopPlugin(old.id)
   const takeover = takesOver(c, old)
-  if (takeover) await step('Clearing the old plugin', () => db.del('pluginData', c.manifest.id))
   const rec: Installed = {
     id: c.manifest.id,
     kind: c.kind,
@@ -178,6 +184,8 @@ export async function install(c: Candidate, settings?: Record<string, unknown>):
     checkedAt: Date.now(),
   }
   await step('Saving the plugin', () => save(rec))
+  // Only once the new plugin is saved, so a failed save leaves the old one whole.
+  if (takeover) await step('Clearing the old plugin', () => db.del('pluginData', rec.id))
   mark('save')
   await registerHosts(rec).catch(() => {})
   mark('registerHosts')

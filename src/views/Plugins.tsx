@@ -42,7 +42,7 @@ export function ReviewSheet({ c, extra, onDone }: { c: Candidate; extra?: string
     }
   }
   return (
-    <div class="sheet-back" role="dialog" aria-modal="true" aria-label={`Install ${m.name}`}>
+    <div class="sheet-back" role="dialog" aria-modal="true" aria-label={`${verb} ${swap ? old!.manifest.name : m.name}`}>
       <div class="sheet panel">
         <h3>{verb} {swap ? old!.manifest.name : m.name}?</h3>
         {swap && <p class="warn-box replaces">{swap}</p>}

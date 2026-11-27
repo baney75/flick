@@ -78,6 +78,33 @@ describe('a plugin from another address with the same id', () => {
   })
 })
 
+describe('when something fails', () => {
+  it('a takeover whose save fails leaves the old plugin\'s saved data', async () => {
+    await official()
+    const other = await R.prepare({ url: 'https://gist.example/torbox-plus.js', text: 'other' }, deps)
+    // A function cannot be stored, so the save throws.
+    const broken = { ...other, manifest: { ...other.manifest, bad: () => 1 } } as never
+    await expect(R.install(broken)).rejects.toThrow('Saving the plugin failed')
+    expect(await db.get('pluginData', 'app.torbox')).toEqual({ token: 'saved-by-official' })
+  })
+
+  it('an update from the same address while the official list cannot be read keeps the key', async () => {
+    await official()
+    vi.resetModules()
+    vi.stubGlobal('fetch', async () => { throw new Error('offline') })
+    const R2 = await import('../src/lib/plugins/registry')
+    await R2.loadPlugins()
+    const next = await R2.prepare({ url: '/plugins/torbox.js', text: 'official-v2' }, deps)
+    expect(next.official).toBe(true)
+    expect(R2.replaceLine(next)).toBeNull()
+    expect((await R2.install(next)).settings.apiKey).toBe(KEY)
+    // Still unreadable, from another address: not Flick's own, so a takeover.
+    expect((await R2.prepare({ url: 'https://gist.example/torbox-plus.js', text: 'other' }, deps)).official).toBe(false)
+    await R2.remove('app.torbox')
+    vi.stubGlobal('fetch', async () => ({ json: async () => ({ plugins: [{ url: '/plugins/torbox.js', name: 'TorBox', kind: 'service' }] }) }))
+  })
+})
+
 describe('takesOver', () => {
   const was = { url: 'https://a.example/p.js', official: false, kind: 'source' as const }
   const cases: [string, { url?: string | null; official?: boolean; kind?: 'source' }, boolean][] = [
