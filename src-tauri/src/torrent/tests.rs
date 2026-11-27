@@ -1,8 +1,8 @@
 // The engine against a second librqbit session seeding on this computer's loopback interface.
 
 use super::rules;
-use super::rules::tests::{tmp, want, HASH, PIECE};
-use super::{closed, Close, Config, Engine, Gate, CLOSE_LIMIT, STOPPING, STOP_WAIT};
+use super::rules::tests::{folder, tmp, want, HASH, PIECE};
+use super::{closed, trim_idle, Close, Config, Engine, Gate, CLOSE_LIMIT, STOPPING, STOP_WAIT};
 use crate::vpn::{Fail, GateState};
 use librqbit::{CreateTorrentOptions, ListenerMode, ListenerOptions, Session, SessionOptions};
 use std::io::{Read, Write};
@@ -601,4 +601,71 @@ fn windows_plays_torrents_through_debrid_only() {
     let gate = Fake::passing();
     let e = engine("windows", &gate, vec![], Duration::from_secs(2));
     assert_eq!(e.play(&want(HASH, &[])), Err(rules::WINDOWS_OFF.into()));
+}
+
+/// Bytes that no filesystem compresses, so what a folder holds on disk matches its length.
+fn noise(len: usize, salt: u32) -> Vec<u8> {
+    let mut x: u32 = 0x9e37_79b9 ^ salt;
+    (0..len)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+/// Audit F4: a torrent that grows past the cap while it plays is trimmed back toward it when it
+/// stops, oldest folder first, not only at the next start; the torrent that stopped stays cached
+/// even when it alone is over the cap.
+#[test]
+fn a_stop_trims_the_cache_back_under_its_cap() {
+    let seeder = Seeder::new("trimstop");
+    let movie = noise(3 << 20, 7);
+    let hash = seeder.seed("movie.mp4", &movie);
+    let gate = Fake::passing();
+    let cfg = Config {
+        cache: tmp("cache-trimstop"),
+        // Room for the older torrent, not for the movie.
+        cap: 2 << 20,
+        wait: Duration::from_secs(30),
+        dht: false,
+        peers: vec![seeder.addr()],
+        stop_wait: STOP_WAIT,
+        close_limit: CLOSE_LIMIT,
+    };
+    let old = folder(&cfg.cache, &"a".repeat(40), 1024, 300);
+    let e = Arc::new(Engine::new(cfg, Arc::clone(&gate) as Arc<dyn Gate>).unwrap());
+    let _ = gate.engine.set(Arc::downgrade(&e));
+
+    let url = e.play(&want(&hash, &[])).unwrap();
+    assert!(
+        old.is_dir(),
+        "the cache was under its cap when the torrent started"
+    );
+    let (status, got) = get(&url, None, "");
+    assert_eq!(status, 200);
+    assert!(got == movie, "the whole movie came down");
+    assert!(old.is_dir(), "nothing trims while the torrent plays");
+    e.stop(&hash);
+    wait_until(|| !old.exists());
+    // The trim deletes oldest first in one pass: a delete of the stopped torrent would follow at once.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        e.cfg.cache.join(&hash).join("movie.mp4").is_file(),
+        "the torrent that stopped stays cached"
+    );
+}
+
+/// Audit F4: at launch a cache an earlier run left over its cap trims, and a cache never made is
+/// no error.
+#[test]
+fn the_launch_trim_takes_the_cache_back_under_its_cap() {
+    let cache = tmp("cache-launch");
+    let (old, new) = ("a".repeat(40), "b".repeat(40));
+    let old_dir = folder(&cache, &old, 64, 300);
+    let new_dir = folder(&cache, &new, 64, 100);
+    trim_idle(&cache, 100 << 10);
+    assert!(!old_dir.exists() && new_dir.is_dir());
+    std::fs::remove_dir_all(&cache).unwrap();
+    trim_idle(&cache, 0);
 }
