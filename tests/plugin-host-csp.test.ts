@@ -20,6 +20,11 @@ describe('plugin host pages', () => {
     expect(p['script-src']).not.toContain('*')
     expect(p['script-src'].some((s: string) => /^https?:/.test(s))).toBe(false)
   })
+  it('the app page can run its own script from the app scheme', () => {
+    // In the sandboxed (opaque origin) frame, WebKit matches 'self' to nothing on tauri://, so the host
+    // script never ran and every install waited 20 s for a sandbox that never answered.
+    expect(csp(appHost)['script-src']).toEqual(["'self'", 'tauri://localhost', 'blob:', 'data:'])
+  })
   it('the apps load the app page', () => {
     expect(runtime).toMatch(/HOST_PAGE = isDesktop \? '\/plugin-host-app\.html' : '\/plugin-host\.html'/)
   })
