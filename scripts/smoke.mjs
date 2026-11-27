@@ -1492,6 +1492,18 @@ try {
     await ep.context().close()
   }
 
+  // A window opened straight on a page has no page before it: Back goes Home instead of doing nothing.
+  {
+    const bp = await photoPage()
+    await bp.goto(`${BASE}/#/settings/plugins`)
+    await bp.locator('#plugins').waitFor()
+    await bp.evaluate(() => document.activeElement?.blur())
+    await bp.keyboard.press('Escape')
+    const home = await bp.waitForURL(/#\/$/, { timeout: 3000 }).then(() => true, () => false)
+    check(home, `Back with no page before it goes Home (at ${bp.url().split('#')[1]})`)
+    await bp.context().close()
+  }
+
   // Home and Library list the same things to continue: no item the library no longer has, and no show
   // whose newest episode is finished. Remove from library takes the item's place with it.
   const cp = await photoPage()

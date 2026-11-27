@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
 import { signal } from '@preact/signals'
 import type { ComponentChildren } from 'preact'
 import { go, play, notify, progress, nowPlaying } from '../lib/store'
+import { back } from '../lib/back'
 import { Card, Row } from '../components/Card'
 import { Icon } from '../components/icons'
 import { isDesktop, isMobileApp } from '../lib/platform'
@@ -384,7 +385,7 @@ export function PluginTitle({ p, type, id, videoId }: { p: string; type: string;
 
   if (!rec) return <Missing id={p} />
   if (meta === undefined) return <div class="page"><div class="status inline"><span class="spinner" /> Loading</div></div>
-  if (meta === null) return <div class="page"><button class="btn ghost sm" onClick={() => history.back()}><Icon name="left" size={16} /> Back</button><p class="dim">{rec.manifest.name} could not open this title. {err}</p></div>
+  if (meta === null) return <div class="page"><button class="btn ghost sm" onClick={back}><Icon name="left" size={16} /> Back</button><p class="dim">{rec.manifest.name} could not open this title. {err}</p></div>
 
   const vids = meta.videos ?? []
   const seasons = [...new Set(vids.map((v) => v.season ?? 0))].filter((s) => s > 0).sort((a, b) => a - b)
@@ -397,7 +398,7 @@ export function PluginTitle({ p, type, id, videoId }: { p: string; type: string;
   return (
     <div class="page detail">
       {meta.background && <div class="backdrop" style={{ backgroundImage: `url("${meta.background.replace(/"/g, '%22')}")` }} />}
-      <button class="btn ghost sm" onClick={() => history.back()}><Icon name="left" size={16} /> Back</button>
+      <button class="btn ghost sm" onClick={back}><Icon name="left" size={16} /> Back</button>
       <div class="detail-head">
         {meta.poster && <img class="detail-poster" src={meta.poster} alt="" />}
         <div class="detail-info">
