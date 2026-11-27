@@ -8,6 +8,8 @@ permissions:
 jobs:
   # One draft for the three desktop jobs, made before they start so they cannot race to create two.
   release:
+    # No draft release exists until the checks pass.
+    needs: tests
     runs-on: ubuntu-latest
     outputs:
       id: ${{ steps.draft.outputs.id }}
@@ -35,6 +37,8 @@ jobs:
   # The same checks as every pull request, src-tauri's tests included: no build starts until they pass.
   tests:
     uses: ./.github/workflows/check.yml
+    permissions:
+      contents: read
   desktop:
     needs: [release, tests]
     strategy:

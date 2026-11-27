@@ -429,7 +429,7 @@ pub mod fixtures {
     pub fn tools() -> Option<(PathBuf, PathBuf)> {
         required(
             super::find_tool("ffmpeg").zip(super::find_tool("ffprobe")),
-            std::env::var_os("CI").is_some(),
+            std::env::var("CI").is_ok_and(|v| !matches!(v.as_str(), "" | "0" | "false")),
         )
     }
 

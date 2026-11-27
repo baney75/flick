@@ -8,7 +8,11 @@ on:
 permissions:
   contents: read
 jobs:
+  # The same checks as every pull request, flick-server's tests included.
+  tests:
+    uses: ./.github/workflows/check.yml
   web:
+    needs: tests
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -81,7 +85,7 @@ jobs:
   image:
     if: github.ref_type == 'tag'
     # The image is pushed only once every platform's binary has built.
-    needs: [web, build]
+    needs: build
     runs-on: ubuntu-24.04
     permissions:
       contents: read
