@@ -122,7 +122,12 @@ export function ctxHandler(id: string, desktop = isDesktop, call: Invoke = invok
 interface Frame { rpc: Rpc; iframe: HTMLIFrameElement }
 const frames = new Map<string, Promise<Frame>>()
 
-export function openFrame(handle: Handler, doc: Document = document): Promise<Frame> {
+/**
+ * One sandboxed frame; the plugin's code runs in a Worker inside it (public/plugin-host.js). A call past
+ * its time limit, or a frame that loads a second time (it navigated, so its port is gone), ends the
+ * frame and its Worker, and `onDead` tells the caller to start a new one on the next call.
+ */
+export function openFrame(handle: Handler, doc: Document = document, onDead?: () => void): Promise<Frame> {
   const iframe = doc.createElement('iframe')
   iframe.setAttribute('sandbox', SANDBOX)
   iframe.setAttribute('aria-hidden', 'true')
@@ -131,13 +136,18 @@ export function openFrame(handle: Handler, doc: Document = document): Promise<Fr
   iframe.src = HOST_PAGE
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => { iframe.remove(); reject(new Error('The plugin sandbox did not start.')) }, V.CALL_TIMEOUT_MS)
+    let rpc: Rpc | null = null
+    // Removing the frame ends its Worker too: WebKit at once, Chromium within about 2 s (measured).
+    const end = () => { rpc?.close(); iframe.remove(); onDead?.() }
     iframe.addEventListener('load', () => {
+      if (rpc) return end()
       clearTimeout(t)
       const ch = new MessageChannel()
       // The sandboxed page has an opaque origin, so '*' is the only target that reaches it.
       iframe.contentWindow!.postMessage({ flick: 'port' }, '*', [ch.port2])
-      resolve({ iframe, rpc: connect(ch.port1, handle) })
-    }, { once: true })
+      rpc = connect(ch.port1, handle, V.CALL_TIMEOUT_MS, end)
+      resolve({ iframe, rpc })
+    })
     doc.body.appendChild(iframe)
   })
 }
@@ -209,7 +219,11 @@ function frameFor(rec: Installed): Promise<Frame> {
       setSecrets(rec.id, rec)
       await registerHosts(rec)
       mark('start.hosts')
-      const fr = await openFrame(ctxHandler(rec.id, isDesktop, invoke, service))
+      const fr = await openFrame(ctxHandler(rec.id, isDesktop, invoke, service), document, () => {
+        if (frames.get(rec.id) !== f) return
+        frames.delete(rec.id)
+        logLine(rec.id, 'Stopped: it did not answer in time. It starts again on the next call.')
+      })
       mark('start.sandbox')
       await fr.rpc.call('load', [rec.code, platformName(), rec.settings])
       mark('start.load')
