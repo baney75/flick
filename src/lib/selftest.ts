@@ -20,7 +20,7 @@ export async function selftestIfAsked() {
   note(`self-test ${m.mode} started`)
   const report = await (m.mode === 'perf'
     ? import('./perf/realapp').then((x) => x.runPerf(m.launchedAt, 'setupAt' in m ? m.setupAt : undefined))
-    : import('./plugins/selftest').then((x) => x.runPluginSelftest())
+    : import('./plugins/selftest').then((x) => (m.mode === 'youtube' ? x.runYoutubeSelftest() : x.runPluginSelftest()) as Promise<unknown>)
   ).catch((e) => ({ error: String((e as Error)?.message ?? e) }))
   if (isDesktop) await invoke('selftest_done', { report: JSON.stringify(report, null, 2) })
   else if (h) h.report = report

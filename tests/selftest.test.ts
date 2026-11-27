@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { failures, invokeSummary, medianReport, override, perfMarkdown, table, webkitPath, IDENTIFIER } from '../scripts/desktop-selftest.mjs'
+import { failures, invokeSummary, medianReport, override, perfMarkdown, table, webkitPath, youtubeFailures, youtubeTable, IDENTIFIER } from '../scripts/desktop-selftest.mjs'
+import { hostOf } from '../src/lib/plugins/selftest'
 
 const ok = (name: string, totalMs: number) => ({ url: `/plugins/${name}.js`, name, totalMs, steps: [{ step: 'fetch', ms: 1 }, { step: 'ping', ms: totalMs - 1 }] })
 
@@ -8,7 +9,10 @@ describe('desktop self-test report', () => {
     expect(IDENTIFIER).toBe('dev.flick.selftest')
     const o = override({ app: { windows: [{ label: 'main', width: 1280 }, { label: 'other', visible: true }] } })
     expect(o).toMatchObject({ identifier: 'dev.flick.selftest', productName: 'Flick Self-test' })
-    expect(o.app.windows).toEqual([{ label: 'main', width: 1280, visible: false, focus: false }, { label: 'other', visible: false, focus: false }])
+    expect(o.app.windows).toEqual([
+      { label: 'main', width: 1280, visible: false, focus: false, backgroundThrottling: 'disabled' },
+      { label: 'other', visible: false, focus: false, backgroundThrottling: 'disabled' },
+    ])
   })
 
   it('passes fast plugins and fails slow ones, errors and empty reports', () => {
@@ -79,5 +83,24 @@ describe('desktop self-test perf', () => {
     expect(() => webkitPath(own, '/pw', fake([]))).toThrow(/--no-browser/)
     const cached = fake(['/pw/webkit-2248/pw_run.sh', '/pw/webkit-2336/pw_run.sh', '/pw/webkit-2311/pw_run.sh', '/pw/webkit-2400/other', '/pw/chromium-1248/x'])
     expect(webkitPath(own, '/pw', cached)).toBe('/pw/webkit-2336/pw_run.sh')
+  })
+})
+
+describe('YouTube self-test report', () => {
+  const run = { query: 'karpathy', rows: 20, host: 'asset://localhost', steps: [{ step: 'install', ms: 40 }, { step: 'search', ms: 2100, detail: '20 rows' }, { step: 'streams', ms: 900 }, { step: 'open', ms: 3000 }] }
+  it('passes with rows and a playable address, and says why when not', () => {
+    expect(youtubeFailures(run)).toEqual([])
+    expect(youtubeFailures({ ...run, rows: 0 })).toEqual(['YouTube: search "karpathy" returned no rows'])
+    expect(youtubeFailures({ ...run, host: 'not a URL' })).toHaveLength(1)
+    expect(youtubeFailures({ ...run, error: 'yt-dlp: ERROR: blocked', failedAfter: 'search' })).toEqual(['YouTube: yt-dlp: ERROR: blocked (at search)'])
+    expect(youtubeFailures(null)).toHaveLength(1)
+  })
+  it('prints each step and the host only', () => {
+    expect(youtubeTable(run)).toContain('| search  |   2100 | 20 rows')
+    expect(youtubeTable(run)).toContain('Plays from asset://localhost.')
+  })
+  it('keeps the path and query out of the reported address', () => {
+    expect(hostOf('http://asset.localhost/Users/x/cache/ytdlp/tok123/index.m3u8?sig=abc')).toBe('http://asset.localhost')
+    expect(hostOf('nope')).toBe('not a URL')
   })
 })
