@@ -24,15 +24,36 @@ import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
 import { langCode } from '../lib/release'
 
-const shape = (m: Meta) => (m.posterShape === 'landscape' ? 'wide' : m.posterShape === 'square' ? 'square' : 'poster')
+type Shape = NonNullable<Meta['posterShape']>
+const cardShape = (s?: Shape) => (s === 'landscape' ? 'wide' : s === 'square' ? 'square' : 'poster')
+const pctOf = (m: Meta) => (m.progress?.dur ? m.progress.pos / m.progress.dur : undefined)
+const openMeta = (rec: Source, m: Meta) => go(titlePath(rec.id, m.type, m.id, m.progress?.videoId && m.type === 'series' ? m.progress.videoId : undefined))
 
-export function MetaCard({ rec, m }: { rec: Source; m: Meta }) {
-  const pct = m.progress?.dur ? m.progress.pos / m.progress.dur : undefined
-  const ep = m.progress?.videoId && m.type === 'series' ? m.progress.videoId : undefined
-  const wide = m.posterShape === 'landscape'
+/** `shape` overrides the item's own posterShape, for a Library shelf's layout. */
+export function MetaCard({ rec, m, shape }: { rec: Source; m: Meta; shape?: Shape }) {
+  const s = shape ?? m.posterShape
+  const wide = s === 'landscape'
   return <Card image={m.poster} title={m.name} sub={m.subtitle ?? m.year} info={m.badges?.join(' · ')} time={wide ? m.runtime : undefined} wrap={wide}
     target={rec.manifest.titleActions.length ? JSON.stringify({ type: m.type, id: m.id }) : undefined}
-    shape={shape(m)} pct={pct} onClick={() => go(titlePath(rec.id, m.type, m.id, ep))} />
+    shape={cardShape(s)} pct={pctOf(m)} onClick={() => openMeta(rec, m)} />
+}
+
+/** One row of a Library shelf with the list layout: thumbnail, name, subtitle, badges. */
+export function ShelfRow({ rec, m }: { rec: Source; m: Meta }) {
+  const pct = pctOf(m)
+  return (
+    <button class="shelf-row" onClick={() => openMeta(rec, m)}>
+      <div class="art">
+        {m.poster ? <img src={m.poster} alt="" loading="lazy" /> : <div class="art-ph"><Icon name="film" size={20} /></div>}
+        {pct != null && pct > 0 && <div class="pbar"><div style={{ width: `${Math.min(100, pct * 100)}%` }} /></div>}
+      </div>
+      <div class="grow">
+        <div class="t1">{m.name}</div>
+        {(m.subtitle ?? m.year) && <div class="small dim">{m.subtitle ?? m.year}</div>}
+        {m.badges && <div class="small dim">{m.badges.join(' · ')}</div>}
+      </div>
+    </button>
+  )
 }
 
 /** The title actions running now, by actionKey(): a second press waits for the first to finish. */
