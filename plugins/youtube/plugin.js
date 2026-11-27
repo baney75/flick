@@ -30,6 +30,7 @@ export function age(ts, now = Date.now()) {
   const steps = [[31536000, 'year'], [2592000, 'month'], [604800, 'week'], [86400, 'day'], [3600, 'hour'], [60, 'minute']]
   for (const [len, word] of steps) {
     const k = Math.floor(s / len)
+    if (word === 'month' && k >= 12) return '1 year ago'
     if (k >= 1) return `${k} ${word}${k > 1 ? 's' : ''} ago`
   }
   return 'Just now'

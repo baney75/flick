@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 // @ts-expect-error a plain JS plugin with no types of its own
 import youtube, { views, age } from '../plugins/youtube/plugin.js'
 import { validateCatalog, validateMeta } from '../src/lib/plugins/validate'
-// What Flick's yt-dlp search tool returns for tests/fixtures/yt-search.json (src-tauri checks the two match).
+// What Flick's yt-dlp search tool makes of tests/fixtures/yt-search.json (src-tauri checks the two match).
 import SEARCH from './fixtures/ytdlp-search.json'
 
 /** A ctx with the ytdlp tool answering from the fixture and an in-memory store. */
@@ -41,8 +41,8 @@ describe('YouTube cards', () => {
     expect(views(null)).toBeNull()
     const now = Date.UTC(2026, 10, 26)
     const ago = (s: number) => age(now / 1000 - s, now)
-    expect([30, 120, 7200, 86400 * 3, 86400 * 14, 86400 * 60, 86400 * 800].map(ago))
-      .toEqual(['Just now', '2 minutes ago', '2 hours ago', '3 days ago', '2 weeks ago', '2 months ago', '2 years ago'])
+    expect([30, 120, 7200, 86400 * 3, 86400 * 14, 86400 * 60, 86400 * 362, 86400 * 800].map(ago))
+      .toEqual(['Just now', '2 minutes ago', '2 hours ago', '3 days ago', '2 weeks ago', '2 months ago', '1 year ago', '2 years ago'])
     expect(age(null, now)).toBeNull()
   })
   it('keeps the channel and badges on the title page', async () => {
@@ -59,5 +59,11 @@ describe('card fields in the contract', () => {
     const m = validateMeta({ id: 'a', type: 'video', name: 'A', subtitle: ' Chan ', badges: ['one', '', 3, 'x'.repeat(60), 'b', 'c', 'd'] })
     expect(m.subtitle).toBe('Chan')
     expect(m.badges).toEqual(['one', 'x'.repeat(40), 'b', 'c'])
+  })
+  it('drops a wrong-shaped subtitle or badges but keeps the title', () => {
+    const m = validateMeta({ id: 'a', type: 'video', name: 'A', subtitle: { x: 1 }, badges: 'HD' })
+    expect(m.name).toBe('A')
+    expect(m.subtitle).toBeUndefined()
+    expect(m.badges).toBeUndefined()
   })
 })
