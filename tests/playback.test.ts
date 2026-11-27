@@ -1,6 +1,6 @@
 // SPEC-playback cases 4, 5 and 6: where a seek goes, the remux run's clock, and the probe cache.
 import { describe, expect, it, vi } from 'vitest'
-import { cardButtons, onMediaError, convertLine, cuesAt, messageOf, DWELL_MS, intent, NO_ANSWER, planSeek, planStream, playsDirectly, playsHere, probeStream, Remux, RESOLVE_LIMIT_S, SAFE, serverWait, warmProbe, writtenOf, type Resolved, type StreamProbe } from '../src/lib/playback'
+import { cardButtons, FRESH_MS, onMediaError, resolveStream, convertLine, cuesAt, messageOf, DWELL_MS, intent, NO_ANSWER, planSeek, planStream, playsDirectly, playsHere, probeStream, Remux, RESOLVE_LIMIT_S, SAFE, serverWait, warmProbe, writtenOf, type Resolved, type StreamProbe } from '../src/lib/playback'
 
 const mkv: StreamProbe = {
   duration: 5700, container: 'matroska,webm', video: 'h264', audio: 'ac3', channels: 6,
@@ -189,6 +189,19 @@ describe('planStream (rules 1 and 2)', () => {
     expect(plan).toEqual({ remux: src('https://cdn.example/f/a.mkv'), probe: mkv, safe: false })
     expect(f.n('resolve_stream')).toBe(1)
     expect(f.calls.filter((c) => c.cmd === 'probe_stream').every((c) => c.args!.url === 'https://cdn.example/f/a.mkv')).toBe(true)
+  })
+  it('a resolve is shared for 10 minutes, then made again (debrid links expire)', async () => {
+    let n = 0
+    const call = <T,>() => { n++; return Promise.resolve(got()) as Promise<T> }
+    let t = 1000
+    const u = 'https://addon.example/resolve/ttl'
+    await resolveStream(u, '', '', call, () => t)
+    t += FRESH_MS - 1
+    await resolveStream(u, '', '', call, () => t)
+    expect(n).toBe(1)
+    t += 2
+    await resolveStream(u, '', '', call, () => t)
+    expect(n).toBe(2)
   })
   it('case 2: a redirect to an MP4 plays directly from the final URL', async () => {
     const f = shell(async () => got({ url: 'https://cdn.example/f/c.mp4', contentType: 'video/mp4' }), async () => mp4)

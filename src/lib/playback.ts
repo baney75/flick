@@ -92,17 +92,19 @@ export function probes(url: string | undefined): url is string {
 }
 
 const seen = new Map<string, Promise<StreamProbe>>()
-const opened = new Map<string, Promise<Resolved>>()
+const opened = new Map<string, { at: number; p: Promise<Resolved> }>()
+/** A resolve is shared for 10 minutes, as the desktop keeps it: debrid links are signed and expire. */
+export const FRESH_MS = 600_000
 
-/** The resolve of `url`, once per session, so a warm-up and Play share one GET; a failure is tried again. */
-export function resolveStream(url: string, user = '', pass = '', call: Call = invoke): Promise<Resolved> {
+/** The resolve of `url`, shared by a warm-up and Play; a failure, or one 10 minutes old, is made again. */
+export function resolveStream(url: string, user = '', pass = '', call: Call = invoke, now: () => number = Date.now): Promise<Resolved> {
   const key = `${url}\n${user}`
-  let p = opened.get(key)
-  if (!p) {
-    p = call<Resolved>('resolve_stream', { url, user, pass })
-    p.catch(() => opened.delete(key))
-    opened.set(key, p)
-  }
+  const had = opened.get(key)
+  if (had && now() - had.at < FRESH_MS) return had.p
+  const p = call<Resolved>('resolve_stream', { url, user, pass })
+  const entry = { at: now(), p }
+  p.catch(() => { if (opened.get(key) === entry) opened.delete(key) })
+  opened.set(key, entry)
   return p
 }
 
