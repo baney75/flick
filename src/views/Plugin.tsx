@@ -21,7 +21,7 @@ import { cancelFetch, canStart, serviceTag, wantsGate } from '../lib/debrid-play
 import { DebridWait, playTorrent, useCached } from './Debrid'
 import { viaOf } from '../lib/readout'
 import { checkAgain, ctxNow, current, debridNow, deviceFor, holdGate, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
-import { cancelStart, letGo, playingTorrent, startTorrent, wantTorrent } from '../lib/torrent'
+import { leavePage, letGo, playingTorrent, startTorrent, wantTorrent } from '../lib/torrent'
 import { EngineWait } from './EngineWait'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
@@ -429,7 +429,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   useEffect(() => { savedId(key).then(setDlId) }, [key])
   // Leaving the page ends its start: the engine's wait stops, and a tap still on its way never plays.
   const lastTap = useRef(0)
-  useEffect(() => () => { cancelStart(key); if (current(lastTap.current)) tap() }, [key])
+  useEffect(() => () => leavePage(key, lastTap.current), [key])
   // On a grid-layout plugin a title opened from the keyboard plays with one more Enter.
   useEffect(() => {
     if (list === null || rec.manifest.layout !== 'grid') return
@@ -486,7 +486,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     // A stream behind the VPN gate never opens on a tap while the gate fails, nor outside its hold.
     const shut = shutBy(r)
     lastTap.current = t
-    wantTorrent(shut ? undefined : hash)
+    wantTorrent(shut || !hash ? undefined : s.torrent)
     if (shut) { notify(shut); return }
     if (hash && s.torrent) {
       // The wait line under Streams has Cancel; null means it won't play (see startTorrent).
@@ -522,7 +522,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       }
     } else {
       // A newer tap plays instead of this one.
-      if (!current(t)) return
+      if (!current(t)) { if (hash) letGo(hash, false); return }
       releaseGate()
     }
     const via = r && viaOf(r, serviceName)

@@ -18,7 +18,7 @@ vi.mock('../src/lib/platform', async (orig) => ({
   },
   onDesktopEvent: async () => () => {},
 }))
-const { playingTorrent, letGo, playTorrent, wantTorrent, startTorrent, cancelStart, engineWait, GRACE_MS, POLL_MS, TORRENT_LOST, NO_ONE, START_LIMIT_MS, STARTING } = await import('../src/lib/torrent')
+const { playingTorrent, letGo, playTorrent, wantTorrent, startTorrent, cancelStart, leavePage, engineWait, RETRY_MS, GRACE_MS, POLL_MS, TORRENT_LOST, NO_ONE, START_LIMIT_MS, STARTING } = await import('../src/lib/torrent')
 const { engineNow, engineLine } = await import('../src/lib/readout')
 const { nowPlaying, toast } = await import('../src/lib/store')
 const { checkAgain, gate, tap, current } = await import('../src/lib/picking')
@@ -84,19 +84,19 @@ describe('a torrent the engine plays', () => {
     nowPlaying.value = req('k1')
     letGo(H, true)
     expect(stops()).toEqual([])
-    wantTorrent('C'.repeat(40))
+    wantTorrent({ infoHash: 'C'.repeat(40) })
     letGo('C'.repeat(40), true)
-    expect(stops()).toEqual(['C'.repeat(40)])
+    expect(stops()).toEqual(['c'.repeat(40)])
   })
 
   it('a tap whose hold fails after a newer tap wants the same torrent leaves it to that tap', async () => {
     // Tap 1 waits on its hold; tap 2 wants the same torrent, so tap 1's hold answers stale.
-    wantTorrent(H)
-    wantTorrent(H)
+    wantTorrent({ infoHash: H })
+    wantTorrent({ infoHash: H })
     letGo(H, false)
     expect(stops()).toEqual([])
     letGo(H, true)
-    expect(stops()).toEqual([H])
+    expect(stops()).toEqual([h])
   })
 
   it('a tap that wants a torrent in its grace keeps it running through a slow start', async () => {
@@ -105,7 +105,7 @@ describe('a torrent the engine plays', () => {
     nowPlaying.value = null
     await vi.advanceTimersByTimeAsync(GRACE_MS - 1000)
     // The tap for the next file: torrent_play, the subtitles and the hold take longer than the grace left.
-    wantTorrent(H)
+    wantTorrent({ infoHash: H })
     await vi.advanceTimersByTimeAsync(GRACE_MS * 2)
     expect(stops()).toEqual([])
     playingTorrent('k2', H)
@@ -117,7 +117,7 @@ describe('a torrent the engine plays', () => {
 
   it('a double tap starts the torrent once, and the losing tap never stops what the newer one wants', async () => {
     const t = { infoHash: H }
-    wantTorrent(H)
+    wantTorrent({ infoHash: H })
     const [a, b] = await Promise.all([playTorrent(t), playTorrent(t)])
     expect(a).toBe(b)
     expect(shell.calls.filter(([c]) => c === 'torrent_play')).toHaveLength(1)
@@ -126,7 +126,7 @@ describe('a torrent the engine plays', () => {
     // A newer tap on another stream: the older torrent stops.
     wantTorrent(undefined)
     letGo(H, false)
-    expect(stops()).toEqual([H])
+    expect(stops()).toEqual([h])
   })
 
   it('closes the player when the engine no longer runs the torrent (the VPN changed tunnels)', async () => {
@@ -163,7 +163,7 @@ describe('an engine start the user waits on (#129)', () => {
   afterEach(async () => { cancelStart(); shell.play = null; await vi.advanceTimersByTimeAsync(0); vi.useRealTimers() })
   const U = 'http://127.0.0.1:5/t/x/0'
   // A tap as Plugin.tsx makes one: its token, then the torrent it wants.
-  const begin = (key = 'k1', infoHash = H) => { const t = tap(); wantTorrent(infoHash); return { t, got: startTorrent(key, { infoHash }, t) } }
+  const begin = (key = 'k1', infoHash = H, fileIdx?: number) => { const t = tap(); wantTorrent({ infoHash, fileIdx }); return { t, got: startTorrent(key, { infoHash, fileIdx }, t) } }
 
   it('shows the wait line with Cancel, then gives the url and clears it', async () => {
     const { got } = begin()
@@ -215,7 +215,7 @@ describe('an engine start the user waits on (#129)', () => {
     expect(stops()).toEqual([])
     await vi.advanceTimersByTimeAsync(1)
     expect(stops()).toEqual([h])
-    expect(engineWait.value).toEqual({ key: 'k1', hash: h, line: NO_ONE })
+    expect(engineWait.value).toEqual({ key: 'k1', hash: h, file: `${h}/`, line: NO_ONE })
     fail('Stopped')
     expect(await got).toBeNull()
     expect(engineWait.value?.line).toBe(NO_ONE)
@@ -227,7 +227,7 @@ describe('an engine start the user waits on (#129)', () => {
     const { got } = begin()
     fail(NO_ONE)
     expect(await got).toBeNull()
-    expect(engineWait.value).toEqual({ key: 'k1', hash: h, line: NO_ONE })
+    expect(engineWait.value).toEqual({ key: 'k1', hash: h, file: `${h}/`, line: NO_ONE })
     expect(stops()).toEqual([])
   })
 
@@ -236,6 +236,40 @@ describe('an engine start the user waits on (#129)', () => {
     fail('Turn on your VPN')
     await expect(got).rejects.toBe('Turn on your VPN')
     expect(engineWait.value).toBeNull()
+  })
+
+  it('a tap on another file of the same torrent stops the start, and the new tap waits it out', async () => {
+    const first = begin('k1', H, 0)
+    const second = begin('k2', H, 1)
+    expect(stops()).toEqual([h])
+    expect(engineWait.value).toMatchObject({ key: 'k2', line: STARTING })
+    // The engine is still ending the first start: the second asks again until it has.
+    fail('This torrent is still stopping. Press Play again in a moment.')
+    await vi.advanceTimersByTimeAsync(RETRY_MS)
+    expect(shell.calls.filter(([c]) => c === 'torrent_play')).toHaveLength(3)
+    answer(U)
+    expect(await second.got).toBe(U)
+    expect(engineWait.value).toBeNull()
+    void first
+  })
+
+  it('a start canceled before the engine was ready, which answers anyway, is stopped again', async () => {
+    const { got } = begin()
+    engineWait.value!.cancel!()
+    answer(U)
+    expect(await got).toBeNull()
+    expect(stops()).toEqual([h, h])
+  })
+
+  it('leaving the page after the start answered (during the subtitles or the hold) stops the torrent', async () => {
+    const { t, got } = begin()
+    answer(U)
+    expect(await got).toBe(U)
+    leavePage('k1', t)
+    expect(current(t)).toBe(false)
+    // What Plugin.tsx does when its hold comes back for a tap that is no longer the newest.
+    letGo(H, current(t))
+    expect(stops()).toEqual([h])
   })
 
   it('a tap after Cancel asks the engine again instead of waiting on the canceled start', async () => {

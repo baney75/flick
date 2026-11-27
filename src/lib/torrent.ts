@@ -29,11 +29,17 @@ let playing: { key: string; hash: string; poll: ReturnType<typeof setInterval> }
 let closing: { hash: string; timer: ReturnType<typeof setTimeout> } | null = null
 /** Engine starts on their way, by hash and file: a second tap on one waits on the first. */
 const starts = new Map<string, Promise<string>>()
-/** The torrent the newest tap wants, so an older tap that lost never stops it. */
+/** The torrent the newest tap wants, so an older tap that lost never stops it, and its file. */
 let wanted: string | null = null
+let wantedFile: string | null = null
+/** The engine's answers while the torrent's last start or session still ends: the tap asks again. */
+const BUSY = ['This torrent is still stopping. Press Play again in a moment.', 'This torrent is still starting.']
+/** How often a start asks the engine again while it answers BUSY, in ms. */
+export const RETRY_MS = 1000
+const fileOf = (t: Torrent) => `${t.infoHash.toLowerCase()}/${t.fileIdx ?? ''}`
 
 /** The title page's line while the engine starts a torrent: Cancel until it ends, then NO_ONE if no one shared it. */
-export interface EngineWait { key: string; hash: string; line: string; cancel?: () => void }
+export interface EngineWait { key: string; hash: string; file: string; line: string; cancel?: () => void }
 export const engineWait = signal<EngineWait | null>(null)
 
 /** Ends the engine wait for `key` (or any): a start on its way stops and never plays; a NO_ONE line goes. */
@@ -46,7 +52,7 @@ export function cancelStart(key?: string) {
 
 /** Starts the torrent (or finds it running) and returns the URL the player opens. */
 export function playTorrent(torrent: Torrent): Promise<string> {
-  const k = `${torrent.infoHash.toLowerCase()}/${torrent.fileIdx ?? ''}`
+  const k = fileOf(torrent)
   let p = starts.get(k)
   if (!p) {
     const run: Promise<string> = invoke<string>('torrent_play', { torrent }).finally(() => { if (starts.get(k) === run) starts.delete(k) })
@@ -65,11 +71,24 @@ export function stopTorrent(hash: string) {
  * Every tap on a stream says which engine torrent it wants, if any. Wanting one still in its grace
  * keeps it running from the tap on, through the start, the subtitles and the VPN hold.
  */
-export function wantTorrent(infoHash: string | undefined) {
-  wanted = infoHash?.toLowerCase() ?? null
+export function wantTorrent(torrent: Torrent | undefined) {
+  wanted = torrent?.infoHash.toLowerCase() ?? null
+  wantedFile = torrent ? fileOf(torrent) : null
   if (closing && closing.hash === wanted) { clearTimeout(closing.timer); closing = null }
-  // A tap on another stream ends the start on its way; one on the same torrent shares it.
-  if (engineWait.value && engineWait.value.hash !== wanted) cancelStart()
+  // A tap on another stream (another file of the same torrent too) ends the start on its way; one
+  // on the same file shares it.
+  if (engineWait.value && engineWait.value.file !== wantedFile) cancelStart()
+}
+
+/**
+ * The title page `key` goes (Back, another episode): its engine wait ends, and its last tap `t`, if
+ * still the newest, never plays and wants no torrent, so a start that answered meanwhile stops.
+ */
+export function leavePage(key: string, t: number) {
+  cancelStart(key)
+  if (!current(t)) return
+  tap()
+  wantTorrent(undefined)
 }
 
 /**
@@ -79,6 +98,7 @@ export function wantTorrent(infoHash: string | undefined) {
  */
 export async function startTorrent(key: string, torrent: Torrent, t: number): Promise<string | null> {
   const hash = torrent.infoHash.toLowerCase()
+  const file = fileOf(torrent)
   let ended = false
   const end = (none: boolean) => {
     if (ended) return
@@ -86,24 +106,33 @@ export async function startTorrent(key: string, torrent: Torrent, t: number): Pr
     clearTimeout(limit)
     // Its answer may still come: a stale tap never plays it.
     if (current(t)) tap()
-    // Its own torrent stops, unless the player plays it or a newer tap wants it too.
-    if (wanted === hash) wanted = null
-    letGo(hash, false)
-    if (own()) engineWait.value = none ? { key, hash, line: NO_ONE } : null
+    // Its torrent stops unless the player plays it, even when the newer tap wants another of its
+    // files: the engine starts that one once this start has ended.
+    if (wantedFile === file) wanted = wantedFile = null
+    if (playing?.hash !== hash) stopTorrent(hash)
+    if (own()) engineWait.value = none ? { key, hash, file, line: NO_ONE } : null
   }
-  const mine: EngineWait = { key, hash, line: STARTING, cancel: () => end(false) }
+  const mine: EngineWait = { key, hash, file, line: STARTING, cancel: () => end(false) }
   const own = () => engineWait.value === mine
   engineWait.value = mine
   const limit = setTimeout(() => { if (own()) end(true) }, START_LIMIT_MS)
   try {
-    const url = await playTorrent(torrent)
-    if (ended) return null
+    let url: string
+    for (;;) {
+      try { url = await playTorrent(torrent); break } catch (e) {
+        // A start or session of this torrent still ending (a Cancel, another file) ends soon.
+        if (ended || !current(t) || !BUSY.includes(String(e))) throw e
+        await new Promise((r) => setTimeout(r, RETRY_MS))
+      }
+    }
+    // A stop sent while the engine was still getting ready may have found nothing to stop.
+    if (ended) { letGo(hash, false); return null }
     if (!current(t)) { letGo(hash, false); return null }
     return url
   } catch (e) {
     if (ended || !current(t)) return null
     if (String(e) !== NO_ONE) throw e
-    if (own()) engineWait.value = { key, hash, line: NO_ONE }
+    if (own()) engineWait.value = { key, hash, file, line: NO_ONE }
     return null
   } finally {
     clearTimeout(limit)
@@ -118,7 +147,7 @@ export async function startTorrent(key: string, torrent: Torrent, t: number): Pr
 export function letGo(hash: string, newest: boolean) {
   const h = hash.toLowerCase()
   if (playing?.hash === h || (!newest && wanted === h)) return
-  stopTorrent(hash)
+  stopTorrent(h)
 }
 
 function endGrace() {
