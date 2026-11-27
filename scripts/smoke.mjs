@@ -873,7 +873,10 @@ try {
   await addSheet.waitFor({ state: 'detached' })
   const torRow = named('Torrentio')
   check(await torRow.waitFor({ timeout: 15000 }).then(() => true, () => false) && (await torRow.innerText()).includes('\u2022\u2022\u2022XYZ9') && !(await torRow.innerText()).includes('abc123XYZ9'), 'the added addon is listed with its key masked')
-  check((await page.getByLabel('Extra addon URLs').inputValue()).includes('torrentio.strem.fun'), "the settings form shows the addon Stremio saved")
+  const savedList = page.getByRole('group', { name: 'Extra addon URLs' })
+  const savedText = await savedList.innerText().catch(() => '')
+  check(savedText.includes('torrentio.strem.fun') && savedText.includes('\u2022\u2022\u2022XYZ9') && !savedText.includes('abc123XYZ9')
+    && await page.locator('.plugin-form textarea').count() === 0, `the settings form shows the addon Stremio saved, its key masked and not as raw text (${JSON.stringify(savedText)})`)
   await addonsSec.getByRole('button', { name: 'Browse addons' }).click()
   await addonsSec.getByLabel('Search addons').fill('torrentio')
   const catRow = addonsSec.locator('.ext-browse .ext-row', { has: page.getByText('Torrent Catalogs', { exact: true }) })
@@ -891,11 +894,12 @@ try {
   await torRow.getByRole('button', { name: 'Remove Torrentio' }).click()
   check(await torRow.waitFor({ state: 'detached', timeout: 15000 }).then(() => true, () => false), 'Remove takes the addon out')
   await page.screenshot({ path: 'test-media/shots/stremio-addons.png' })
-  // Leave Stremio as it was, so later steps never ask Torrent Catalogs for rows.
-  page.once('dialog', (d) => d.accept())
-  await addonsSec.getByRole('button', { name: 'Remove Torrent Catalogs' }).click()
+  // Leave Stremio as it was, so later steps never ask Torrent Catalogs for rows. This remove goes through
+  // the settings form, the one place an entry that no longer loads can still be removed.
+  await page.getByRole('group', { name: 'Extra addon URLs' }).getByRole('button', { name: /^Remove entry 1, https:\/\/torrent-catalogs/ }).click()
+  await page.getByRole('button', { name: 'Save settings' }).click()
   check(await addonsSec.locator('.ext-row:not(.ext-browse .ext-row)', { has: page.getByText('Torrent Catalogs', { exact: true }) }).waitFor({ state: 'detached', timeout: 15000 }).then(() => true, () => false)
-    && await catRow.getByRole('button', { name: 'Add Torrent Catalogs' }).waitFor({ timeout: 5000 }).then(() => true, () => false), 'after a remove, Browse offers Add again')
+    && await catRow.getByRole('button', { name: 'Add Torrent Catalogs' }).waitFor({ timeout: 5000 }).then(() => true, () => false), 'Remove in the settings form takes an entry out, and Browse offers Add again')
   await page.unroute(/^https:\/\/(v3-cinemeta\.strem\.io\/addon_catalog\/|torrentio\.strem\.fun\/|torrent-catalogs\.strem\.fun\/)/)
 
   // Phone layout.

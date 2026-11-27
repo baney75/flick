@@ -6,7 +6,7 @@ import * as db from '../db'
 import { isDesktop, isMobileApp, invoke, fileUrl } from '../platform'
 import { connect, type Handler, type Rpc } from './rpc'
 import * as V from './validate'
-import { maskUrls } from './debrid-keys'
+import { asHttps, findDebridKeys, maskUrls } from './debrid-keys'
 import { mark } from './trace'
 
 /** No allow-same-origin, ever: the opaque origin is what keeps a plugin out of Flick's storage. */
@@ -46,7 +46,11 @@ export const logs = signal<Record<string, string[]>>({})
 const secretValues = new Map<string, string[]>()
 export function setSecrets(id: string, rec: Pick<Installed, 'kind' | 'manifest' | 'settings'>) {
   const fields = rec.kind === 'theme' ? [] : (rec.manifest as V.PluginManifest).settings.filter((f) => f.secret)
-  secretValues.set(id, fields.map((f) => rec.settings[f.key]).filter((v): v is string => typeof v === 'string' && v.length >= 4))
+  // A secret list (Stremio's addon addresses) is blanked entry by entry, and so is any debrid key inside
+  // one, so the key stays hidden even in a line that quotes the address without its scheme.
+  const values = fields.flatMap((f) => rec.settings[f.key]).filter((v): v is string => typeof v === 'string' && v.length >= 4)
+  const keys = findDebridKeys(values.map(asHttps)).map((k) => k.key)
+  secretValues.set(id, [...new Set([...values, ...keys])].sort((a, b) => b.length - a.length))
 }
 export function redact(id: string, text: string): string {
   // A debrid key inside an addon address (Torrentio's torbox=...) shows only by its last 4.

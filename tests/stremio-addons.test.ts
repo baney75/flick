@@ -49,6 +49,11 @@ describe('Stremio addons', () => {
     expect(V.validateManifest(data, fns).has.extensions).toBe(true)
   })
 
+  it('the signed-out addon list is a secret setting, so it stays on this device', () => {
+    const { data, fns } = split(stremio)
+    expect(V.validateManifest(data, fns).settings.find((f) => f.key === 'addons')).toMatchObject({ type: 'list', secret: true })
+  })
+
   it('signed out, add Torrentio: it appears in Addons and the addons setting holds it', async () => {
     const { ctx } = world(false)
     const before = V.validateExtensions(await stremio.extensions(ctx))

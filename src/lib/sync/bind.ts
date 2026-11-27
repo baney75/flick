@@ -9,7 +9,7 @@ import { items, progress, settings, setSettings, notify, reloadItems, type Progr
 import { validPref } from '../prefs'
 import { getServers, saveServer, removeServer, syncServer, type Server } from '../servers'
 import type { Item } from '../library'
-import { contentIndex, localProgressKeys, progressDocKey, pluginSnapshot, mayInstallSynced, type SyncedPlugin } from './keys'
+import { contentIndex, localProgressKeys, progressDocKey, pluginSnapshot, mayInstallSynced, secretLeaks, type SyncedPlugin } from './keys'
 import { installed, prepare, install, remove, setEnabled, setPluginSettings, isSecret, portable } from '../plugins/registry'
 import { legacyProgress } from '../plugins/migrate'
 import { startSync, publish, docValue, docKeys } from './engine'
@@ -58,7 +58,9 @@ export async function startSyncBinding() {
     ...[...prevServers].map(([id, s]) => [`v:${id}`, JSON.parse(s)] as [string, unknown]),
     ...[...prevPlugins].map(([k, v]) => [k, JSON.parse(v)] as [string, unknown]),
   ]
-  await startSync((keys) => { applyRemote(keys).catch(() => {}) }, offer)
+  // After each merge from another device (never before one, so a stale copy here cannot undo a newer change
+  // there), a synced plugin entry that still holds a field this device keeps secret is rewritten without it.
+  await startSync((keys) => { applyRemote(keys).then(() => publish(secretLeaks(installed.value, docValue))).catch(() => {}) }, offer)
 
   effect(() => {
     const next = progress.value

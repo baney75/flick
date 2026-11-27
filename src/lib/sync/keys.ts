@@ -12,7 +12,7 @@
 
 import type { Item } from '../library'
 import type { Progress } from '../store'
-import { portable, publicSettings, type Installed, type Candidate } from '../plugins/registry'
+import { isSecret, portable, publicSettings, type Installed, type Candidate } from '../plugins/registry'
 import { addedPermissions, type PluginManifest } from '../plugins/validate'
 
 const LOCAL = new Set(['local', 'stored'])
@@ -57,6 +57,22 @@ export function pluginSnapshot(list: Installed[]): Map<string, string> {
     const v: SyncedPlugin = { on: p.enabled, settings: publicSettings(p), sha256: p.sha256, hosts: m.hosts ?? [], tools: m.tools ?? [] }
     return [[`x:${url}`, JSON.stringify(v)] as [string, string]]
   }))
+}
+
+/**
+ * Synced plugin entries that still hold a setting this device keeps secret, each rewritten without it.
+ * A field that turned secret in an update (Stremio's addon list) leaves the synced copy that way, so
+ * other devices stop receiving it. The rest of the entry is kept as synced, so a newer change from
+ * another device (Stremio turned off there) is never undone; the value itself stays on each device.
+ */
+export function secretLeaks(list: Installed[], read: (key: string) => unknown): [string, unknown][] {
+  return list.flatMap((p): [string, unknown][] => {
+    const url = p.url && p.kind !== 'service' ? portable(p.url) : null
+    const k = url && `x:${url}`
+    const v = k ? (read(k) as SyncedPlugin | null | undefined) : null
+    if (!k || !v?.settings || !Object.keys(v.settings).some((key) => isSecret(p, key))) return []
+    return [[k, { ...v, settings: Object.fromEntries(Object.entries(v.settings).filter(([key]) => !isSecret(p, key))) }]]
+  })
 }
 
 /** A plugin as it syncs: on or off, non-secret settings, and the code and permissions its owner reviewed. */

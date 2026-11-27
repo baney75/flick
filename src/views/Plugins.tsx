@@ -10,6 +10,7 @@ import { installed, prepare, install, remove, setEnabled, setPluginSettings, acc
 import { callPlugin, logs, type Installed } from '../lib/plugins/runtime'
 import { themes } from '../lib/plugins/use'
 import type { ActionDef, Field, PluginManifest, ThemeManifest } from '../lib/plugins/validate'
+import { maskAddress } from '../lib/plugins/debrid-keys'
 
 const DOCS = 'https://github.com/baney75/flick/blob/main/docs/PLUGINS.md'
 export const PROMPT = `Write a Flick plugin for: <the site, API or service you want in Flick>.
@@ -78,6 +79,25 @@ export function ThemePicker() {
 
 function FieldInput({ f, value, set }: { f: Field; value: unknown; set: (v: unknown) => void }) {
   const id = `f-${f.key}`
+  // A secret list (Stremio's addon addresses) is never shown or edited as raw text: each entry shows with
+  // any debrid key cut to its last 4. The plugin's Addons section adds them; Remove here also clears an
+  // entry that no longer loads, which Addons cannot list.
+  if (f.type === 'list' && f.secret) {
+    const entries = Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : []
+    return (
+      <div role="group" aria-label={f.label} style={{ display: 'grid', gap: '4px' }}>
+        <span>{f.label}<span class="small dim"> (stays on this device)</span></span>
+        {entries.length
+          ? <ul class="small" style={{ margin: 0, paddingLeft: '18px' }}>{entries.map((u, i) => (
+            <li key={u} style={{ overflowWrap: 'anywhere' }}>
+              {maskAddress(u)} <button type="button" class="link-btn" aria-label={`Remove entry ${i + 1}, ${maskAddress(u)}`} onClick={() => set(entries.filter((x) => x !== u))}>Remove</button>
+            </li>
+          ))}</ul>
+          : <span class="small dim">None yet.</span>}
+        {f.help && <span class="small dim">{f.help}</span>}
+      </div>
+    )
+  }
   if (f.type === 'toggle') return <label class="toggle"><input type="checkbox" checked={!!value} onChange={(e) => set((e.target as HTMLInputElement).checked)} /> {f.label}</label>
   const input = f.type === 'select'
     ? <select id={id} value={String(value ?? '')} onChange={(e) => set((e.target as HTMLSelectElement).value)}>{(f.options ?? []).map((o) => <option value={o}>{o}</option>)}</select>
