@@ -184,8 +184,12 @@ export function VirtualGrid<T>({ list, min = 220, ratio = 9 / 16, extra = 54, re
   render: (t: T) => ComponentChildren
 }) {
   const box = useRef<HTMLDivElement>(null)
+  const inner = useRef<HTMLDivElement>(null)
   const [w, setW] = useState(0)
   const [range, setRange] = useState<[number, number]>([0, 12])
+  // A row's height as drawn, once a row is in the page. The estimate below is only for the first frame:
+  // the cards' text is a few px off it, and every row the window moved would shift the grid by that much.
+  const [drawn, setDrawn] = useState(0)
   const gap = 16
 
   useLayoutEffect(() => {
@@ -201,8 +205,22 @@ export function VirtualGrid<T>({ list, min = 220, ratio = 9 / 16, extra = 54, re
   const fit = w && w < 600 ? Math.min(min, ratio > 1 ? 100 : 150) : min
   const cols = Math.max(1, Math.floor((w + gap) / (fit + gap)))
   const cardW = w ? (w - gap * (cols - 1)) / cols : min
-  const rowH = cardW * ratio + extra + gap
+  const rowH = drawn || cardW * ratio + extra + gap
   const rows = Math.ceil(list.length / cols)
+  const shown = Math.ceil(Math.min(list.length, range[1] * cols) / cols) - range[0]
+
+  useLayoutEffect(() => {
+    const el = inner.current!
+    const read = () => {
+      if (shown <= 0) return
+      const h = (el.offsetHeight + gap) / shown
+      setDrawn((d) => (Math.abs(d - h) < 0.5 ? d : h))
+    }
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    read()
+    return () => ro.disconnect()
+  }, [shown, cols])
 
   useEffect(() => {
     const el = box.current!
@@ -225,7 +243,7 @@ export function VirtualGrid<T>({ list, min = 220, ratio = 9 / 16, extra = 54, re
   const slice = list.slice(range[0] * cols, range[1] * cols)
   return (
     <div ref={box} class="vgrid" style={{ height: `${rows * rowH}px`, '--art-h': `${cardW * ratio}px` }}>
-      <div class="vgrid-inner" style={{ transform: `translateY(${range[0] * rowH}px)`, gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
+      <div ref={inner} class="vgrid-inner" style={{ transform: `translateY(${range[0] * rowH}px)`, gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
         {slice.map((t) => render(t))}
       </div>
     </div>
