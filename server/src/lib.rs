@@ -43,7 +43,10 @@ struct State {
     name: String,
     token: String,
     roots: Vec<PathBuf>,
-    real_roots: Vec<PathBuf>,
+    /// Each root with every link resolved, once it exists. A root missing at start (a drive not yet
+    /// mounted) is resolved by the first rescan that finds it; a resolved root never changes, so a
+    /// root swapped for a link later does not widen what is served.
+    real_roots: RwLock<Vec<Option<PathBuf>>>,
     index: RwLock<Arc<Index>>,
     web: web::Web,
     /// Cached photo thumbnails.
@@ -56,12 +59,23 @@ struct State {
 impl State {
     /// `dates` reads the capture date of each new or changed photo.
     fn rescan(&self, dates: bool) {
+        {
+            let mut real = self.real_roots.write().unwrap();
+            for (r, root) in real.iter_mut().zip(&self.roots) {
+                if r.is_none() {
+                    *r = std::fs::canonicalize(root).ok();
+                }
+            }
+        }
         let prev = self.index();
         let fresh = Arc::new(index::scan_with(&self.roots, Some(&prev), dates));
         *self.index.write().unwrap() = fresh;
     }
     fn index(&self) -> Arc<Index> {
         self.index.read().unwrap().clone()
+    }
+    fn real_roots(&self) -> Vec<PathBuf> {
+        self.real_roots.read().unwrap().iter().flatten().cloned().collect()
     }
 }
 
@@ -212,11 +226,7 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
         renders: thumb::Gate::new(thumb::RENDERS, thumb::WAITING),
         name: cfg.name,
         token: token.clone(),
-        real_roots: cfg
-            .media
-            .iter()
-            .filter_map(|r| std::fs::canonicalize(r).ok())
-            .collect(),
+        real_roots: RwLock::new(vec![None; cfg.media.len()]),
         roots: cfg.media,
         index: Default::default(),
         stopping: AtomicBool::new(false),
@@ -347,7 +357,7 @@ fn handle(st: &State, req: Request) {
     };
     let idx = st.index();
     match idx.get(id) {
-        Some(item) => media(req, item, &st.real_roots, &st.stopping),
+        Some(item) => media(req, item, &st.real_roots(), &st.stopping),
         None => json(req, 404, serde_json::json!({"error":"not found"})),
     }
 }
@@ -404,8 +414,8 @@ pub fn parse_range(h: &str, total: u64) -> Range {
     }
 }
 
-/// True when `abs`, with every symlink resolved, is still inside one of the shared roots (resolved
-/// once at start, so a root swapped for a link later does not count either). The index
+/// True when `abs`, with every symlink resolved, is still inside one of the shared roots (each resolved
+/// once, so a root swapped for a link later does not count either). The index
 /// was built without following links, but a file or folder can be swapped for a link after a scan.
 fn inside_roots(abs: &std::path::Path, roots: &[PathBuf]) -> bool {
     let Ok(real) = std::fs::canonicalize(abs) else {
@@ -481,7 +491,7 @@ fn thumbnail(req: Request, item: &index::Item, st: &State) {
     let jpeg = match std::fs::read(&cached) {
         Ok(b) => b,
         Err(_) => {
-            let Some(file) = open_inside(&item.abs, &st.real_roots) else {
+            let Some(file) = open_inside(&item.abs, &st.real_roots()) else {
                 return json(req, 404, serde_json::json!({"error":"not found"}));
             };
             let Some(turn) = st.renders.enter() else {
