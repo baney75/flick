@@ -75,6 +75,9 @@ export default {
       { key: 'password', label: 'Password', type: 'password' },   // password fields are secret
     ] },
   ],
+  titleActions: [                            // optional buttons on each title page, at most 6
+    { id: 'like', label: 'Like', key: 'l' },   // key: one letter, a shortcut on the title page and on a focused card
+  ],
   catalogs: [                                // rows on the plugin's page; one may be searchable
     { id: 'films', name: 'Feature films', type: 'movie' },
     { id: 'search', name: 'Search', type: 'movie', search: true },
@@ -89,6 +92,7 @@ export default {
   async subtitles(ctx, { type, id, videoId }) { return [/* Sub */] },            // extra subtitles for any stream
   async library(ctx) { return { shelves: [/* Shelf */], items: [/* Meta, may carry progress */] } }, // or just the Meta list, see "Library"
   async action(ctx, id, values) { return { ok: true, message: 'Signed in' } },  // an `actions` button was tapped
+  async titleAction(ctx, { type, id, action }) { return { ok: true, on: true, message: 'Liked' } }, // toggles; `on` is the new state
   async progress(ctx, { type, id, videoId, pos, dur }) {},                      // play position, to sync back
   async addonUrls(ctx) { return [/* https addon URLs */] },                     // bundled Stremio plugin only: Flick looks for debrid keys in them
   // optional, all five or none: addons inside this source, see "Addons" below
@@ -174,12 +178,21 @@ line). `secret: true` keeps the value on the device: it never syncs and never go
 values go only to that one `action()` call and are not saved; keep what you need (a token) with
 `ctx.store`.
 
+### Title actions
+
+`titleActions` puts a button on each of the plugin's title pages; the plugin keeps what they mean (a
+Liked list, Watch later) in `ctx.store` and can show them as `userCatalogs`. A title's `marks` lists the
+action ids that are on for it, so its buttons show pressed. With a `key`, the letter works on the title
+page and on a focused card on the plugin's page, but not while typing, with Shift, Ctrl, Alt or Cmd
+held, or while the player is open; a held key fires once. `titleAction()` returns `{ ok, on, message? }`;
+Flick shows `message`. A failed action may return `{ ok: false, message }` with no `on`.
+
 ### Shapes
 
 - `type`: `movie`, `series`, `video`, `channel`, `audio`, `audiobook`, `book`, or a kind of your own
   (`podcast`; see "Library"). A catalog's `type` follows the same rule.
 - `Meta`: `{ id, type, name, poster?, posterShape? ('poster'|'square'|'landscape'), background?,
-  description?, year?, genres?, runtime?, subtitle?, badges?, videos?: Video[], progress?: { pos, dur,
+  description?, year?, genres?, runtime?, subtitle?, badges?, marks?, videos?: Video[], progress?: { pos, dur,
   at, videoId? }, shelves?, added?, facts? }`. `id` is the plugin's own id, at most 512 characters. `subtitle` is one line under
   the name on a card (a channel, an author; it replaces the year there). `badges` are up to 4 short
   facts, 40 characters each, under it and on the title page ("1.2M views", "3 years ago"). A

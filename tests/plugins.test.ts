@@ -29,6 +29,20 @@ describe('plugin validation', () => {
     expect(() => V.validateManifest(manifest(), ['catalog', 'meta'])).toThrow(/streams\(\)/)
     expect(() => V.validateManifest(manifest({ actions: [{ id: 'in', label: 'Sign in' }] }), FNS)).toThrow(/action\(\)/)
   })
+  it('reads title actions: one-letter keys, unique, with a titleAction() function', () => {
+    const acts = [{ id: 'like', label: 'Like', key: 'L' }, { id: 'later', label: 'Watch later', key: 'w' }]
+    expect(V.validateManifest(manifest({ titleActions: acts }), [...FNS, 'titleAction']).titleActions).toEqual([{ id: 'like', label: 'Like', key: 'l' }, { id: 'later', label: 'Watch later', key: 'w' }])
+    expect(() => V.validateManifest(manifest({ titleActions: acts }), FNS)).toThrow(/titleAction\(\)/)
+    expect(() => V.validateManifest(manifest({ titleActions: [{ id: 'a', label: 'A', key: 'ab' }] }), [...FNS, 'titleAction'])).toThrow(/one letter/)
+    expect(() => V.validateManifest(manifest({ titleActions: [{ id: 'a', label: 'A', key: '/' }] }), [...FNS, 'titleAction'])).toThrow(/one letter/)
+    expect(() => V.validateManifest(manifest({ titleActions: [{ id: 'a', label: 'A', key: 'w' }, { id: 'b', label: 'B', key: 'W' }] }), [...FNS, 'titleAction'])).toThrow(/share a key/)
+    expect(V.validateTitleAction({ ok: true, on: true, message: 'Liked' })).toEqual({ ok: true, on: true, message: 'Liked' })
+    expect(() => V.validateTitleAction({ ok: true })).toThrow(/on/)
+    expect(V.validateTitleAction({ ok: false, message: 'Offline' })).toEqual({ ok: false, on: false, message: 'Offline' })
+    const seven = Array.from({ length: 7 }, (_, i) => ({ id: `a${i}`, label: `A${i}` }))
+    expect(() => V.validateManifest(manifest({ titleActions: seven }), [...FNS, 'titleAction'])).toThrow(/at most 6/)
+    expect(V.validateMeta({ id: 'a', type: 'video', name: 'A', marks: ['like', 'Bad Id', 3] }).marks).toEqual(['like'])
+  })
   it('marks password fields secret', () => {
     const m = V.validateManifest(manifest({ actions: [{ id: 'in', label: 'Sign in', fields: [{ key: 'pw', type: 'password' }] }] }), [...FNS, 'action'])
     expect(m.actions[0].fields[0].secret).toBe(true)

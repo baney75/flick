@@ -35,14 +35,16 @@ export function Card(props: {
   info?: string
   /** Give the title two lines. */
   wrap?: boolean
+  /** What this card is, for keys that act on the focused card. */
+  target?: string
   onClick: () => void
   onMore?: (e: MouseEvent) => void
 }) {
-  const { image, title, sub, shape = 'wide', pct, icon = 'film', badge, time, info, wrap, onClick, onMore } = props
+  const { image, title, sub, shape = 'wide', pct, icon = 'film', badge, time, info, wrap, target, onClick, onMore } = props
   const [loaded, setLoaded] = useState(false)
   const hold = useLongPress(onMore)
   return (
-    <button class={`card ${shape}`} onClick={(e) => { if (hold.fired()) e.stopPropagation(); else onClick() }} onContextMenu={onMore ? (e) => { e.preventDefault(); onMore(e) } : undefined} title={title} {...hold.events}>
+    <button class={`card ${shape}`} data-target={target} onClick={(e) => { if (hold.fired()) e.stopPropagation(); else onClick() }} onContextMenu={onMore ? (e) => { e.preventDefault(); onMore(e) } : undefined} title={title} {...hold.events}>
       <div class="art">
         {image ? <img src={image} alt="" loading="lazy" decoding="async" class={loaded ? 'in' : ''} onLoad={() => setLoaded(true)} /> : <div class="art-ph"><Icon name={icon} size={30} /></div>}
         {badge && <span class="badge">{badge}</span>}

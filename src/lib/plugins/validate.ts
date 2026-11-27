@@ -24,6 +24,8 @@ export type Platform = (typeof PLATFORMS)[number]
 export interface Field { key: string; label: string; type: 'text' | 'password' | 'select' | 'toggle' | 'list'; options?: string[]; default?: unknown; secret?: boolean; help?: string }
 export interface ActionDef { id: string; label: string; fields: Field[] }
 export interface CatalogDef { id: string; name: string; type: MetaType; search?: boolean }
+/** A button on every title page of this plugin, like Like or Watch later; `key` is its one-letter shortcut. */
+export interface TitleActionDef { id: string; label: string; key?: string }
 export interface PluginManifest {
   api: 1
   kind: (typeof KINDS)[number]
@@ -39,6 +41,7 @@ export interface PluginManifest {
   settings: Field[]
   actions: ActionDef[]
   catalogs: CatalogDef[]
+  titleActions: TitleActionDef[]
   /** A service plugin: what it provides, and the hosts its download links come from (all also in `hosts`). */
   provides: string[]
   debridHosts: string[]
@@ -59,6 +62,8 @@ export interface Meta {
   year?: string
   genres?: string[]
   runtime?: string
+  /** Ids of the plugin's titleActions that are on for this title (it is liked, it is in Watch later). */
+  marks?: string[]
   /** One line under the name on a card: a channel, an author. */
   subtitle?: string
   /** Up to 4 short facts on a card and the title page: "1.2M views", "3 years ago". */
@@ -89,6 +94,7 @@ export interface ActionResult { ok: boolean; message?: string }
 export interface Extension { id: string; name: string; description?: string; logo?: string; url: string; types?: string[]; removable: boolean; installed?: boolean }
 /** addExtension() and removeExtension(): new values for the plugin's own non-secret settings may come back. */
 export interface ExtensionResult extends ActionResult { settings?: Record<string, unknown> }
+export interface TitleActionResult { ok: boolean; on: boolean; message?: string }
 export type AccountResult = { ok: true; name: string; plan?: string; expires?: string } | { ok: false; message: string }
 export type ResolveResult = { url: string } | { wait: { pct?: number; message: string } } | { error: string }
 
@@ -213,6 +219,20 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
   if (actions.length && !fns.includes('action')) fail('The plugin lists actions but has no action() function.')
   const extFns = EXTENSION_FNS.filter((f) => fns.includes(f))
   if (extFns.length && extFns.length < EXTENSION_FNS.length) fail(`A plugin with addons needs all of ${EXTENSION_FNS.map((f) => `${f}()`).join(', ')}.`)
+  if (Array.isArray(x.titleActions) && x.titleActions.length > 6) fail(`The plugin lists ${x.titleActions.length} title actions; at most 6 are allowed.`)
+  const titleActions = kind === 'service' ? [] : list(x.titleActions, 'titleActions', 6).map((a): TitleActionDef => {
+    if (!isObj(a)) return fail('Each title action must be an object.')
+    const t: TitleActionDef = { id: str(a.id, 'A title action id', true, 32), label: str(a.label, 'A title action label', true, 40) }
+    if (!/^[a-z0-9_-]+$/.test(t.id)) fail(`The title action id "${t.id}" may use only lowercase letters, digits, _ and -.`)
+    const key = str(a.key, 'A title action key', false, 1)?.toLowerCase()
+    if (a.key !== undefined && (!key || !/^[a-z]$/.test(key) || String(a.key).length !== 1)) fail(`The title action "${t.id}" needs a key of one letter.`)
+    if (key) t.key = key
+    return t
+  })
+  if (new Set(titleActions.map((a) => a.id)).size < titleActions.length) fail('Two title actions share an id.')
+  const keys = titleActions.flatMap((a) => a.key ?? [])
+  if (new Set(keys).size < keys.length) fail('Two title actions share a key.')
+  if (titleActions.length && !fns.includes('titleAction')) fail('The plugin lists titleActions but has no titleAction() function.')
   const m: PluginManifest = {
     api: 1,
     kind: kind as PluginManifest['kind'],
@@ -227,6 +247,7 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
     settings,
     actions,
     catalogs,
+    titleActions,
     provides,
     debridHosts: [...new Set(debridHosts)],
     vpnOptional: x.vpnOptional === true,
@@ -293,6 +314,8 @@ export function validateMeta(x: unknown, fromLibrary = false): Meta {
   if (year) m.year = year
   if (runtime) m.runtime = runtime
   // Display-only fields: a wrong shape is dropped, never the whole title.
+  const marks = (Array.isArray(x.marks) ? x.marks.slice(0, 6) : []).filter((k): k is string => typeof k === 'string' && /^[a-z0-9_-]{1,32}$/.test(k))
+  if (marks.length) m.marks = marks
   const subtitle = typeof x.subtitle === 'string' ? str(x.subtitle, 'subtitle', false, 200) : undefined
   if (subtitle) m.subtitle = subtitle
   const badges = (Array.isArray(x.badges) ? x.badges.slice(0, 20) : []).filter((b): b is string => typeof b === 'string' && !!b.trim()).slice(0, 4).map((b) => b.trim().slice(0, 40))
@@ -449,6 +472,17 @@ export function validateAction(x: unknown): ActionResult {
   if (!isObj(x)) return { ok: x !== false }
   const r: ActionResult = { ok: x.ok !== false }
   const m = str(x.message, 'message', false, 500)
+  if (m) r.message = m
+  return r
+}
+
+/** A titleAction() result: whether that action is now on for the title. */
+export function validateTitleAction(x: unknown): TitleActionResult {
+  if (!isObj(x)) return fail('titleAction() must return { ok, on }.')
+  const ok = x.ok !== false
+  if (ok && typeof x.on !== 'boolean') return fail('titleAction() must return { ok, on }.')
+  const r: TitleActionResult = { ok, on: ok && x.on === true }
+  const m = str(x.message, 'message', false, 200)
   if (m) r.message = m
   return r
 }
