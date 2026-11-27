@@ -53,7 +53,7 @@ struct State {
     thumbs: PathBuf,
     renders: thumb::Gate,
     // Set by stop(); a body being streamed ends at its next read.
-    stopping: AtomicBool,
+    stopping: Arc<AtomicBool>,
 }
 
 impl State {
@@ -75,7 +75,13 @@ impl State {
         self.index.read().unwrap().clone()
     }
     fn real_roots(&self) -> Vec<PathBuf> {
-        self.real_roots.read().unwrap().iter().flatten().cloned().collect()
+        self.real_roots
+            .read()
+            .unwrap()
+            .iter()
+            .flatten()
+            .cloned()
+            .collect()
     }
 }
 
@@ -229,7 +235,7 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
         real_roots: RwLock::new(vec![None; cfg.media.len()]),
         roots: cfg.media,
         index: Default::default(),
-        stopping: AtomicBool::new(false),
+        stopping: Default::default(),
     });
     // Start answering after a quick scan; photo dates fill in on the first background pass.
     state.rescan(false);
@@ -249,7 +255,7 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
         let (srv, st) = (server.clone(), state.clone());
         threads.push(std::thread::spawn(move || {
             while let Ok(req) = srv.recv() {
-                handle(&st, req);
+                serve(&st, req);
             }
         }));
     }
@@ -265,72 +271,111 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
     })
 }
 
-fn header(k: &str, v: &str) -> Header {
-    Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap()
+/// The request method, as the handlers tell methods apart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Verb {
+    Get,
+    Head,
+    Options,
+    Other,
 }
 
-fn respond<R: Read>(req: Request, mut res: Response<R>) {
-    for (k, v) in [
-        ("Access-Control-Allow-Origin", "*"),
-        ("Access-Control-Allow-Headers", "Authorization, Range"),
+/// One request as the handlers see it, whatever transport carried it.
+pub(crate) struct Req {
+    pub verb: Verb,
+    /// Path and query, as sent.
+    pub target: String,
+    pub authorization: Option<String>,
+    pub range: Option<String>,
+}
+
+/// One answer: a status, headers and a body of known length. A HEAD answer keeps the length and
+/// the transport leaves the body unsent.
+pub(crate) struct Reply {
+    pub status: u16,
+    pub headers: Vec<(&'static str, String)>,
+    pub body: Box<dyn Read + Send>,
+    pub len: u64,
+}
+
+impl Reply {
+    fn empty(status: u16) -> Reply {
+        Reply::bytes(status, Vec::new())
+    }
+    fn bytes(status: u16, body: Vec<u8>) -> Reply {
+        let len = body.len() as u64;
+        Reply {
+            status,
+            headers: Vec::new(),
+            body: Box::new(std::io::Cursor::new(body)),
+            len,
+        }
+    }
+    fn json(status: u16, body: serde_json::Value) -> Reply {
+        Reply::bytes(status, body.to_string().into_bytes()).with("Content-Type", "application/json")
+    }
+    fn not_found() -> Reply {
+        Reply::json(404, serde_json::json!({"error":"not found"}))
+    }
+    fn with(mut self, k: &'static str, v: impl Into<String>) -> Reply {
+        self.headers.push((k, v.into()));
+        self
+    }
+}
+
+/// Answers one request, CORS headers included.
+pub(crate) fn answer(st: &State, req: &Req) -> Reply {
+    let mut res = handle(st, req);
+    res.headers.extend([
+        ("Access-Control-Allow-Origin", "*".into()),
+        (
+            "Access-Control-Allow-Headers",
+            "Authorization, Range".into(),
+        ),
         (
             "Access-Control-Expose-Headers",
-            "Content-Range, Accept-Ranges, Content-Length",
+            "Content-Range, Accept-Ranges, Content-Length".into(),
         ),
-        ("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS"),
-    ] {
-        res.add_header(header(k, v));
-    }
-    let _ = req.respond(res.with_chunked_threshold(usize::MAX));
-}
-
-fn json(req: Request, status: u16, body: serde_json::Value) {
-    let res = Response::from_string(body.to_string())
-        .with_status_code(status)
-        .with_header(header("Content-Type", "application/json"));
-    respond(req, res);
+        ("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS".into()),
+    ]);
+    res
 }
 
 fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-fn handle(st: &State, req: Request) {
-    let url = req.url().to_string();
-    let (path, query) = url.split_once('?').unwrap_or((&url, ""));
+fn handle(st: &State, req: &Req) -> Reply {
+    let url = req.target.as_str();
+    let (path, query) = url.split_once('?').unwrap_or((url, ""));
     let param = |k: &str| {
         query
             .split('&')
             .find_map(|p| p.strip_prefix(k)?.strip_prefix('='))
     };
-    let method = req.method().clone();
-    if method == Method::Options {
-        return respond(req, Response::empty(204));
+    if req.verb == Verb::Options {
+        return Reply::empty(204);
     }
-    if method != Method::Get && method != Method::Head {
-        return json(req, 405, serde_json::json!({"error":"method not allowed"}));
+    if req.verb == Verb::Other {
+        return Reply::json(405, serde_json::json!({"error":"method not allowed"}));
     }
     if path == "/api/info" {
-        return json(
-            req,
+        return Reply::json(
             200,
             serde_json::json!({"app":"flick-server","v":1,"name":st.name,"version":VERSION}),
         );
     }
     if !path.starts_with("/api/") && !path.starts_with("/media/") && !path.starts_with("/thumb/") {
-        return fallback(st, req);
+        return fallback(st, path);
     }
-    let bearer = req
-        .headers()
-        .iter()
-        .find(|h| h.field.equiv("Authorization"))
-        .and_then(|h| h.value.as_str().strip_prefix("Bearer ").map(str::to_string));
-    let given = bearer
-        .or_else(|| param("t").map(str::to_string))
+    let given = req
+        .authorization
+        .as_deref()
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .or_else(|| param("t"))
         .unwrap_or_default();
     if !ct_eq(given.as_bytes(), st.token.as_bytes()) {
-        return json(
-            req,
+        return Reply::json(
             401,
             serde_json::json!({"error":"missing or wrong access code"}),
         );
@@ -340,36 +385,39 @@ fn handle(st: &State, req: Request) {
             st.rescan(true);
         }
         let idx = st.index();
-        return json(
-            req,
+        return Reply::json(
             200,
             serde_json::json!({"name":st.name,"folders":idx.folders,"items":idx.items}),
         );
     }
     if let Some(id) = path.strip_prefix("/thumb/") {
         return match st.index().get(id) {
-            Some(item) if item.kind == "photo" => thumbnail(req, item, st),
-            _ => json(req, 404, serde_json::json!({"error":"not found"})),
+            Some(item) if item.kind == "photo" => thumbnail(item, st),
+            _ => Reply::not_found(),
         };
     }
     let Some(id) = path.strip_prefix("/media/") else {
-        return json(req, 404, serde_json::json!({"error":"not found"}));
+        return Reply::not_found();
     };
-    let idx = st.index();
-    match idx.get(id) {
-        Some(item) => media(req, item, &st.real_roots(), &st.stopping),
-        None => json(req, 404, serde_json::json!({"error":"not found"})),
+    match st.index().get(id) {
+        Some(item) => media(req.range.as_deref(), item, &st.real_roots(), &st.stopping),
+        None => Reply::not_found(),
     }
 }
 
-fn fallback(st: &State, req: Request) {
-    match st.web.get(req.url().split('?').next().unwrap_or("/")) {
-        Err(()) => return json(req, 404, serde_json::json!({"error":"not found"})),
+fn fallback(st: &State, path: &str) -> Reply {
+    match st.web.get(path) {
+        Err(()) => return Reply::not_found(),
         Ok(Some(a)) => {
-            let res = Response::new(200.into(), vec![], a.body, Some(a.len), None)
-                .with_header(header("Content-Type", a.content_type))
-                .with_header(header("Cache-Control", a.cache));
-            return respond(req, res);
+            return Reply {
+                status: 200,
+                headers: vec![
+                    ("Content-Type", a.content_type.into()),
+                    ("Cache-Control", a.cache.into()),
+                ],
+                body: a.body,
+                len: a.len as u64,
+            }
         }
         Ok(None) => {}
     }
@@ -377,9 +425,7 @@ fn fallback(st: &State, req: Request) {
         "Flick server {} is running. Connect to it from Flick with the setup link it printed.\n",
         st.name
     );
-    let res = Response::from_string(text)
-        .with_header(header("Content-Type", "text/plain; charset=utf-8"));
-    respond(req, res);
+    Reply::bytes(200, text.into_bytes()).with("Content-Type", "text/plain; charset=utf-8")
 }
 
 #[derive(Debug, PartialEq)]
@@ -454,12 +500,12 @@ pub fn same_file(file: &File, path: &Path) -> bool {
 }
 
 /// Ends a streamed body once the server is stopping.
-struct Stoppable<'a, R> {
+struct Stoppable<R> {
     inner: R,
-    stopping: &'a AtomicBool,
+    stopping: Arc<AtomicBool>,
 }
 
-impl<R: Read> Read for Stoppable<'_, R> {
+impl<R: Read> Read for Stoppable<R> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if self.stopping.load(Ordering::Relaxed) {
             return Err(std::io::Error::other("server stopping"));
@@ -468,34 +514,31 @@ impl<R: Read> Read for Stoppable<'_, R> {
     }
 }
 
-fn thumbnail(req: Request, item: &index::Item, st: &State) {
+fn thumbnail(item: &index::Item, st: &State) -> Reply {
     let cached = thumb::cache_path(&st.thumbs, &item.id, item.size, item.mtime);
     let failed = thumb::failed_path(&st.thumbs, &item.id, item.size, item.mtime);
-    let no_thumb = |req| {
-        json(
-            req,
+    let no_thumb = || {
+        Reply::json(
             415,
             serde_json::json!({"error":"no thumbnail for this file"}),
         )
     };
-    let busy = |req: Request| {
-        let res = Response::from_string(r#"{"error":"busy, try again"}"#)
-            .with_status_code(503)
-            .with_header(header("Content-Type", "application/json"))
-            .with_header(header("Retry-After", "1"));
-        respond(req, res)
+    let busy = || {
+        Reply::bytes(503, br#"{"error":"busy, try again"}"#.to_vec())
+            .with("Content-Type", "application/json")
+            .with("Retry-After", "1")
     };
     if failed.exists() {
-        return no_thumb(req);
+        return no_thumb();
     }
     let jpeg = match std::fs::read(&cached) {
         Ok(b) => b,
         Err(_) => {
             let Some(file) = open_inside(&item.abs, &st.real_roots()) else {
-                return json(req, 404, serde_json::json!({"error":"not found"}));
+                return Reply::not_found();
             };
             let Some(turn) = st.renders.enter() else {
-                return busy(req);
+                return busy();
             };
             let made = thumb::render(file);
             drop(turn);
@@ -507,61 +550,87 @@ fn thumbnail(req: Request, item: &index::Item, st: &State) {
                 }
                 Err(thumb::Failure::Undecodable) => {
                     let _ = thumb::store(&failed, b"");
-                    return no_thumb(req);
+                    return no_thumb();
                 }
-                Err(thumb::Failure::Io) => return busy(req),
+                Err(thumb::Failure::Io) => return busy(),
             }
         }
     };
-    let res = Response::from_data(jpeg)
-        .with_header(header("Content-Type", "image/jpeg"))
-        .with_header(header(
-            "Cache-Control",
-            "private, max-age=31536000, immutable",
-        ));
-    respond(req, res);
+    Reply::bytes(200, jpeg)
+        .with("Content-Type", "image/jpeg")
+        .with("Cache-Control", "private, max-age=31536000, immutable")
 }
 
-fn media(req: Request, item: &index::Item, roots: &[PathBuf], stopping: &AtomicBool) {
+fn media(
+    range: Option<&str>,
+    item: &index::Item,
+    roots: &[PathBuf],
+    stopping: &Arc<AtomicBool>,
+) -> Reply {
     let Some(mut file) = open_inside(&item.abs, roots) else {
-        return json(req, 404, serde_json::json!({"error":"not found"}));
+        return Reply::not_found();
     };
     let total = file.metadata().map(|m| m.len()).unwrap_or(item.size);
-    let range = req
-        .headers()
-        .iter()
-        .find(|h| h.field.equiv("Range"))
-        .map(|h| h.value.to_string());
-    let (start, end, status) = match range.map_or(Range::Full, |r| parse_range(&r, total)) {
+    let (start, end, status) = match range.map_or(Range::Full, |r| parse_range(r, total)) {
         Range::Unsatisfiable => {
-            let res = Response::empty(416)
-                .with_header(header("Content-Range", &format!("bytes */{total}")));
-            return respond(req, res);
+            return Reply::empty(416).with("Content-Range", format!("bytes */{total}"));
         }
         Range::Part(a, b) => (a, b, 206),
         Range::Full => (0, total.saturating_sub(1), 200),
     };
     let len = if total == 0 { 0 } else { end - start + 1 };
     if file.seek(SeekFrom::Start(start)).is_err() {
-        return json(req, 500, serde_json::json!({"error":"read failed"}));
+        return Reply::json(500, serde_json::json!({"error":"read failed"}));
     }
-    let mut res = Response::new(
-        status.into(),
-        vec![],
-        Stoppable {
+    let mut res = Reply {
+        status,
+        headers: vec![
+            ("Accept-Ranges", "bytes".into()),
+            ("Content-Type", index::content_type(&item.ext).into()),
+        ],
+        body: Box::new(Stoppable {
             inner: file.take(len),
-            stopping,
-        },
-        Some(len as usize),
-        None,
-    )
-    .with_header(header("Accept-Ranges", "bytes"))
-    .with_header(header("Content-Type", index::content_type(&item.ext)));
+            stopping: stopping.clone(),
+        }),
+        len,
+    };
     if status == 206 {
-        res.add_header(header(
-            "Content-Range",
-            &format!("bytes {start}-{end}/{total}"),
-        ));
+        res = res.with("Content-Range", format!("bytes {start}-{end}/{total}"));
     }
-    respond(req, res);
+    res
+}
+
+/// Carries one tiny_http request through `answer`.
+fn serve(st: &State, req: Request) {
+    let get = |k: &'static str| {
+        req.headers()
+            .iter()
+            .find(|h| h.field.equiv(k))
+            .map(|h| h.value.to_string())
+    };
+    let ask = Req {
+        verb: match req.method() {
+            Method::Get => Verb::Get,
+            Method::Head => Verb::Head,
+            Method::Options => Verb::Options,
+            _ => Verb::Other,
+        },
+        target: req.url().to_string(),
+        authorization: get("Authorization"),
+        range: get("Range"),
+    };
+    let reply = answer(st, &ask);
+    let headers = reply
+        .headers
+        .iter()
+        .map(|(k, v)| Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap())
+        .collect();
+    let res = Response::new(
+        reply.status.into(),
+        headers,
+        reply.body,
+        Some(reply.len as usize),
+        None,
+    );
+    let _ = req.respond(res.with_chunked_threshold(usize::MAX));
 }
