@@ -1,6 +1,6 @@
 // SPEC-playback cases 4, 5 and 6: where a seek goes, the remux run's clock, and the probe cache.
 import { describe, expect, it, vi } from 'vitest'
-import { cardButtons, codecsPlayed, withServerFallback, FRESH_MS, onMediaError, onRemuxError, resolveStream, convertLine, cuesAt, messageOf, DWELL_MS, intent, NO_ANSWER, planSeek, planStream, playsDirectly, playsHere, probeStream, Remux, RESOLVE_LIMIT_S, SAFE, serverWait, warmProbe, writtenOf, type Resolved, type StreamProbe } from '../src/lib/playback'
+import { afterError, cardButtons, codecsPlayed, followed, withServerFallback, FRESH_MS, onMediaError, onRemuxError, resolveStream, convertLine, cuesAt, messageOf, DWELL_MS, intent, NO_ANSWER, planSeek, planStream, playsDirectly, playsHere, probeStream, Remux, RESOLVE_LIMIT_S, SAFE, serverWait, warmProbe, writtenOf, type Resolved, type StreamProbe } from '../src/lib/playback'
 
 const mkv: StreamProbe = {
   duration: 5700, container: 'matroska,webm', video: 'h264', audio: 'ac3', channels: 6,
@@ -370,5 +370,31 @@ describe('decode fallback (cases 10 and 11)', () => {
   })
   it('a safe run converts everything already, so its decode error shows the card', () => {
     expect(onRemuxError(3, new Remux('https://cdn.example/f/b.mkv', SAFE, '', '', fake().call, true))).toBe(false)
+  })
+  it('a remux run never looks a plugin stream up again: transcode once, then the card', () => {
+    const r = new Remux('https://cdn.example/f/c.mkv', mkv, '', '', fake().call)
+    const lookUp = vi.fn(() => 'again')
+    expect(afterError(3, r, lookUp, null)).toEqual({ to: 'transcode' })
+    r.transcode = true
+    expect(afterError(3, r, lookUp, null)).toEqual({ to: 'card' })
+    expect(lookUp).not.toHaveBeenCalled()
+  })
+  it('a plugin stream is looked up again before its remux, and the remux then reads the new address', () => {
+    const fb = { input: 'https://debrid.example/old/d.mp4?sig=1', user: '', pass: '' }
+    let used = false
+    const lookUp = () => (used ? null : ((used = true), 'again'))
+    expect(afterError(3, null, lookUp, fb)).toEqual({ to: 'lookup', again: 'again' })
+    const next = followed(fb, 'https://debrid.example/new/d.mp4?sig=2')
+    expect(next).toEqual({ input: 'https://debrid.example/new/d.mp4?sig=2', user: '', pass: '' })
+    expect(afterError(3, null, lookUp, next)).toEqual({ to: 'remux', fb: next })
+    // A lookup that answers no http address leaves nothing to remux, and none is made where none was kept.
+    expect(followed(fb, 'magnet:?xt=urn:btih:abc')).toBeNull()
+    expect(followed(null, 'https://debrid.example/new/d.mp4')).toBeNull()
+  })
+  it('a direct play with no lookup left remuxes only on a decode or unsupported error', () => {
+    const fb = { input: 'https://cdn.example/f/e.mp4', user: '', pass: '' }
+    expect(afterError(4, null, null, fb)).toEqual({ to: 'remux', fb })
+    expect(afterError(2, null, null, fb)).toBeNull()
+    expect(afterError(3, null, null, null)).toBeNull()
   })
 })

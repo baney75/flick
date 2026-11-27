@@ -232,6 +232,23 @@ export function onRemuxError(code: number | undefined, r: Remux): boolean {
   return (code === 3 || code === 4) && !r.transcode && !r.safe
 }
 
+/** What a media error does next, in order (rule 5): a remux run restarts once transcoded, else shows the card;
+ *  a plugin stream is looked up again once, before any remux, which would read its expired address; then
+ *  the direct play's remux; null leaves the rest to the caller. `lookUp` is called only when it is the step. */
+export function afterError<T>(code: number | undefined, run: Remux | null, lookUp: (() => T | null) | null, fallback: Live | null):
+  { to: 'transcode' } | { to: 'card' } | { to: 'lookup'; again: T } | { to: 'remux'; fb: Live } | null {
+  if (run) return onRemuxError(code, run) ? { to: 'transcode' } : { to: 'card' }
+  const again = lookUp?.() ?? null
+  if (again) return { to: 'lookup', again }
+  const fb = onMediaError(code, fallback)
+  return fb ? { to: 'remux', fb } : null
+}
+
+/** The remux fallback after a plugin lookup: it reads the new address, or none when that is not http. */
+export function followed(fallback: Live | null, url: string): Live | null {
+  return fallback && /^https?:\/\//i.test(url) ? { input: url, user: '', pass: '' } : null
+}
+
 /** The error card's buttons (rule 6): a plugin stream offers another source and never its link. */
 export function cardButtons(req: { url?: string; ref: { t: string } }, stuck: boolean): ('open' | 'back' | 'another')[] {
   const plugin = req.ref.t === 'plugin'
