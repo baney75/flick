@@ -3,7 +3,7 @@
 // there, often base64. This only reads the URLs: nothing here saves a key or sends anything.
 
 /** The bundled service plugin for each name an addon may use. */
-const SERVICES: Record<string, { id: string; name: string }> = {
+export const DEBRID_SERVICES: Record<string, { id: string; name: string }> = {
   torbox: { id: 'app.torbox', name: 'TorBox' },
   realdebrid: { id: 'com.real-debrid', name: 'Real-Debrid' },
   alldebrid: { id: 'com.alldebrid', name: 'AllDebrid' },
@@ -13,15 +13,18 @@ const ALIASES: Record<string, string> = { tb: 'torbox', rd: 'realdebrid', ad: 'a
 const SERVICE_FIELDS = ['debridservice', 'debrid_service', 'service', 'provider', 'streamingprovider']
 const KEY_FIELDS = ['debridapikey', 'debrid_api_key', 'debridkey', 'apikey', 'api_key', 'token', 'key']
 const KEY_RE = /^[\w.:-]{1,200}$/
+/** A JSON property named after a service holds a key only when its value looks like one, not "true" or "enabled". */
+const looksLikeKey = (v: string) => v.length >= 8 && KEY_RE.test(v) && !/^(true|false|yes|no|on|off|enabled|disabled|null|none)$/i.test(v)
+const SERVICES = DEBRID_SERVICES
 const ADDONS: Record<string, string> = { torrentio: 'Torrentio', comet: 'Comet', mediafusion: 'MediaFusion', jackettio: 'Jackettio', knightcrawler: 'KnightCrawler', stremthru: 'StremThru' }
 
 export interface FoundKey { serviceId: string; service: string; key: string; addon: string }
 
-/** "real-debrid", "RealDebrid", "rd" -> "realdebrid"; null when it is no service Flick has. */
-function serviceOf(v: unknown): string | null {
+/** "real-debrid", "RealDebrid", "rd" -> "realdebrid"; null when it is no service Flick has. Short names only with `short`. */
+function serviceOf(v: unknown, short = true): string | null {
   if (typeof v !== 'string') return null
   const n = v.toLowerCase().replace(/[^a-z]/g, '')
-  const s = ALIASES[n] ?? n
+  const s = (short && ALIASES[n]) || n
   return SERVICES[s] ? s : null
 }
 
@@ -53,8 +56,8 @@ function fromJson(x: unknown, out: [string, string][], depth = 0) {
   const key = KEY_FIELDS.map((f) => lower[f]).find((v) => typeof v === 'string')
   if (svc && typeof key === 'string') out.push([svc, key])
   for (const [k, v] of Object.entries(o)) {
-    const s = serviceOf(k)
-    if (s && typeof v === 'string') out.push([s, v])
+    const s = serviceOf(k, false)
+    if (s && typeof v === 'string' && looksLikeKey(v.trim())) out.push([s, v])
     else fromJson(v, out, depth + 1)
   }
 }
@@ -79,11 +82,16 @@ export function findDebridKeys(urls: string[]): FoundKey[] {
     try { u = new URL(raw.replace(/^stremio:\/\//i, 'https://')) } catch { continue }
     if (u.protocol !== 'https:') continue
     const pairs: [string, string][] = []
-    for (const seg of u.pathname.split('/').filter(Boolean)) {
-      if (seg === 'manifest.json') continue
-      const json = decodeSegment(seg)
-      if (json) fromJson(json, pairs)
-      else fromOptions(seg, pairs)
+    // Standard base64 can hold "/", so first read the whole path before manifest.json as one config.
+    const whole = decodeSegment(u.pathname.replace(/^\/+/, '').replace(/\/?manifest\.json$/, '').replace(/\/+$/, ''))
+    if (whole) fromJson(whole, pairs)
+    else {
+      for (const seg of u.pathname.split('/').filter(Boolean)) {
+        if (seg === 'manifest.json') continue
+        const json = decodeSegment(seg)
+        if (json) fromJson(json, pairs)
+        else fromOptions(seg, pairs)
+      }
     }
     for (const [svc, key] of pairs) {
       const k = key.trim()

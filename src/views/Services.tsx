@@ -6,7 +6,7 @@ import { notify, settings, setSettings } from '../lib/store'
 import { isDesktop } from '../lib/platform'
 import { acceptUpdate, absolute, installed, officialList, prepare, setEnabled, type Candidate, type OfficialEntry } from '../lib/plugins/registry'
 import { callPlugin } from '../lib/plugins/runtime'
-import { accountLine, allServices, checkAndSave, hasKey, keyField, keyOffers, moveService, removeService, stremioAddonUrls, takeFoundKey, type Service } from '../lib/plugins/services'
+import { accountLine, allServices, checkAndSave, hasKey, keyField, keyOffers, moveService, removeService, STREMIO_ID, stremioAddonUrls, takeFoundKey, type Service } from '../lib/plugins/services'
 import { keyEnd, type FoundKey } from '../lib/plugins/debrid-keys'
 import type { PluginManifest } from '../lib/plugins/validate'
 
@@ -45,7 +45,12 @@ function FromStremio() {
   const [urls, setUrls] = useState<string[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
-  useEffect(() => { stremioAddonUrls().then(setUrls) }, [installed.value.find((p) => p.id === 'dev.flick.stremio')?.enabled])
+  const rec = installed.value.find((p) => p.id === STREMIO_ID)
+  useEffect(() => {
+    let stale = false
+    stremioAddonUrls().then((u) => { if (!stale) setUrls(u) })
+    return () => { stale = true }
+  }, [rec?.enabled, rec?.official, rec?.sha256, rec && JSON.stringify(rec.settings)])
   const offers = keyOffers(urls, allServices.value)
   if (!offers.length && !msg) return null
   const use = async (f: FoundKey) => {

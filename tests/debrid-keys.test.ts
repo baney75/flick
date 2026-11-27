@@ -13,7 +13,14 @@ vi.hoisted(() => {
 import torbox from '../plugins/torbox/plugin.js'
 // @ts-expect-error a plain JS plugin with no types of its own
 import stremio from '../plugins/stremio/plugin.js'
-import { findDebridKeys, keyEnd, addonName } from '../src/lib/plugins/debrid-keys'
+import { findDebridKeys, keyEnd, addonName, DEBRID_SERVICES } from '../src/lib/plugins/debrid-keys'
+// @ts-expect-error a plain JS plugin with no types of its own
+import realdebrid from '../plugins/realdebrid/plugin.js'
+// @ts-expect-error a plain JS plugin with no types of its own
+import alldebrid from '../plugins/alldebrid/plugin.js'
+// @ts-expect-error a plain JS plugin with no types of its own
+import premiumize from '../plugins/premiumize/plugin.js'
+import index from '../plugins/index.json'
 import * as V from '../src/lib/plugins/validate'
 import { sha256, type Installed } from '../src/lib/plugins/runtime'
 import { setSettings } from '../src/lib/store'
@@ -58,6 +65,24 @@ describe('finding keys in addon URLs', () => {
       'not a url',
     ])).toEqual([])
     expect(findDebridKeys([TORRENTIO, TORRENTIO.replace('/manifest.json', '/')])).toHaveLength(1)
+  })
+  it('a standard base64 config whose encoding holds "/" is read as one config', () => {
+    const enc = b64({ indexers: ['???'], [SVC]: 'torbox', [KEY]: 'TBkey_slash1' })
+    expect(enc).toContain('/')
+    const url = `https://comet.example.app/${enc}/manifest.json`
+    expect(new URL(url).pathname.split('/').length).toBeGreaterThan(3)
+    expect(findDebridKeys([url]).map((f) => [f.service, f.key])).toEqual([['TorBox', 'TBkey_slash1']])
+  })
+  it('a JSON property named after a service counts only with its full name and a value that looks like a key', () => {
+    const cfg = (o: unknown) => `https://a.example/${encodeURIComponent(JSON.stringify(o))}/manifest.json`
+    expect(findDebridKeys([cfg({ torbox: 'enabled', realdebrid: 'true', rd: 'abcdefghij', premiumize: 'short' })])).toEqual([])
+    expect(findDebridKeys([cfg({ torbox: 'TBkey12345' })]).map((f) => f.key)).toEqual(['TBkey12345'])
+  })
+  it('the ids and names it uses are those of the bundled service plugins', () => {
+    const ids = [torbox, realdebrid, alldebrid, premiumize].map((p) => { const { data, fns } = split(p); return V.validateManifest(data, fns).id })
+    const names = (index as { plugins: { kind: string; name: string }[] }).plugins.filter((p) => p.kind === 'service').map((p) => p.name)
+    expect(Object.values(DEBRID_SERVICES).map((s) => s.id).sort()).toEqual([...ids].sort())
+    expect(Object.values(DEBRID_SERVICES).map((s) => s.name).sort()).toEqual([...names].sort())
   })
   it('names addons by host', () => {
     expect(addonName('torrentio.strem.fun')).toBe('Torrentio')
@@ -107,6 +132,17 @@ describe('using a found key', () => {
     expect(R.installed.value[0].settings.apiKey).toBe('abc123XYZ9')
     // Once saved it is no longer offered.
     expect(S.keyOffers([TORRENTIO])).toEqual([])
+  })
+  it('no offer, and no save, for a service that already has a key or is not from Flick', async () => {
+    const rec = (over: Partial<Installed>): Installed => ({ id: 'app.torbox', kind: 'service', url: '/plugins/torbox.js', code: 'x', sha256: 'z', manifest, enabled: true, official: true, settings: {}, installedAt: 1, checkedAt: 1, ...over })
+    const other = 'https://torrentio.strem.fun/torbox=OTHERKEY99|realdebrid=RDKEY00001/manifest.json'
+    R.installed.value = [rec({ settings: { apiKey: 'savedKEY01' } }), rec({ id: 'com.real-debrid', official: false, manifest: { ...manifest, id: 'com.real-debrid', name: 'Fast Debrid' } })]
+    expect(S.keyOffers([other])).toEqual([])
+    const call = vi.fn()
+    for (const f of findDebridKeys([other])) await expect(S.takeFoundKey(f, call as never, async () => cand)).rejects.toThrow(/already has a key|not from Flick/)
+    expect(call).not.toHaveBeenCalled()
+    expect(R.installed.value[0].settings.apiKey).toBe('savedKEY01')
+    R.installed.value = []
   })
   it('a found key TorBox refuses is not saved', async () => {
     const [f] = S.keyOffers([TORRENTIO])

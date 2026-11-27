@@ -82,12 +82,14 @@ export async function checkAndSave(from: Candidate | Service, key: string, call:
 // ---------- keys from the user's Stremio addons ----------
 export const STREMIO_ID = 'dev.flick.stremio'
 
-/** Keys found in these addon URLs that are not already the saved key of that service. */
+/**
+ * Keys found in these addon URLs for services that have no key yet. A saved key is never replaced
+ * from here (that is the row's Change key), and a plugin not from Flick never gets a found key.
+ */
 export function keyOffers(urls: string[], list: Service[] = allServices.value): FoundKey[] {
   return findDebridKeys(urls).filter((f) => {
     const s = list.find((x) => x.id === f.serviceId)
-    const k = s && keyField(s.manifest)
-    return !(s && k && s.settings[k] === f.key)
+    return !s || (s.official && !hasKey(s))
   })
 }
 
@@ -101,6 +103,8 @@ export async function stremioAddonUrls(call: Call = callPlugin): Promise<string[
 /** The user pressed "Use the TorBox key from your Torrentio setup": check it and save it like a pasted key. */
 export async function takeFoundKey(f: FoundKey, call: Call = callPlugin, find: (f: FoundKey) => Promise<Candidate> = officialCandidate): Promise<{ ok: boolean; line: string }> {
   const have = allServices.value.find((s) => s.id === f.serviceId)
+  if (have && !have.official) throw new Error(`${have.manifest.name} is not from Flick, so Flick will not give it your ${f.service} key.`)
+  if (have && hasKey(have)) throw new Error(`${have.manifest.name} already has a key. Use Change key in its row to replace it.`)
   return checkAndSave(have ?? (await find(f)), f.key, call)
 }
 async function officialCandidate(f: FoundKey): Promise<Candidate> {
