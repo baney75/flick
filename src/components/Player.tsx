@@ -42,6 +42,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   const dog = useRef<Watchdog | null>(null)
   const [stallLine, setStallLine] = useState<string | null>(null)
   const [stuck, setStuck] = useState(false)
+  // Waits before the first frame, and for a seek, are expected; a wait during play is a stall.
+  const played = useRef(false)
 
   const [status, setStatus] = useState<string | null>(OPENING)
   // The words beside the spinner wait 1 s (rule 7); the spinner shows at once.
@@ -288,8 +290,9 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   async function restartAt(r: Remux, at: number) {
     const v = video.current!
     restarting.current = true
-    // A stall open before the seek ends with it; the new run is watched from its start.
+    // A stall open before the seek ends with it; the new run is watched from its start, its first wait expected.
     dog.current?.resumed()
+    played.current = false
     v.pause()
     v.removeAttribute('src')
     v.load()
@@ -331,10 +334,11 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     if (!v || restarting.current) return
     setStatus(waitLine(dog.current?.kind ?? 'plugin'))
     const [from, to] = bufferedAt(v)
-    dog.current?.waiting(from, to)
+    dog.current?.waiting(from, to, !played.current || v.seeking)
     setStallLine(dog.current?.summary() ?? null)
   }
   const onPlayingNow = () => {
+    played.current = true
     setStatus(null)
     dog.current?.resumed()
     setStallLine(dog.current?.summary() ?? null)

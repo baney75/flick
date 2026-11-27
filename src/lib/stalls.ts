@@ -14,6 +14,8 @@ export interface Stall {
   /** The buffered range around the playhead when it began, and its end as new data came in (s). */
   from: number
   to: number
+  /** A wait the user caused or expects (before the first frame, or for a seek): watched, not counted. */
+  expected: boolean
 }
 
 export const STALL_LIMIT_MS = 15_000
@@ -56,10 +58,13 @@ export class Watchdog {
 
   constructor(public kind: SourceKind, private on: { reload(): void; giveUp(): void }, private t: Timers = real) {}
 
-  /** The element fired `waiting`; `from`..`to` is the buffered range at the playhead. */
-  waiting(from: number, to: number) {
+  /**
+   * The element fired `waiting`; `from`..`to` is the buffered range at the playhead. `expected` is a
+   * wait before the first frame or for a seek: it still reloads when stuck, but is not a stall.
+   */
+  waiting(from: number, to: number, expected = false) {
     if (this.open) return
-    this.open = { kind: this.kind, start: this.t.now(), ms: null, from, to }
+    this.open = { kind: this.kind, start: this.t.now(), ms: null, from, to, expected }
     this.stalls.push(this.open)
     if (this.stalls.length > KEEP) this.stalls.shift()
     this.arm()
@@ -84,12 +89,18 @@ export class Watchdog {
     this.t.clear(this.timer)
   }
 
+  /** The stalls that count: waits during play that nobody asked for. */
+  counted(): Stall[] {
+    return this.stalls.filter((s) => !s.expected)
+  }
+
   /** "Stalls: 3, longest 4.2 s", or null before the first. A stall still open counts its time so far. */
   summary(): string | null {
-    if (!this.stalls.length) return null
+    const list = this.counted()
+    if (!list.length) return null
     const now = this.t.now()
-    const longest = Math.max(...this.stalls.map((s) => s.ms ?? now - s.start))
-    return `Stalls: ${this.stalls.length}, longest ${(longest / 1000).toFixed(1)} s`
+    const longest = Math.max(...list.map((s) => s.ms ?? now - s.start))
+    return `Stalls: ${list.length}, longest ${(longest / 1000).toFixed(1)} s`
   }
 
   private arm() {

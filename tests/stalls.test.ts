@@ -52,6 +52,20 @@ describe('Watchdog', () => {
     expect(seen).toEqual([])
     expect(w.summary()).toBe('Stalls: 2, longest 4.2 s')
   })
+  it('a wait before the first frame or for a seek is watched but not counted', () => {
+    const { w, seen } = dog()
+    w.waiting(0, 0, true)
+    vi.advanceTimersByTime(2000)
+    w.resumed()
+    expect(w.summary()).toBeNull()
+    w.waiting(0, 0, true)
+    vi.advanceTimersByTime(STALL_LIMIT_MS)
+    expect(seen).toEqual(['reload'])
+    w.waiting(40, 40)
+    vi.advanceTimersByTime(500)
+    w.resumed()
+    expect(w.summary()).toBe('Stalls: 1, longest 0.5 s')
+  })
   it('keeps the last 50 stalls', () => {
     const { w } = dog()
     for (let i = 0; i < KEEP + 7; i++) { w.waiting(i, i); w.resumed() }
