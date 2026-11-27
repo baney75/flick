@@ -25,6 +25,12 @@ jobs:
         run: SMOKE_CHANNEL=chromium node scripts/plugin-worker-check.mjs && node scripts/plugin-worker-check.mjs --engine webkit
       - name: Sync relay and two-device sync
         run: node relay/test.mjs && SMOKE_CHANNEL=chromium node scripts/sync-e2e.mjs
+      # Speed budgets (perf/budgets.json) in WebKit, the desktop app's engine, on the build above.
+      - run: npx playwright install --with-deps webkit
+      - run: npm run perf -- --viewport 1280 --no-build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: perf-results, path: perf/results.json, if-no-files-found: ignore }
   rust:
     # 24.04 for its ffmpeg (6.1): the playback tests run against it.
     runs-on: ubuntu-24.04

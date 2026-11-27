@@ -145,7 +145,7 @@ const newContext = (viewport) => {
   const dir = mkdtempSync(join(tmpdir(), 'flick-perf-'))
   temps.push(dir)
   const o = { viewport, serviceWorkers: 'block', executablePath: found.exe }
-  return ENGINE === 'chromium' ? chromium.launchPersistentContext(dir, { ...o, channel: process.env.PERF_CHANNEL || undefined }) : webkit.launchPersistentContext(dir, o)
+  return ENGINE === 'chromium' ? chromium.launchPersistentContext(dir, { ...o, args: ['--mute-audio'], channel: process.env.PERF_CHANNEL || undefined }) : webkit.launchPersistentContext(dir, o)
 }
 
 // Vite itself, not through npx, so kill() reaches the server and no preview outlives the run.
