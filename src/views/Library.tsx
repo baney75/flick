@@ -13,8 +13,9 @@ import { downloads, cancelDownload, removeDownload } from '../lib/downloads'
 import { canDownload, isSaved, save, badgeFor } from '../lib/offline'
 import { photoSet } from '../lib/photos'
 import { Photos } from './Photos'
+import { ContinueGrid, useContinue } from './Continue'
 
-type Tab = 'all' | 'movies' | 'shows' | 'music' | 'books' | 'audiobooks' | 'photos' | 'stored' | 'downloads'
+type Tab = 'continue' | 'all' | 'movies' | 'shows' | 'music' | 'books' | 'audiobooks' | 'photos' | 'stored' | 'downloads'
 type Sort = 'added' | 'title' | 'year'
 
 const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
@@ -27,8 +28,15 @@ const posterOf = (x: Entry) => isTitle(x)
   ? x.srcs.some((s) => s.t === 'plugin' ? s.m.poster : s.t === 'item' ? s.it.poster : s.eps[0].poster)
   : !!x.poster
 
-export function Library() {
-  const [tab, setTab] = useState<Tab>(() => (sessionStorage.getItem('flick.tab') as Tab) || 'all')
+/** `start: 'continue'` is `#/continue`, which opens Library on its Continue chip. */
+export function Library({ start }: { start?: Tab } = {}) {
+  const saved = (() => { try { return sessionStorage.getItem('flick.tab') as Tab | null } catch { return null } })()
+  const [tab, setTab] = useState<Tab>(() => start ?? saved ?? 'all')
+  const cont = useContinue()
+  // With no tab picked this session, Library opens on Continue once something is in progress.
+  const picked = useRef(!!(start || saved))
+  useEffect(() => { if (!picked.current && cont.length) { picked.current = true; setTab('continue') } }, [cont.length])
+  useEffect(() => { if (start) setTab(start) }, [start])
   const [q, setQ] = useState('')
   const [sort, setSort] = useState<Sort>('added')
   const [folders, setFolders] = useState<Folder[]>([])
@@ -37,7 +45,6 @@ export function Library() {
   const search = useRef<HTMLInputElement>(null)
 
   useEffect(() => { getFolders().then(setFolders) }, [items.value.length])
-  useEffect(() => { try { sessionStorage.setItem('flick.tab', tab) } catch { /* ignore */ } }, [tab])
   // Source plugins' own libraries (a Stremio library) sit beside the files and servers.
   useEffect(() => { for (const r of sources.value) loadLibrary(r) }, [sources.value])
 
@@ -159,13 +166,13 @@ export function Library() {
 
       <div class="toolbar">
         <div class="chips" role="tablist">
-          {(['all', 'movies', 'shows', 'music', 'books', 'audiobooks', 'photos', 'stored', 'downloads'] as Tab[]).filter((t) => !['books', 'audiobooks', 'photos', 'stored', 'downloads'].includes(t) || counts[t] || tab === t).map((t) => (
-            <button role="tab" aria-selected={tab === t} class={`chip ${tab === t ? 'on' : ''}`} onClick={() => setTab(t)}>
-              {t === 'all' ? 'All' : t[0].toUpperCase() + t.slice(1)} <span>{counts[t]}</span>
+          {(['continue', 'all', 'movies', 'shows', 'music', 'books', 'audiobooks', 'photos', 'stored', 'downloads'] as Tab[]).filter((t) => !['continue', 'books', 'audiobooks', 'photos', 'stored', 'downloads'].includes(t) || (t === 'continue' ? cont.length : counts[t]) || tab === t).map((t) => (
+            <button role="tab" aria-selected={tab === t} class={`chip ${tab === t ? 'on' : ''}`} onClick={() => { picked.current = true; setTab(t); try { sessionStorage.setItem('flick.tab', t) } catch { /* private mode */ } }}>
+              {t === 'all' ? 'All' : t[0].toUpperCase() + t.slice(1)} <span>{t === 'continue' ? cont.length : counts[t]}</span>
             </button>
           ))}
         </div>
-        {tab !== 'shows' && tab !== 'photos' && (
+        {tab !== 'shows' && tab !== 'photos' && tab !== 'continue' && (
           <select value={sort} onChange={(e) => setSort((e.target as HTMLSelectElement).value as Sort)} aria-label="Sort">
             <option value="added">Recently added</option>
             <option value="title">Title</option>
@@ -174,7 +181,9 @@ export function Library() {
         )}
       </div>
 
-      {counts.all === 0 && !photos.length ? (
+      {tab === 'continue' ? (
+        <ContinueGrid list={cont} />
+      ) : counts.all === 0 && !photos.length ? (
         <div class="empty">
           <Icon name="library" size={40} />
           <h2>Your library is empty</h2>

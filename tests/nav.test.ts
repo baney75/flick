@@ -2,14 +2,14 @@ import { describe, it, expect } from 'vitest'
 import { tabOf, HOME_ROWS_PER_SOURCE } from '../src/lib/nav'
 
 describe('the main bar', () => {
-  it('puts every route under Home, Continue, Library or Settings', () => {
+  it('puts every route under Home, Library or Settings', () => {
     const cases: [string, string][] = [
       ['', '/'],
       ['/', '/'],
       ['/p/stremio', '/'],
       ['/p/stremio/movie/tt0816692?v=x', '/'],
       ['/sources', '/'],
-      ['/continue', '/continue'],
+      ['/continue', '/library'],
       ['/library', '/library'],
       ['/show/the%20office', '/library'],
       ['/read/abc', '/library'],
