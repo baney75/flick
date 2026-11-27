@@ -276,7 +276,8 @@ function video(x: unknown): Video | null {
   return v
 }
 
-export function validateMeta(x: unknown): Meta {
+/** `fromLibrary`: keep the item's shelf ids for validateLibrary to check; elsewhere they mean nothing. */
+export function validateMeta(x: unknown, fromLibrary = false): Meta {
   if (!isObj(x)) return fail('A meta must be an object.')
   const type = metaType(x.type, 'Meta type')
   const m: Meta = { id: str(x.id, 'Meta id', true, 512), type, name: str(x.name, 'Meta name', true) }
@@ -302,9 +303,8 @@ export function validateMeta(x: unknown): Meta {
     const vid = str(p.videoId, 'videoId', false, 512)
     if (vid) m.progress.videoId = vid
   }
-  // Shelf ids are checked against the declared shelves in validateLibrary.
-  const shelves = [...new Set((Array.isArray(x.shelves) ? x.shelves.slice(0, 50) : []).map((s) => shortText(s, 40)).filter((s): s is string => !!s))]
-  if (shelves.length) m.shelves = shelves.slice(0, MAX_ITEM_SHELVES)
+  const shelves = fromLibrary && Array.isArray(x.shelves) ? [...new Set(x.shelves.slice(0, 50).map((s) => shortText(s, 40)).filter((s): s is string => !!s))] : []
+  if (shelves.length) m.shelves = shelves
   const added = num(x.added)
   if (added !== undefined && added > 0) m.added = added < 1e11 ? added * 1000 : added
   const facts = (Array.isArray(x.facts) ? x.facts.slice(0, 50) : []).flatMap((f): Fact[] => {
@@ -317,12 +317,12 @@ export function validateMeta(x: unknown): Meta {
 }
 
 /** A list of metas; one bad entry is skipped, not the whole list, with one note for the call. */
-function metas(x: unknown, max: number, note: Note): Meta[] {
+function metas(x: unknown, max: number, note: Note, fromLibrary = false): Meta[] {
   if (Array.isArray(x) && x.length > max) note(`Kept the first ${max} of ${x.length} items.`)
   const out: Meta[] = []
   let skipped = 0, why = ''
   for (const m of list(x, 'items', max)) {
-    try { out.push(validateMeta(m)) } catch (e) { skipped++; why ||= (e as Error).message }
+    try { out.push(validateMeta(m, fromLibrary)) } catch (e) { skipped++; why ||= (e as Error).message }
   }
   if (skipped) note(`Skipped ${skipped} item${skipped > 1 ? 's' : ''}: ${why}`)
   return out
@@ -354,7 +354,7 @@ function shelf(x: unknown): Shelf | string {
  */
 export function validateLibrary(x: unknown, note: Note = quiet): Library {
   const shaped = isObj(x)
-  if (!Array.isArray(x) && !(shaped && Array.isArray(x.items) && (x.shelves === undefined || Array.isArray(x.shelves)))) {
+  if (!Array.isArray(x) && !(shaped && Array.isArray(x.items) && (x.shelves == null || Array.isArray(x.shelves)))) {
     return fail('library() must return a list of metas or { shelves, items }.')
   }
   const shelves: Shelf[] = []
@@ -368,13 +368,13 @@ export function validateLibrary(x: unknown, note: Note = quiet): Library {
   if (bad.length) note(`Dropped ${bad.length} shelf entr${bad.length > 1 ? 'ies' : 'y'}: ${bad[0]}.`)
   if (shelves.length > MAX_SHELVES) note(`Kept the first ${MAX_SHELVES} of ${shelves.length} shelves.`)
   shelves.splice(MAX_SHELVES)
-  const items = metas(shaped ? x.items : x, MAX_LIBRARY, note)
+  const items = metas(shaped ? x.items : x, MAX_LIBRARY, note, true)
   const ids = new Set(shelves.map((s) => s.id))
   const unknown = new Set<string>()
   for (const m of items) {
     if (!m.shelves) continue
     for (const s of m.shelves) if (!ids.has(s)) unknown.add(s)
-    m.shelves = m.shelves.filter((s) => ids.has(s))
+    m.shelves = m.shelves.filter((s) => ids.has(s)).slice(0, MAX_ITEM_SHELVES)
     if (!m.shelves.length) delete m.shelves
   }
   if (unknown.size) note(`Items name shelves this library does not declare, so Flick left them off those shelves: ${[...unknown].slice(0, 5).join(', ')}.`)

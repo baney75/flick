@@ -143,8 +143,9 @@ podcasts, recipes, courses, comics, papers, games.
   declare is dropped with one log line. An item with no shelf is still in the library.
 - At most 1,000 items. A result that is neither a list nor `{ shelves, items }` is dropped, and the
   plugin's library is empty until the next call returns a good one.
-- Opening an item is its title page, as anywhere else. A web page is a stream with `external: true`;
-  a kind with no streams (a recipe) shows its title page with `facts` and `description` only.
+- Opening an item is its title page, as anywhere else: what `meta()` returns, with the library
+  item's `facts` when `meta()` has none. A web page is a stream with `external: true`; a kind with no
+  streams (a recipe) shows its title page with `facts` and `description` only.
 
 A podcast plugin, for example:
 

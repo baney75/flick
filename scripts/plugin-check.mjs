@@ -180,7 +180,7 @@ if (!sample) {
   check(false, 'no catalog returned an item to open')
   done()
 }
-const meta = await call('meta', [{ type: sample.type, id: sample.id }], V.validateMeta, `meta ${sample.id}`)
+const meta = await call('meta', [{ type: sample.type, id: sample.id }], (x) => V.validateMeta(x), `meta ${sample.id}`)
 if (meta) {
   check(true, `meta "${meta.name}" (${meta.type})${meta.videos ? `, ${meta.videos.length} videos` : ''}`)
   const vid = meta.videos?.find((v) => (v.season ?? 1) > 0) ?? meta.videos?.[0]
@@ -200,13 +200,13 @@ if (m.has.extensions) {
   if (cat) check(true, `extensionCatalog(): ${cat.length} addons to add`)
 }
 if (m.has.library) {
-  let raw = null
-  const lib = await call('library', [], (x, note) => { raw = x; return V.validateLibrary(x, note) }, 'library')
+  const notes = []
+  const lib = await call('library', [], (x, note) => V.validateLibrary(x, (t) => { notes.push(t); note(t) }), 'library')
   if (lib) {
     check(true, `library: ${lib.items.length} items, ${lib.shelves.length} shelves`)
     for (const s of lib.shelves) console.log(`     shelf "${s.name}" (${s.id}): ${lib.items.filter((m) => m.shelves?.includes(s.id)).length} items`)
-    const declared = Array.isArray(raw?.shelves) ? raw.shelves.length : 0
-    if (declared > V.MAX_SHELVES) check(false, `library: ${declared} shelves; at most ${V.MAX_SHELVES} are allowed`)
+    // More than 20 good shelves, or a shelf Flick drops, fails; the validator's notes say which.
+    for (const t of notes.filter((t) => / shelves\.$|shelf entr/.test(t))) check(false, `library: ${t}`)
   }
 }
 done()

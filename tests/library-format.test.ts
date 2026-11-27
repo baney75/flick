@@ -53,6 +53,12 @@ describe('shaped libraries (rules 2 and 3)', () => {
     const lib = V.validateLibrary({ shelves: [{ id: 'liked', name: 'Liked' }], items: [meta({ shelves: ['liked'] })] })
     expect(lib.shelves).toEqual([{ id: 'liked', name: 'Liked' }])
     expect(lib.items[0].shelves).toEqual(['liked'])
+    // shelves: null is the same as none; a declared id after 8 undeclared ones still counts.
+    expect(V.validateLibrary({ shelves: null, items: [meta()] }).items).toHaveLength(1)
+    const many = V.validateLibrary({ shelves: [{ id: 'liked', name: 'Liked' }], items: [meta({ shelves: [...'abcdefgh', 'liked'] })] })
+    expect(many.items[0].shelves).toEqual(['liked'])
+    // Outside library() shelf ids mean nothing and are not kept.
+    expect(V.validateCatalog([meta({ shelves: ['liked'] })]).items[0].shelves).toBeUndefined()
   })
   it('case 6: an undeclared shelf id is dropped from 300 items with one note', () => {
     const { out, note } = notes()

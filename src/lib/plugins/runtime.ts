@@ -186,7 +186,7 @@ function frameFor(rec: Installed): Promise<Frame> {
 const CHECKS: Record<string, (x: unknown, m: V.PluginManifest, args: unknown[], note: V.Note) => unknown> = {
   catalog: (x, _m, _a, note) => V.validateCatalog(x, note),
   userCatalogs: V.validateCatalogDefs,
-  meta: V.validateMeta,
+  meta: (x) => V.validateMeta(x),
   streams: V.validateStreams,
   subtitles: V.validateSubs,
   library: (x, _m, _a, note) => V.validateLibrary(x, note),
