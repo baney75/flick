@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
+mod live;
 mod playback;
 mod plugins;
 mod selftest;
@@ -1367,6 +1368,7 @@ pub fn run() {
         .manage(share::Share::default())
         .manage(ytdlp::PluginTools::default())
         .manage(playback::Probes::default())
+        .manage(live::Live::default())
         .register_asynchronous_uri_scheme_protocol("kodi", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
             tauri::async_runtime::spawn_blocking(move || responder.respond(kodi_proxy(&app, &req)));
@@ -1416,7 +1418,9 @@ pub fn run() {
             torrent::torrent_stop,
             #[cfg(desktop)]
             torrent::torrent_stats,
-            playback::probe_stream
+            playback::probe_stream,
+            live::remux_start,
+            live::remux_stop
         ])
         .setup(|app| {
             selftest::mark_setup();
@@ -1434,6 +1438,9 @@ pub fn run() {
             }
             if let Ok(cache) = app.path().app_cache_dir() {
                 std::thread::spawn(move || ytdlp::clean_cache(&cache));
+            }
+            if let Ok(root) = live::root(app.handle()) {
+                std::thread::spawn(move || live::clean(&root));
             }
             #[cfg(desktop)]
             vpn::watch::install(app.handle().clone());
@@ -1462,6 +1469,7 @@ pub fn run() {
         if let tauri::RunEvent::Exit = &event {
             share::stop_all(handle);
             ytdlp::stop_job(&handle.state::<ytdlp::PluginTools>());
+            live::stop(&handle.state::<live::Live>());
             #[cfg(desktop)]
             torrent::shutdown();
         }
