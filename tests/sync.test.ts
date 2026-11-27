@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { Clock, digest, merge, missingFor, write, wins, type Doc } from '../src/lib/sync/doc'
 import { newSecret, openGroup, pairLink, parsePair, seal, unseal } from '../src/lib/sync/crypto'
-import { contentIndex, contentKey, localProgressKeys, progressDocKey, pluginSnapshot, mayInstallSynced } from '../src/lib/sync/keys'
+import { contentIndex, contentKey, localProgressKeys, progressDocKey, pluginSnapshot, mayInstallSynced, secretLeaks } from '../src/lib/sync/keys'
 import type { Candidate } from '../src/lib/plugins/registry'
 import type { Installed } from '../src/lib/plugins/registry'
 import type { Item } from '../src/lib/library'
+// @ts-expect-error a plain JS plugin with no types of its own
+import stremio from '../plugins/stremio/plugin.js'
+import { validateManifest } from '../src/lib/plugins/validate'
+import { logLine, logs, setSecrets } from '../src/lib/plugins/runtime'
+import { split } from './debrid-ctx'
 
 // Sync two docs the way two devices do: swap digests, send what the other lacks.
 function sync(a: Doc, ca: Clock, b: Doc, cb: Clock) {
@@ -146,6 +151,41 @@ describe('sync keys', () => {
     expect([...snap.keys()]).toEqual(['x:https://a.example/plugin.js'])
     expect(JSON.parse(snap.get('x:https://a.example/plugin.js')!)).toMatchObject({ on: true, settings: { lang: 'en' } })
     expect([...snap.values()].join()).not.toContain('abc123')
+  })
+
+  // Stremio's signed-out addon list stays on the device: an address can hold a debrid key.
+  const stremioRec = (addons: string[]) => {
+    const { data, fns } = split(stremio)
+    return { id: 'dev.flick.stremio', kind: 'source', url: '/plugins/stremio/plugin.js', enabled: true, sha256: 's', manifest: validateManifest(data, fns), settings: { addons } } as unknown as Installed
+  }
+  const KEYED = 'https://torrentio.strem.fun/torbox=abc123XYZ9/manifest.json'
+
+  it("Stremio's addon list never reaches the sync payload or the plugin log", () => {
+    const rec = stremioRec([KEYED])
+    const payload = [...pluginSnapshot([rec]).values()].join()
+    expect(payload).toContain('"on":true')
+    expect(payload).not.toContain('abc123XYZ9')
+    expect(payload).not.toContain('torrentio')
+    setSecrets(rec.id, rec)
+    for (const line of [`Could not read ${KEYED}: 500`, `settings ${JSON.stringify(rec.settings)}`, KEYED.replace('https://', '')]) {
+      logLine(rec.id, line)
+    }
+    expect(logs.value[rec.id].join('\n')).not.toContain('abc123XYZ9')
+  })
+
+  it('a synced copy that still holds the addon list is written over without it, once', () => {
+    const rec = stremioRec([KEYED])
+    const key = [...pluginSnapshot([rec]).keys()][0]
+    const doc = new Map<string, unknown>([[key, { on: true, settings: { addons: [KEYED] } }]])
+    const fix = secretLeaks([rec], (k) => doc.get(k))
+    expect(fix).toHaveLength(1)
+    expect(fix[0][0]).toBe(key)
+    expect(JSON.stringify(fix[0][1])).not.toContain('abc123XYZ9')
+    // The value stays on this device; only the synced copy loses it.
+    expect(rec.settings.addons).toEqual([KEYED])
+    doc.set(fix[0][0], fix[0][1])
+    expect(secretLeaks([rec], (k) => doc.get(k))).toEqual([])
+    expect(secretLeaks([rec], () => undefined)).toEqual([])
   })
 
   it('syncs a bundled plugin by its /plugins/ path, so the app and the website share one key', () => {

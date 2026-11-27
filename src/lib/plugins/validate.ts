@@ -92,7 +92,7 @@ export interface CatalogResult { items: Meta[]; more: boolean }
 export interface ActionResult { ok: boolean; message?: string }
 /** One addon inside a source (a Stremio addon): what extensions() and extensionCatalog() list. */
 export interface Extension { id: string; name: string; description?: string; logo?: string; url: string; types?: string[]; removable: boolean; installed?: boolean }
-/** addExtension() and removeExtension(): new values for the plugin's own non-secret settings may come back. */
+/** addExtension() and removeExtension(): new values for the plugin's own declared settings may come back. */
 export interface ExtensionResult extends ActionResult { settings?: Record<string, unknown> }
 export interface TitleActionResult { ok: boolean; on: boolean; message?: string }
 export type AccountResult = { ok: true; name: string; plan?: string; expires?: string } | { ok: false; message: string }
@@ -538,14 +538,14 @@ export function validateInspect(x: unknown): Extension {
   return extension(x, true) ?? fail('inspectExtension() must return one addon with id, name and an https or stremio:// url.')
 }
 
-/** addExtension() and removeExtension(). Only the plugin's own declared, non-secret settings may change, each in its own type. */
+/** addExtension() and removeExtension(). Only the plugin's own declared settings may change, secret ones too, each in its own type. */
 export function validateExtensionResult(x: unknown, fields: Field[]): ExtensionResult {
   const r: ExtensionResult = validateAction(x)
   if (!isObj(x) || x.ok !== true || !isObj(x.settings)) return r
   const patch: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(x.settings)) {
     const f = fields.find((d) => d.key === k)
-    if (!f || f.secret) continue
+    if (!f) continue
     if (f.type === 'list') { if (Array.isArray(v)) patch[k] = list(v, k).filter((s): s is string => typeof s === 'string').map((s) => s.slice(0, MAX_STR)) }
     else if (f.type === 'toggle') { if (typeof v === 'boolean') patch[k] = v }
     else if (typeof v === 'string' && (f.type !== 'select' || f.options?.includes(v))) patch[k] = v.slice(0, MAX_STR)

@@ -226,7 +226,7 @@ export default {
   api: 1,
   id: 'dev.flick.stremio',
   name: 'Stremio',
-  version: '1.2.0',
+  version: '1.3.0',
   author: 'Flick',
   description: 'Your Stremio addons, library and Continue Watching. Sign in, or start with Cinemeta and OpenSubtitles.',
   icon: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0IiByeD0iNSIgZmlsbD0iIzdiNWJmNSIvPjxwYXRoIGQ9Ik0xMiA0bDcgNHY4bC03IDQtNy00Vjh6IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMS42Ii8+PHBhdGggZD0iTTEwLjUgOXY2bDUtM3oiIGZpbGw9IiNmZmYiLz48L3N2Zz4=',
@@ -234,7 +234,8 @@ export default {
   hosts: ['*'],
   tools: [],
   settings: [
-    { key: 'addons', label: 'Extra addon URLs', type: 'list', default: [], help: 'One manifest URL per line (https://.../manifest.json or stremio://...). Use only addons you chose.' },
+    // Secret: an addon address can hold a debrid key (Torrentio's torbox=...), so the list stays on this device.
+    { key: 'addons', label: 'Extra addon URLs', type: 'list', default: [], secret: true, help: 'Addons added while signed out. Add and remove them under Addons.' },
   ],
   actions: [
     { id: 'signin', label: 'Sign in to Stremio', fields: [{ key: 'email', label: 'Email' }, { key: 'password', label: 'Password', type: 'password' }] },

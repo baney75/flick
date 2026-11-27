@@ -9,7 +9,7 @@ vi.hoisted(() => {
 })
 import * as V from '../src/lib/plugins/validate'
 import * as E from '../src/lib/plugins/extensions'
-import { redact, type Installed } from '../src/lib/plugins/runtime'
+import { redact, setSecrets, type Installed } from '../src/lib/plugins/runtime'
 import hostJs from '../public/plugin-host.js?raw'
 
 const FNS = ['catalog', 'meta', 'streams']
@@ -74,13 +74,28 @@ describe('the extensions contract', () => {
       expect(() => V.extensionUrl(bad)).toThrow(/https:\/\/ or stremio:\/\//)
     }
   })
-  it('a result may change only declared, non-secret settings, each in its own type, and only when ok', () => {
+  it('a result may change only declared settings, each in its own type, and only when ok', () => {
     const fields = V.validateManifest(manifest(), FNS).settings
-    const r = V.validateExtensionResult({ ok: true, message: 'Added', settings: { addons: ['https://a', 3], token: 'steal', mode: 'c', other: 1 } }, fields)
+    const r = V.validateExtensionResult({ ok: true, message: 'Added', settings: { addons: ['https://a', 3], mode: 'c', other: 1 } }, fields)
     expect(r).toEqual({ ok: true, message: 'Added', settings: { addons: ['https://a'] } })
     expect(V.validateExtensionResult({ ok: true, settings: { mode: 'b' } }, fields).settings).toEqual({ mode: 'b' })
     expect(V.validateExtensionResult({ ok: false, message: 'No', settings: { addons: [] } }, fields)).toEqual({ ok: false, message: 'No' })
     expect(V.validateExtensionResult({ settings: { addons: [] } }, fields).settings).toBeUndefined()
+  })
+  it('a result may change a declared secret setting too, only in its type', () => {
+    const fields = V.validateManifest(manifest({ settings: [
+      { key: 'addons', label: 'Extra addon URLs', type: 'list', default: [], secret: true },
+      { key: 'token', label: 'Token', type: 'password' },
+    ] }), FNS).settings
+    const url = 'https://torrentio.strem.fun/torbox=abc123XYZ9/manifest.json'
+    expect(V.validateExtensionResult({ ok: true, settings: { addons: [url, 3], token: 'new-token' } }, fields).settings).toEqual({ addons: [url], token: 'new-token' })
+    expect(V.validateExtensionResult({ ok: true, settings: { addons: url, token: ['x'], authKey: 'k' } }, fields).settings).toBeUndefined()
+  })
+  it('a secret list is blanked entry by entry in the log', () => {
+    const url = 'torrentio.strem.fun/torbox=abc123XYZ9/manifest.json'
+    const m = V.validateManifest(manifest({ settings: [{ key: 'addons', label: 'A', type: 'list', secret: true }] }), FNS)
+    setSecrets('org.example.list', { kind: 'source', manifest: m, settings: { addons: [url] } })
+    expect(redact('org.example.list', `addons: ${url}`)).toBe('addons: [key]')
   })
 })
 

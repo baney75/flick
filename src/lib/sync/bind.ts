@@ -9,7 +9,7 @@ import { items, progress, settings, setSettings, notify, reloadItems, type Progr
 import { validPref } from '../prefs'
 import { getServers, saveServer, removeServer, syncServer, type Server } from '../servers'
 import type { Item } from '../library'
-import { contentIndex, localProgressKeys, progressDocKey, pluginSnapshot, mayInstallSynced, type SyncedPlugin } from './keys'
+import { contentIndex, localProgressKeys, progressDocKey, pluginSnapshot, mayInstallSynced, secretLeaks, type SyncedPlugin } from './keys'
 import { installed, prepare, install, remove, setEnabled, setPluginSettings, isSecret, portable } from '../plugins/registry'
 import { legacyProgress } from '../plugins/migrate'
 import { startSync, publish, docValue, docKeys } from './engine'
@@ -59,6 +59,8 @@ export async function startSyncBinding() {
     ...[...prevPlugins].map(([k, v]) => [k, JSON.parse(v)] as [string, unknown]),
   ]
   await startSync((keys) => { applyRemote(keys).catch(() => {}) }, offer)
+  // A synced copy saved before a field turned secret here is written over once, so it stops travelling.
+  publish(secretLeaks(installed.value, docValue))
 
   effect(() => {
     const next = progress.value
@@ -178,6 +180,8 @@ async function applyPlugins() {
       if (Object.keys(patch).length) await setPluginSettings(rec.id, patch)
     }
     prevPlugins = pluginSnapshot(installed.value)
+    // A device on an older plugin can send a field this one keeps secret: write the synced copy back without it.
+    publish(secretLeaks(installed.value, docValue))
   } finally {
     applying = false
   }
