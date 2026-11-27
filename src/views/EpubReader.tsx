@@ -24,6 +24,11 @@ export function EpubReader({ it }: { it: Item }) {
   const frame = useRef<HTMLIFrameElement>(null)
   // Each layout gets a number the frame echoes back, so a frame that is being replaced can't move the place.
   const gen = useRef(0)
+  // The layout whose frame has reported its place. Until the newest one has, a turn waits in `held`:
+  // posted now, it would reach the frame being replaced and be lost (#168). The newest turn wins.
+  const ready = useRef(0)
+  const held = useRef(0)
+  const place = (a: typeof at) => { ready.current = -1; setAt(a) }
 
   useEffect(() => {
     let live = true
@@ -57,16 +62,19 @@ export function EpubReader({ it }: { it: Item }) {
   }, [book, at, size, color])
 
   const leave = () => (history.length > 1 ? history.back() : go('/library'))
-  const turn = (d: number) => frame.current?.contentWindow?.postMessage({ t: 'turn', d }, '*')
+  const turn = (d: number) => {
+    if (ready.current !== gen.current) { held.current = d; return }
+    frame.current?.contentWindow?.postMessage({ t: 'turn', d }, '*')
+  }
   const jump = (path: string, frag: string) => {
     const i = book?.spine.indexOf(path) ?? -1
-    if (i >= 0) setAt({ chapter: i, start: frag || 0 })
+    if (i >= 0) place({ chapter: i, start: frag || 0 })
     setToc(false)
   }
   const key = (k: string, shift: boolean) => {
     if (['ArrowRight', 'PageDown', ' ', 'ArrowDown'].includes(k)) turn(shift && k === ' ' ? -1 : 1)
     else if (['ArrowLeft', 'PageUp', 'ArrowUp'].includes(k)) turn(-1)
-    else if (k === 'Home') setAt({ chapter: 0, start: 0 })
+    else if (k === 'Home') place({ chapter: 0, start: 0 })
     else if (k === 'Escape') toc ? setToc(false) : leave()
   }
 
@@ -77,12 +85,18 @@ export function EpubReader({ it }: { it: Item }) {
       const d = e.data as { t: string; page?: number; pages?: number; d?: number; key?: string; shift?: boolean; href?: string }
       if (d.t === 'pos' && Number.isInteger(d.page) && Number.isInteger(d.pages)) {
         setPos({ page: d.page!, pages: d.pages! })
+        if (ready.current !== gen.current) {
+          ready.current = gen.current
+          const h = held.current
+          held.current = 0
+          if (h) turn(h)
+        }
         const last = at.chapter === book.spine.length - 1 && d.page === d.pages! - 1
         const p = last ? book.spine.length + 1 : toPos(at.chapter, d.page!, d.pages!)
         saveProgress(it.id, { pos: p, dur: book.spine.length + 1, book: true, at: Date.now(), title: it.title, subtitle: it.author, ref: { t: 'item', id: it.id } }).catch(() => {})
       } else if (d.t === 'edge' && (d.d === 1 || d.d === -1)) {
         const c = at.chapter + d.d
-        if (c >= 0 && c < book.spine.length) setAt({ chapter: c, start: d.d > 0 ? 0 : 'end' })
+        if (c >= 0 && c < book.spine.length) place({ chapter: c, start: d.d > 0 ? 0 : 'end' })
       } else if (d.t === 'key' && typeof d.key === 'string') key(d.key, !!d.shift)
       else if (d.t === 'link' && typeof d.href === 'string') jump(d.href.split('#')[0], d.href.split('#')[1] ?? '')
     }
@@ -96,8 +110,8 @@ export function EpubReader({ it }: { it: Item }) {
     return () => { removeEventListener('message', m); removeEventListener('keydown', k) }
   }, [book, at, toc])
 
-  const resize = (d: number) => { const s = Math.min(200, Math.max(70, size + d)); setSize(s); setPref('flick.reader.size', String(s)); setAt({ ...at, start: pos.page / pos.pages }) }
-  const recolor = (c: PageColor) => { setColor(c); saveColor(c); setAt({ ...at, start: pos.page / pos.pages }) }
+  const resize = (d: number) => { const s = Math.min(200, Math.max(70, size + d)); setSize(s); setPref('flick.reader.size', String(s)); place({ ...at, start: pos.page / pos.pages }) }
+  const recolor = (c: PageColor) => { setColor(c); saveColor(c); place({ ...at, start: pos.page / pos.pages }) }
   const chapterName = book && [...book.toc].reverse().find((t) => t.path === book.spine[at.chapter])?.label
 
   return (
