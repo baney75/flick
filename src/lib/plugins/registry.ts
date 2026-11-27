@@ -13,6 +13,8 @@ const DAY = 24 * 60 * 60 * 1000
 const MAX_CODE = 2 * 1024 * 1024
 
 export const installed = signal<Installed[]>([])
+/** True once loadPlugins has read the installed list, so a page can tell "not installed" from "not read yet". */
+export const pluginsLoaded = signal(false)
 
 export interface Candidate {
   kind: 'source' | 'service' | 'theme'
@@ -53,7 +55,7 @@ function defaults(m: V.PluginManifest | V.ThemeManifest): Record<string, unknown
 }
 
 // ---------- the official list ----------
-export interface OfficialEntry { url: string; name: string; description?: string; kind?: 'source' | 'service' | 'theme' }
+export interface OfficialEntry { url: string; name: string; description?: string; kind?: 'source' | 'service' | 'theme'; hosts?: string[] }
 let official: Promise<OfficialEntry[]> | null = null
 export function officialList(): Promise<OfficialEntry[]> {
   official ??= fetch(OFFICIAL_INDEX).then((r) => r.json()).then((j) => (Array.isArray(j?.plugins) ? j.plugins : [])).catch(() => { official = null; return [] })
@@ -136,8 +138,13 @@ export async function install(c: Candidate, settings?: Record<string, unknown>):
 
 export async function loadPlugins() {
   // A service installed while prepare() still called every plugin a source gets its kind back.
-  const rows = (await db.all<Installed>('plugins')).map((r) => (r.kind === 'source' && (r.manifest as V.PluginManifest).kind === 'service' ? { ...r, kind: 'service' as const } : r))
-  installed.value = rows.sort((a, b) => a.manifest.name.localeCompare(b.manifest.name))
+  let rows: Installed[]
+  try {
+    rows = (await db.all<Installed>('plugins')).map((r) => (r.kind === 'source' && (r.manifest as V.PluginManifest).kind === 'service' ? { ...r, kind: 'service' as const } : r))
+    installed.value = rows.sort((a, b) => a.manifest.name.localeCompare(b.manifest.name))
+  } finally {
+    pluginsLoaded.value = true
+  }
   for (const r of rows) await registerHosts(r).catch(() => {})
 }
 

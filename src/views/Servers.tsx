@@ -4,66 +4,7 @@ import * as Srv from '../lib/servers'
 import { Icon } from '../components/icons'
 import { isDesktop } from '../lib/platform'
 
-/** Servers live in Settings, as its first panel. `#/servers` scrolls here. */
-export function ServersPanel() {
-  const [list, setList] = useState<Srv.Server[]>([])
-  const [busy, setBusy] = useState<string | null>(null)
-  const [here, setHere] = useState<Srv.FlickInfo | null>(null)
-  const refresh = () => Srv.getServers().then(setList)
-  useEffect(() => { refresh(); Srv.sameOriginFlick().then(setHere) }, [])
-
-  const sync = async (s: Srv.Server) => {
-    setBusy(s.id)
-    try {
-      const n = await Srv.syncServer(s)
-      await reloadItems()
-      notify(`${s.name}: ${n} items in your library.`)
-    } catch (e) {
-      notify(`${s.name}: ${(e as Error).message}`)
-    }
-    setBusy(null)
-  }
-  const add = async (s: Srv.Server) => {
-    await Srv.saveServer(s)
-    await refresh()
-    await sync(s)
-  }
-
-  return (
-    <section class="panel servers-panel" id="servers">
-      <h3>Servers</h3>
-      <p class="dim small">Connect a media server and everything on it joins your Flick library, searchable next to your own files.</p>
-
-      {list.length > 0 && (
-        <div class="connected">
-          <h4 class="small dim">Connected</h4>
-          {list.map((s) => (
-            <div class="list-row">
-              <Icon name="server" size={18} />
-              <div class="grow">
-                <div>{s.name} <span class="small dim">{s.type === 'plex' ? 'Plex' : s.type === 'kodi' ? 'Kodi' : s.type === 'flick' ? 'Flick server' : 'Jellyfin'}</span></div>
-                <div class="small dim">{s.url} · {items.value.filter((i) => i.server === s.id).length} items</div>
-              </div>
-              <button class="btn ghost sm" onClick={() => sync(s)} disabled={busy === s.id}><Icon name="refresh" size={14} /> {busy === s.id ? 'Syncing' : 'Sync'}</button>
-              <button class="btn ghost sm" onClick={async () => { await Srv.removeServer(s); await refresh(); await reloadItems() }}>Remove</button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div class="server-grid">
-        <FlickForm onAdd={add} here={here} />
-        <JellyfinForm onAdd={add} />
-        <PlexForm onAdd={add} />
-        {isDesktop && <KodiForm onAdd={add} />}
-      </div>
-      {!isDesktop && <p class="small dim">Kodi works in the Flick apps.</p>}
-      <p class="small dim">Flick talks to your server directly from this device. If the website cannot reach a server on your home network, use the desktop app, or put the server behind HTTPS.</p>
-    </section>
-  )
-}
-
-export function JellyfinForm({ onAdd, heading = true }: { onAdd: (s: Srv.Server) => void; heading?: boolean }) {
+export function JellyfinForm({ onAdd, heading = true }: { onAdd: (s: Srv.Server) => Promise<void> | void; heading?: boolean }) {
   const [url, setUrl] = useState('')
   const [user, setUser] = useState('')
   const [pw, setPw] = useState('')
@@ -73,7 +14,7 @@ export function JellyfinForm({ onAdd, heading = true }: { onAdd: (s: Srv.Server)
     e.preventDefault()
     setBusy(true)
     setErr(null)
-    try { onAdd(await Srv.jellyfinLogin(url, user, pw)); setPw('') } catch (e2) { setErr((e2 as Error).message) }
+    try { await onAdd(await Srv.jellyfinLogin(url, user, pw)); setPw('') } catch (e2) { setErr((e2 as Error).message) }
     setBusy(false)
   }
   return (
@@ -88,7 +29,7 @@ export function JellyfinForm({ onAdd, heading = true }: { onAdd: (s: Srv.Server)
   )
 }
 
-export function FlickForm({ onAdd, here, heading = true }: { onAdd: (s: Srv.Server) => void; here: Srv.FlickInfo | null; heading?: boolean }) {
+export function FlickForm({ onAdd, here, heading = true }: { onAdd: (s: Srv.Server) => Promise<void> | void; here: Srv.FlickInfo | null; heading?: boolean }) {
   const [url, setUrl] = useState('')
   const [code, setCode] = useState('')
   const [err, setErr] = useState<string | null>(null)
@@ -97,7 +38,7 @@ export function FlickForm({ onAdd, here, heading = true }: { onAdd: (s: Srv.Serv
     e.preventDefault()
     setBusy(true)
     setErr(null)
-    try { onAdd(await Srv.flickConnect(here ? location.origin : url, code)); setCode('') } catch (e2) { setErr((e2 as Error).message) }
+    try { await onAdd(await Srv.flickConnect(here ? location.origin : url, code)); setCode('') } catch (e2) { setErr((e2 as Error).message) }
     setBusy(false)
   }
   return (
@@ -115,7 +56,7 @@ export function FlickForm({ onAdd, here, heading = true }: { onAdd: (s: Srv.Serv
   )
 }
 
-export function KodiForm({ onAdd, heading = true }: { onAdd: (s: Srv.Server) => void; heading?: boolean }) {
+export function KodiForm({ onAdd, heading = true }: { onAdd: (s: Srv.Server) => Promise<void> | void; heading?: boolean }) {
   const [url, setUrl] = useState('')
   const [user, setUser] = useState('')
   const [pw, setPw] = useState('')
@@ -125,7 +66,7 @@ export function KodiForm({ onAdd, heading = true }: { onAdd: (s: Srv.Server) => 
     e.preventDefault()
     setBusy(true)
     setErr(null)
-    try { onAdd(await Srv.kodiConnect(url, user, pw)); setPw('') } catch (e2) { setErr((e2 as Error).message) }
+    try { await onAdd(await Srv.kodiConnect(url, user, pw)); setPw('') } catch (e2) { setErr((e2 as Error).message) }
     setBusy(false)
   }
   return (
@@ -141,7 +82,7 @@ export function KodiForm({ onAdd, heading = true }: { onAdd: (s: Srv.Server) => 
   )
 }
 
-export function PlexForm({ onAdd, heading = true }: { onAdd: (s: Srv.Server) => void; heading?: boolean }) {
+export function PlexForm({ onAdd, heading = true }: { onAdd: (s: Srv.Server) => Promise<void> | void; heading?: boolean }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [manual, setManual] = useState(false)
@@ -159,7 +100,7 @@ export function PlexForm({ onAdd, heading = true }: { onAdd: (s: Srv.Server) => 
       win?.close()
       const servers = await Srv.plexServers(tok)
       if (!servers.length) throw new Error('Signed in, but no Plex server answered from this device.')
-      for (const s of servers) onAdd(s)
+      for (const s of servers) await onAdd(s)
     } catch (e) {
       setErr((e as Error).message)
     }
@@ -169,7 +110,7 @@ export function PlexForm({ onAdd, heading = true }: { onAdd: (s: Srv.Server) => 
     e.preventDefault()
     setBusy(true)
     setErr(null)
-    try { onAdd(await Srv.plexManual(url, token)) } catch (e2) { setErr((e2 as Error).message) }
+    try { await onAdd(await Srv.plexManual(url, token)) } catch (e2) { setErr((e2 as Error).message) }
     setBusy(false)
   }
   return (
