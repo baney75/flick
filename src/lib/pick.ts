@@ -56,6 +56,8 @@ export interface PickCtx {
   gate: boolean
   /** Why this platform has no built-in torrent engine (web, phones, Windows); undefined when it has one. */
   noEngine?: string
+  /** Why this platform has no VPN gate at all (web, phones); undefined where there is one. */
+  noGate?: string
   /** Settings > Streaming services: "Require a VPN for debrid services too". */
   vpnForDebrid: boolean
   online: boolean
@@ -80,6 +82,16 @@ export const VPN_P2P = 'Turn on your VPN to play torrents'
 export const VPN_DEBRID = 'Turn on your VPN'
 const CODEC_NAME: Record<Codec, string> = { hevc: 'HEVC', av1: 'AV1', h264: 'H.264' }
 
+/**
+ * Whether playing it must pass the VPN gate: peers always; a debrid service unless it declares
+ * vpnOptional and the "Require a VPN for debrid services too" switch is off. Direct never does.
+ */
+export function needsGate(c: Pick<Candidate, 'via' | 'vpnOptional'>, vpnForDebrid: boolean): boolean {
+  if (c.via === 'p2p') return true
+  if (c.via === 'debrid-cached' || c.via === 'debrid-fetch') return !(c.vpnOptional && !vpnForDebrid)
+  return false
+}
+
 function blockedBy(c: Candidate, rel: Release, dev: Device, ctx: PickCtx): string | undefined {
   if (!ctx.online && c.place !== 'download' && c.place !== 'device') return 'Offline'
   if (c.external) return 'Opens outside Flick'
@@ -88,7 +100,7 @@ function blockedBy(c: Candidate, rel: Release, dev: Device, ctx: PickCtx): strin
     if (ctx.noEngine) return ctx.noEngine
     if (!ctx.gate) return VPN_P2P
   }
-  if ((c.via === 'debrid-cached' || c.via === 'debrid-fetch') && !ctx.gate && !(c.vpnOptional && !ctx.vpnForDebrid)) return VPN_DEBRID
+  if (c.via !== 'p2p' && needsGate(c, ctx.vpnForDebrid) && !ctx.gate) return ctx.noGate ?? VPN_DEBRID
   if (rel.codec && dev.codecs[rel.codec] === false && !dev.desktop) return `This device can't play ${CODEC_NAME[rel.codec]}`
   return undefined
 }
