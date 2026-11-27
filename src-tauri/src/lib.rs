@@ -1,11 +1,10 @@
-// Flick desktop backend: folder scanning, format probing, ffmpeg remux for MKV/AVI,
+// Flick desktop backend: folder scanning, format probing, the live remux for MKV/AVI,
 // thumbnails, subtitles, Finder "Open With", and the default-player switch.
 
 use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -333,127 +332,15 @@ fn cache_key(path: &str) -> String {
     format!("{:016x}", h.finish())
 }
 
-#[derive(Serialize, Clone)]
-struct PrepareProgress {
-    path: String,
-    pct: f64,
-}
-
-/// Turn a file WKWebView cannot open (MKV, AVI, DTS audio...) into an MP4 it can.
-/// Streams are copied when possible, so this takes seconds, not minutes.
-/// `path` is a local file or an http(s) URL; the login, if any, goes to ffmpeg as a header.
-#[tauri::command]
-async fn prepare(
-    app: tauri::AppHandle,
-    path: String,
-    user: Option<String>,
-    pass: Option<String>,
-) -> Result<String, String> {
-    let dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| e.to_string())?
-        .join("remux");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let out = dir.join(format!("{}.mp4", cache_key(&path)));
-    if out.is_file() {
-        return Ok(out.to_string_lossy().into_owned());
-    }
-    let auth = basic(&user.unwrap_or_default(), &pass.unwrap_or_default());
-    tauri::async_runtime::spawn_blocking(move || {
-        remux(&path, auth.as_deref(), &out, |pct| {
-            let _ = app.emit(
-                "prepare-progress",
-                PrepareProgress {
-                    path: path.clone(),
-                    pct,
-                },
-            );
-        })?;
-        Ok(out.to_string_lossy().into_owned())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// ffmpeg video arguments: copy H.264 and HEVC, transcode anything else to H.264.
-/// VideoToolbox exists only on macOS, so other platforms use libx264.
-fn video_args(codec: Option<&str>) -> Vec<String> {
-    let v: &[&str] = match codec {
-        Some("h264") => &["-c:v", "copy"],
-        Some("hevc") => &["-c:v", "copy", "-tag:v", "hvc1"],
-        Some(_) if cfg!(target_os = "macos") => &[
-            "-c:v",
-            "h264_videotoolbox",
-            "-b:v",
-            "10M",
-            "-pix_fmt",
-            "yuv420p",
-        ],
-        Some(_) => &[
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-        ],
-        None => &[],
-    };
-    v.iter().map(|a| a.to_string()).collect()
-}
-
-fn remux(input: &str, auth: Option<&str>, out: &Path, on_pct: impl Fn(f64)) -> Result<(), String> {
-    let ffmpeg = find_tool("ffmpeg")
-        .ok_or("This format needs ffmpeg. Install it with: brew install ffmpeg")?;
-    let probe = run_probe(input, auth).unwrap_or_default();
-    let tmp = out.with_extension("part.mp4");
-    let mut args: Vec<String> = vec!["-y".into(), "-v".into(), "error".into()];
-    args.extend(input_args(input, auth));
-    args.extend([
-        "-map".into(),
-        "0:v:0?".into(),
-        "-map".into(),
-        "0:a:0?".into(),
-    ]);
-    args.extend(video_args(probe.video.as_deref()));
-    match probe.audio.as_deref() {
-        Some("aac") | Some("mp3") | Some("alac") => args.extend(["-c:a".into(), "copy".into()]),
-        Some(_) => args.extend(["-c:a".into(), "aac".into(), "-b:a".into(), "320k".into()]),
-        None => {}
-    }
-    args.extend([
-        "-sn".into(),
-        "-movflags".into(),
-        "+faststart".into(),
-        "-progress".into(),
-        "pipe:1".into(),
-        "-nostats".into(),
-    ]);
-    args.push(tmp.to_string_lossy().into_owned());
-
-    let mut child = Command::new(ffmpeg)
-        .args(&args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    if let Some(stdout) = child.stdout.take() {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Some(us) = line.strip_prefix("out_time_us=") {
-                if let (Ok(us), true) = (us.parse::<f64>(), probe.duration > 0.0) {
-                    on_pct((us / 1e6 / probe.duration * 100.0).clamp(0.0, 100.0));
-                }
-            }
+/// The whole-file MP4s an older Flick converted into cache/remux. Nothing reads them now that the
+/// live remux plays those files, so they go once.
+fn remove_old_remux(cache: &Path) {
+    match std::fs::remove_dir_all(cache.join("remux")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            eprintln!("could not remove the old remux cache: {e}")
         }
+        _ => {}
     }
-    let output = child.wait_with_output().map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!(
-            "ffmpeg could not convert this file: {}",
-            String::from_utf8_lossy(&output.stderr)
-                .lines()
-                .last()
-                .unwrap_or("")
-        ));
-    }
-    std::fs::rename(&tmp, out).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -1402,7 +1289,6 @@ pub fn run() {
             scan_folder,
             probe,
             chapters,
-            prepare,
             sidecar_subs,
             embedded_subs,
             thumbnail,
@@ -1467,7 +1353,10 @@ pub fn run() {
                 queue_open(app.handle(), args);
             }
             if let Ok(cache) = app.path().app_cache_dir() {
-                std::thread::spawn(move || ytdlp::clean_cache(&cache));
+                std::thread::spawn(move || {
+                    ytdlp::clean_cache(&cache);
+                    remove_old_remux(&cache);
+                });
             }
             #[cfg(desktop)]
             torrent::trim_at_launch(app.handle());
@@ -1569,7 +1458,7 @@ mod tests {
         assert_eq!(mp4.video.as_deref(), Some("h264"));
         assert!((mp4.duration - 20.0).abs() < 0.5);
         let mkv = run_probe(&media("Demo.Show.S01E02.Pilot.mkv"), None).unwrap();
-        assert!(!mkv.playable, "MKV must go through prepare");
+        assert!(!mkv.playable, "MKV does not play as it is");
         assert_eq!(mkv.audio.as_deref(), Some("ac3"));
         assert!(
             run_probe(&media("Sample.Clip.2023.webm"), None)
@@ -1590,16 +1479,16 @@ mod tests {
     }
 
     #[test]
-    fn transcode_encoder_exists_on_this_platform() {
-        let args = video_args(Some("mpeg4"));
-        let enc = &args[1];
-        if cfg!(target_os = "macos") {
-            assert_eq!(enc, "h264_videotoolbox");
-        } else {
-            assert_eq!(enc, "libx264");
-        }
-        assert_eq!(video_args(Some("h264")), ["-c:v", "copy"]);
-        assert!(video_args(None).is_empty());
+    fn the_old_remux_cache_goes_and_a_missing_one_is_fine() {
+        let cache = std::env::temp_dir().join(format!("flick-oldremux-{}", std::process::id()));
+        std::fs::create_dir_all(cache.join("remux")).unwrap();
+        std::fs::write(cache.join("remux/0123.mp4"), b"x").unwrap();
+        std::fs::create_dir_all(cache.join("ytdlp")).unwrap();
+        remove_old_remux(&cache);
+        assert!(!cache.join("remux").exists());
+        assert!(cache.join("ytdlp").is_dir(), "only the remux folder goes");
+        remove_old_remux(&cache);
+        std::fs::remove_dir_all(&cache).unwrap();
     }
 
     #[test]
@@ -1648,31 +1537,6 @@ mod tests {
         }
         let local = playback::probe_args("/m/a.mkv", None).join(" ");
         assert!(!local.contains("-reconnect"), "{local}");
-    }
-
-    /// Needs a local server with Basic auth. Set FLICK_HTTP_MKV (URL), FLICK_HTTP_USER, FLICK_HTTP_PASS.
-    #[test]
-    #[ignore]
-    fn remux_reads_http_with_basic_auth() {
-        let url = std::env::var("FLICK_HTTP_MKV").unwrap();
-        let auth = basic(
-            &std::env::var("FLICK_HTTP_USER").unwrap(),
-            &std::env::var("FLICK_HTTP_PASS").unwrap(),
-        );
-        let p = run_probe(&url, auth.as_deref()).expect("ffprobe reads the URL");
-        assert!(!p.playable, "MKV over http still needs prepare");
-        let out = std::env::temp_dir().join(format!("flick-http-{}.mp4", cache_key(&url)));
-        remux(&url, auth.as_deref(), &out, |_| {}).unwrap();
-        let mp4 = run_probe(out.to_str().unwrap(), None).unwrap();
-        eprintln!(
-            "output {} container={} video={:?} audio={:?} duration={}",
-            out.display(),
-            mp4.container,
-            mp4.video,
-            mp4.audio,
-            mp4.duration
-        );
-        assert!(mp4.playable && mp4.duration > 0.5);
     }
 
     #[test]
