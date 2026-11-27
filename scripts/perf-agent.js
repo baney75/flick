@@ -165,7 +165,7 @@
   const TRACK = '.main .card, .main .page-head, .main .toolbar, .main .list-row, .main .shelf-row, .main .row-head, .main .detail-head, .main .hub-group > h4, .main .status, .main .empty, .main .welcome'
   const CELL = 10
   P.clsStart = () => {
-    const st = (P.cls = { score: 0, prev: new Map(), resizes: 0, on: true, shifts: [], t0: now() })
+    const st = (P.cls = { score: 0, prev: new Map(), resizes: 0, on: true, shifts: [], t0: now(), screen: document.querySelector('.main')?.lastElementChild })
     const vw = innerWidth, vh = innerHeight, area = vw * vh
     const tick = () => {
       if (!st.on) return
@@ -173,6 +173,11 @@
       const seen = new Map()
       const hit = new Set()
       let dist = 0
+      // A new screen is not a shift: CLS counts only content that stays on screen and moves. Each screen is
+      // the last child of the main pane, a new element when the view changes.
+      const screen = document.querySelector('.main')?.lastElementChild
+      const fresh = screen !== st.screen
+      st.screen = screen
       for (const el of document.querySelectorAll(TRACK)) {
         // Count every copy of a title, on screen or not, so the nth copy stays the nth as others scroll away.
         const what = `${el.className.split(' ')[0]}|${el.getAttribute('title') ?? (el.textContent || '').slice(0, 40)}`
@@ -184,7 +189,7 @@
         for (let a = el.parentElement; a; a = a.parentElement) { sx += a.scrollLeft; sy += a.scrollTop }
         const p = [r.left + sx, r.top + sy, r.width, r.height]
         next.set(k, p)
-        const q = st.prev.get(k)
+        const q = fresh ? undefined : st.prev.get(k)
         if (!q) continue
         const dx = Math.abs(p[0] - q[0]), dy = Math.abs(p[1] - q[1]), dw = Math.abs(p[2] - q[2]), dh = Math.abs(p[3] - q[3])
         if (dx > 1 || dy > 1 || dw > 1 || dh > 1) {
