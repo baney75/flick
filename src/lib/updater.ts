@@ -50,8 +50,14 @@ async function checkApp(): Promise<U.CheckResult> {
     const u = await check({ timeout: 30_000 })
     if (!u) return { kind: 'current' }
     // download() checks the signature against the public key in tauri.conf.json and throws on a mismatch.
+    // Each Update holds its downloaded bytes on the Rust side until close(), so only one stays open.
     if (downloaded?.version === u.version) await u.close().catch(() => {})
-    else { await u.download(); downloaded = u }
+    else {
+      try { await u.download() } catch (e) { await u.close().catch(() => {}); throw e }
+      const earlier = downloaded
+      downloaded = u
+      await earlier?.close().catch(() => {})
+    }
     return { kind: 'ready', version: u.version }
   } catch (error) {
     return { kind: 'failed', error, online: isOnline() }
