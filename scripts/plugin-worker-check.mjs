@@ -1,6 +1,6 @@
 // Checks that plugin code runs in a Worker inside the sandboxed plugin frame (public/plugin-host.js),
 // in a real browser: the Worker starts in the opaque-origin frame, the app page's CSP still refuses the
-// Worker's own fetch, XHR and WebSocket, a 6 s busy loop in catalog() leaves the parent's 250 ms timer on
+// Worker's own fetch, XHR and WebSocket, a page that refuses the Worker answers with an error, a 6 s busy loop in catalog() leaves the parent's 250 ms timer on
 // time, and removing the frame (what Flick does when a call passes its time limit) ends a loop that never stops.
 //   node scripts/plugin-worker-check.mjs                   Chromium (SMOKE_CHANNEL, default chrome)
 //   node scripts/plugin-worker-check.mjs --engine webkit   Playwright's WebKit
@@ -16,6 +16,12 @@ const harness = '<!doctype html><meta charset="utf-8"><title>harness</title><bod
 const server = http.createServer((q, r) => {
   if (q.url === '/ping') { hits++; r.setHeader('access-control-allow-origin', '*'); r.end('pong'); return }
   if (q.url === '/') { r.setHeader('content-type', 'text/html'); r.end(harness); return }
+  // The app page with Workers refused: stands for a web view whose CSP or engine won't start the Worker.
+  if (q.url === '/plugin-host-noworker.html') {
+    r.setHeader('content-type', 'text/html')
+    r.end(readFileSync(pub + 'plugin-host-app.html', 'utf8').replace('worker-src blob:', "worker-src 'none'"))
+    return
+  }
   if (!/^\/plugin-host(-app)?\.(html|js)$/.test(q.url)) { r.statusCode = 404; r.end(); return }
   r.setHeader('content-type', q.url.endsWith('.js') ? 'text/javascript' : 'text/html')
   r.end(readFileSync(pub + q.url.slice(1)))
@@ -36,7 +42,7 @@ console.log(`${engine} ${browser.version()}`)
 
 // The parent side of the port protocol (src/lib/plugins/rpc.ts), in the page: open a frame, load code.
 await page.evaluate(() => {
-  window.openPlugin = async (host, code, platform) => {
+  window.openPlugin = async (host, code, platform, limit = 10000) => {
     const f = document.createElement('iframe')
     f.setAttribute('sandbox', 'allow-scripts')
     f.hidden = true
@@ -58,7 +64,7 @@ await page.evaluate(() => {
       ch.port1.postMessage({ id, m, a })
       setTimeout(() => { if (waiting.delete(id)) resolve({ ok: false, e: 'time limit' }) }, ms)
     })
-    const loaded = await call('load', [code, platform, {}])
+    const loaded = await call('load', [code, platform, {}], limit)
     return { frame: f, call, asks, loaded }
   }
 })
@@ -88,6 +94,16 @@ for (const [host, platform] of [['/plugin-host-app.html', 'desktop'], ['/plugin-
     check(p.fetch === 'reached' && hits > 0, `${host}: the control, the website page's Worker reaches the server (fetch ${p.fetch}, server hits ${hits})`)
   }
 }
+
+// A page that refuses the Worker answers Flick's asks with an error at once, instead of a dead port.
+const refused = await page.evaluate(async (c) => {
+  const t0 = performance.now()
+  const pl = await window.openPlugin('/plugin-host-noworker.html', c, 'desktop', 20000)
+  pl.frame.remove()
+  return { ok: pl.loaded.ok, e: pl.loaded.e, took: Math.round(performance.now() - t0) }
+}, probeCode)
+check(!refused.ok && /could not start a worker/.test(refused.e) && refused.took < 6000,
+  `a page that refuses the Worker answers load with an error after ${refused.took} ms (${refused.e})`)
 
 // Every plugin Flick ships loads in the Worker: its top-level code runs there, with no DOM.
 for (const name of readdirSync(new URL('../plugins/', import.meta.url)).filter((n) => !n.includes('.'))) {

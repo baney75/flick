@@ -52,8 +52,10 @@ storage, the sync key, server tokens, other plugins or the page. It talks to Fli
 `fetch`, `URL`, `TextEncoder`, `crypto.subtle`, `setTimeout` and the rest of the Worker globals work.
 
 Every call has a 20 second timeout and every result is validated against the shapes below. A call
-past its timeout ends the plugin's frame and Worker, even one stuck in a loop, and the next call starts
-the plugin again (its top-level code runs again). One bad entry in a list (a meta, a stream) is
+past its timeout fails alone while the plugin still answers Flick's ping within 1.5 seconds (it may only
+be waiting on a slow site). A plugin that can't answer one, such as one stuck in a loop, has its frame and
+Worker ended, its other calls fail, and the next call starts the plugin again (its top-level code runs
+again). One bad entry in a list (a meta, a stream) is
 skipped; a result that is wrong as a whole is dropped. Either way a note goes to the plugin's log in
 Settings > Plugins.
 

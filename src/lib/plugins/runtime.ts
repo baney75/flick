@@ -122,10 +122,14 @@ export function ctxHandler(id: string, desktop = isDesktop, call: Invoke = invok
 interface Frame { rpc: Rpc; iframe: HTMLIFrameElement }
 const frames = new Map<string, Promise<Frame>>()
 
+/** How long a plugin gets to answer a ping after one of its calls passed its time limit. */
+export const PING_MS = 1500
+
 /**
  * One sandboxed frame; the plugin's code runs in a Worker inside it (public/plugin-host.js). A call past
- * its time limit, or a frame that loads a second time (it navigated, so its port is gone), ends the
- * frame and its Worker, and `onDead` tells the caller to start a new one on the next call.
+ * its time limit fails alone while the plugin still answers a ping: it may only be waiting on a slow site.
+ * A plugin that can't answer one (stuck in a loop), or a frame that loads a second time (it navigated, so
+ * its port is gone), ends the frame and its Worker, and `onDead` tells the caller to start a new one.
  */
 export function openFrame(handle: Handler, doc: Document = document, onDead?: () => void): Promise<Frame> {
   const iframe = doc.createElement('iframe')
@@ -138,14 +142,28 @@ export function openFrame(handle: Handler, doc: Document = document, onDead?: ()
     const t = setTimeout(() => { iframe.remove(); reject(new Error('The plugin sandbox did not start.')) }, V.CALL_TIMEOUT_MS)
     let rpc: Rpc | null = null
     // Removing the frame ends its Worker too: WebKit at once, Chromium within about 2 s (measured).
-    const end = () => { rpc?.close(); iframe.remove(); onDead?.() }
+    let over = false
+    const end = () => {
+      if (over) return
+      over = true
+      rpc?.close()
+      iframe.remove()
+      onDead?.()
+    }
+    // The ping's own time limit lands here too, while `pinging` is set, and its rejection ends the frame.
+    let pinging = false
+    const stuck = () => {
+      if (pinging || !rpc) return
+      pinging = true
+      rpc.call('ping', [], PING_MS).then(() => { pinging = false }, end)
+    }
     iframe.addEventListener('load', () => {
       if (rpc) return end()
       clearTimeout(t)
       const ch = new MessageChannel()
       // The sandboxed page has an opaque origin, so '*' is the only target that reaches it.
       iframe.contentWindow!.postMessage({ flick: 'port' }, '*', [ch.port2])
-      rpc = connect(ch.port1, handle, V.CALL_TIMEOUT_MS, end)
+      rpc = connect(ch.port1, handle, V.CALL_TIMEOUT_MS, stuck)
       resolve({ iframe, rpc })
     })
     doc.body.appendChild(iframe)
