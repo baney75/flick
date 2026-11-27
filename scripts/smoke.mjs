@@ -464,15 +464,36 @@ try {
   check(sandbox === 'allow-scripts' && inFrame.storage === 'blocked', `EPUB frame is sandboxed without same-origin (${sandbox}, storage ${inFrame.storage})`)
   check(pwned[0].length === 0 && pwned[1] === null && inFrame.scripts === 1 && !inFrame.handlers && !inFrame.frames,
     `scripts in an EPUB never run (ran: ${pwned[0].join(', ') || 'none'}; ${inFrame.scripts} script, handlers ${inFrame.handlers}, frames ${inFrame.frames})`)
+  // Every wait here is bounded: a page turn gets 15 s and the whole walk 60 s, and a timeout says what it
+  // waited for and where the reader was. page.keyboard.press has no timeout of its own.
+  const readerState = () => page.evaluate(() => ({
+    title: document.querySelector('.reader-title .t2')?.textContent, page: document.querySelector('.reader-page')?.textContent,
+    focus: document.activeElement?.className || document.activeElement?.tagName, frames: document.querySelectorAll('.epub-frame').length,
+  })).then((s) => JSON.stringify(s), (e) => `unreadable (${e.message.split('\n')[0]})`)
+  const walkEnds = Date.now() + 60_000
+  const bounded = async (work, what) => {
+    let timer
+    const ms = Math.min(15_000, walkEnds - Date.now())
+    const late = new Promise((_, no) => { timer = setTimeout(() => no(new Error('late')), Math.max(0, ms)) })
+    try { return await Promise.race([work, late]) } catch (e) {
+      if (e.message !== 'late') throw e
+      throw new Error(`EPUB page turns: no answer in ${ms} ms while waiting for ${what}; reader ${await readerState()}`)
+    } finally { clearTimeout(timer) }
+  }
   for (let i = 0; i < 30; i++) {
-    const [p, n] = (await pageNo.innerText()).match(/\d+/g).map(Number)
+    const [p, n] = (await bounded(pageNo.innerText({ timeout: 15_000 }), 'the page number')).match(/\d+/g).map(Number)
     if (p === n) break
-    await page.keyboard.press('ArrowRight')
+    await bounded(page.keyboard.press('ArrowRight'), `ArrowRight to page ${p + 1} of ${n}`)
     await pageNo.filter({ hasText: new RegExp(`^Page ${p + 1} of`) }).waitFor({ timeout: 3000 }).catch(() => {})
   }
-  for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight')
+  // The burst goes to the reader's own key handler, the path the frame relays its keys to. A real key press
+  // here lands in the chapter frame just as the first press swaps it for the next chapter, and Chrome then
+  // sometimes never acknowledges the press, which hung this step for good.
+  for (let i = 0; i < 4; i++) {
+    await bounded(page.evaluate(() => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))), `quick turn ${i + 1} of 4`)
+  }
   await page.waitForTimeout(1500)
-  const landed = (await page.locator('.reader-title .t2').innerText()).split(' · ')[0]
+  const landed = (await bounded(page.locator('.reader-title .t2').innerText({ timeout: 15_000 }), 'the chapter title')).split(' · ')[0]
   check(landed === 'Chapter Two', `quick turns past a chapter's end land in the next chapter (${landed})`)
   await page.getByRole('button', { name: 'Contents' }).click()
   await page.locator('.epub-toc').getByText('Chapter Two').click()
