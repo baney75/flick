@@ -139,7 +139,7 @@ export function EpubReader({ it }: { it: Item }) {
           // No allow-same-origin: the book runs in an opaque origin and cannot reach Flick's storage.
           // A new frame for each layout: a new document in the same frame is a history entry, and Back
           // then turned back through old layouts instead of leaving the book.
-          <iframe key={doc} ref={frame}class="epub-frame" title="Book page" sandbox="allow-scripts" srcdoc={doc} onLoad={() => frame.current?.focus()} />
+          <iframe key={doc} ref={frame} class="epub-frame" title="Book page" sandbox="allow-scripts" srcdoc={doc} onLoad={() => frame.current?.focus()} />
         )}
         {toc && book && (
           <nav class="epub-toc panel" aria-label="Contents">

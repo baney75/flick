@@ -615,8 +615,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         case 'n': case 'N': goNext(); break
         case '?': setMenu((m) => (m === 'help' ? null : 'help')); break
         case 'Escape':
-          if (menu) setMenu(null)
-          else if (document.fullscreenElement) document.exitFullscreen()
+          // An open menu closes through useEscape above, which stops the key before it gets here.
+          if (document.fullscreenElement) document.exitFullscreen()
           else close()
           break
         default:
