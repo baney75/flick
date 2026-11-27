@@ -26,6 +26,21 @@ describe('in progress', () => {
 })
 
 describe('the Continue tab', () => {
+  it('leaves out items the loaded library no longer has, and keeps them while it loads', () => {
+    const prog = { here: item('here', 100, 1000, 10), gone: item('gone', 100, 1000, 20), u: { ...item('u', 100, 1000, 5), ref: { t: 'url' as const, url: 'https://x/a.m3u8' } } }
+    const cases: [((id: string) => boolean) | undefined, string[]][] = [
+      [undefined, ['gone', 'here', 'u']],
+      [(id) => id === 'here', ['here', 'u']],
+      [() => false, ['u']],
+    ]
+    for (const [known, want] of cases) expect(keys(continueEntries(prog, [], undefined, known))).toEqual(want)
+  })
+  it("a removed show's episodes do not bring the show back", () => {
+    const show = (id: string) => (id.startsWith('ep') ? 'Show' : undefined)
+    const prog = { ep1: item('ep1', 100, 1000, 5), ep2: item('ep2', 100, 1000, 9) }
+    expect(keys(continueEntries(prog, [], show, (id) => id === 'ep1'))).toEqual(['ep1'])
+    expect(keys(continueEntries(prog, [], show, () => false))).toEqual([])
+  })
   it('lists this device and plugin titles together, newest first', () => {
     const l = continueEntries({ a: item('a', 100, 1000, 10), b: item('b', 100, 1000, 30) }, [{ p: 'stremio', list: [meta('tt1', { pos: 50, dur: 100, at: 20 })] }])
     expect(keys(l)).toEqual(['b', 'stremio:tt1', 'a'])

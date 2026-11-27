@@ -17,12 +17,15 @@ export const inProgress = (p: Progress) => p.book ? p.pos > 1 && p.pos < p.dur :
  * One entry per title: a plugin title, a show from a folder or server (`showOf` names an item's
  * show), or anything else on its own. A title's newest record decides: in progress, it shows from
  * that record; finished, the title is left out, even if an older episode was left partway. A plugin's
- * own record of a title (a Stremio account's progress) counts only when Flick has none.
+ * own record of a title (a Stremio account's progress) counts only when Flick has none. Given `known`
+ * (once the library has loaded), a record of an item the library no longer has is left out: it has
+ * nothing to play.
  */
-export function continueEntries(prog: Record<string, Progress>, libs: { p: string; list: Meta[] }[], showOf: (id: string) => string | undefined = () => undefined): ContinueEntry[] {
+export function continueEntries(prog: Record<string, Progress>, libs: { p: string; list: Meta[] }[], showOf: (id: string) => string | undefined = () => undefined, known?: (id: string) => boolean): ContinueEntry[] {
   const newest = new Map<string, { k: string; p: Progress }>()
   for (const [k, p] of Object.entries(prog)) {
     if (p.ref.t === 'url' && !p.ref.url) continue
+    if (p.ref.t === 'item' && known && !known(p.ref.id)) continue
     const show = p.ref.t === 'item' ? showOf(p.ref.id) : undefined
     const key = p.ref.t === 'plugin' ? `pl|${p.ref.p}|${p.ref.id}` : show ? `show|${show.toLowerCase()}` : `k|${k}`
     const had = newest.get(key)

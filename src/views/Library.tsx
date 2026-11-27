@@ -146,6 +146,8 @@ export function Library({ start }: { start?: Tab } = {}) {
       await removeDownload(it.id).catch(() => {})
       await removeItems([it.id])
     }
+    // Its place goes with it, or Continue keeps an entry with nothing to play.
+    await clearProgress(it.id)
     await reloadItems()
     notify('Removed.')
   }

@@ -3,7 +3,6 @@
 import { signal, computed } from '@preact/signals'
 import * as db from './db'
 import type { Item, Source } from './library'
-import { inProgress } from './continue'
 import { allItems, makeThumb, hasThumb, saveItems, localEpub, KODI_IMG } from './library'
 import { defaultPrefs, type StreamPrefs } from './prefs'
 
@@ -142,13 +141,6 @@ export async function clearProgress(key: string) {
   progress.value = next
   await db.del('progress', key)
 }
-
-export const continueList = computed(() =>
-  Object.entries(progress.value)
-    .filter(([, p]) => inProgress(p))
-    .sort((a, b) => b[1].at - a[1].at)
-    .slice(0, 24),
-)
 
 // ---------- the player ----------
 export interface SubTrack { label: string; lang?: string; url: string }

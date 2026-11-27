@@ -1269,6 +1269,53 @@ try {
   check(await atEnd() && nasHits.photoMedia === 0 && most < 400, `2,000 photos scroll to the end with no full-size loads (${nasHits.thumb} thumbnails, ${nasHits.photoMedia} full files, at most ${most} tiles at once)`)
   await np.context().close()
 
+  // Home and Library list the same things to continue: no item the library no longer has, and no show
+  // whose newest episode is finished. Remove from library takes the item's place with it.
+  const cp = await photoPage()
+  await cp.goto(`${BASE}/#/library`)
+  await cp.waitForTimeout(500)
+  await cp.evaluate(() => new Promise((res, rej) => {
+    const r = indexedDB.open('flick')
+    r.onsuccess = () => {
+      const tx = r.result.transaction(['items', 'progress', 'kv'], 'readwrite')
+      const it = (id, title, more) => tx.objectStore('items').put({ id, title, src: { t: 'url', url: `http://127.0.0.1:9/${id}` }, origin: 'local', size: 1, mtime: 0, addedAt: 1, ...more }, id)
+      it('kept-1', 'Kept track', { kind: 'audio' })
+      it('ep-1', 'One', { kind: 'video', show: 'Finished Show', season: 1, episode: 1, poster: 'http://127.0.0.1:9/p.jpg' })
+      it('ep-2', 'Two', { kind: 'video', show: 'Finished Show', season: 1, episode: 2, poster: 'http://127.0.0.1:9/p.jpg' })
+      const pr = (id, title, pos, at) => tx.objectStore('progress').put({ pos, dur: 1000, at, title, ref: { t: 'item', id } }, id)
+      pr('kept-1', 'Kept track', 100, 30)
+      pr('gone-1', 'Removed film', 100, 40)
+      pr('ep-1', 'Finished Show', 100, 10)
+      pr('ep-2', 'Finished Show', 990, 20)
+      const kv = tx.objectStore('kv')
+      const rev = kv.get('items.rev')
+      rev.onsuccess = () => kv.put((rev.result ?? 0) + 1, 'items.rev')
+      tx.oncomplete = res
+      tx.onerror = () => rej(tx.error)
+    }
+  }))
+  const homeCont = async () => {
+    await cp.goto(`${BASE}/#/`)
+    await cp.locator('.page-head h1', { hasText: 'Home' }).waitFor({ timeout: 10000 })
+    await cp.waitForTimeout(300)
+    return cp.locator('.row-section', { has: cp.getByRole('heading', { name: 'Continue watching' }) }).locator('.card').evaluateAll((l) => l.map((c) => c.title))
+  }
+  await cp.reload()
+  const homeList = await homeCont()
+  await cp.goto(`${BASE}/#/library`)
+  await cp.locator('.toolbar .chip', { hasText: /^Continue/ }).click()
+  await cp.locator('.continue-grid .card').first().waitFor({ timeout: 10000 })
+  const libList = await cp.locator('.continue-grid .card').evaluateAll((l) => l.map((c) => c.title))
+  check(homeList.join() === 'Kept track' && libList.join() === 'Kept track', `Home and Library continue the same, without a removed item or a finished show (Home: ${homeList.join(', ')}; Library: ${libList.join(', ')})`)
+  await cp.locator('.toolbar .chip', { hasText: /^All/ }).click()
+  await cp.locator('.vgrid .card', { hasText: 'Kept track' }).click({ button: 'right' })
+  await cp.locator('.ctx').getByRole('button', { name: 'Remove from library' }).click()
+  await cp.locator('.vgrid .card', { hasText: 'Kept track' }).waitFor({ state: 'detached', timeout: 5000 })
+  const keptPlace = await cp.evaluate(() => new Promise((res) => { const r = indexedDB.open('flick'); r.onsuccess = () => { const q = r.result.transaction('progress').objectStore('progress').get('kept-1'); q.onsuccess = () => res(q.result ?? null) } }))
+  const afterHome = await homeCont()
+  check(keptPlace === null && afterHome.length === 0, `Remove from library clears the item's place, and Home has nothing to continue (${afterHome.join(', ') || 'none'})`)
+  await cp.context().close()
+
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.join(' | ') : ''}`)
   await browser.close()
 } finally {
