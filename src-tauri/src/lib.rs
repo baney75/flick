@@ -1409,7 +1409,7 @@ mod tests {
 
     #[test]
     fn chapters_from_an_m4b() {
-        let (Some(ffmpeg), Some(_)) = (find_tool("ffmpeg"), find_tool("ffprobe")) else {
+        let Some((ffmpeg, _)) = playback::fixtures::tools() else {
             eprintln!("skipped: needs ffmpeg and ffprobe");
             return;
         };
@@ -1445,8 +1445,9 @@ mod tests {
 
     #[test]
     fn probe_tells_native_from_needs_conversion() {
-        if find_tool("ffprobe").is_none()
-            || !Path::new(&media("Demo.Show.S01E02.Pilot.mkv")).exists()
+        // test-media stays on the developer's computer, so CI skips this one; ffprobe it must have.
+        if !Path::new(&media("Demo.Show.S01E02.Pilot.mkv")).exists()
+            || playback::fixtures::tools().is_none()
         {
             eprintln!("skipped: needs ffprobe and test-media");
             return;

@@ -32,8 +32,11 @@ jobs:
           fi
           test -n "$id"
           echo "id=$id" >> "$GITHUB_OUTPUT"
+  # The same checks as every pull request, src-tauri's tests included: no build starts until they pass.
+  tests:
+    uses: ./.github/workflows/check.yml
   desktop:
-    needs: release
+    needs: [release, tests]
     strategy:
       fail-fast: false
       # One at a time: each job rewrites latest.json on the draft, and two at once can drop a platform.
@@ -99,6 +102,7 @@ jobs:
           jq -e --arg t "$GITHUB_REF_NAME" '[.platforms[].url | contains("/releases/download/" + $t + "/")] | all' latest.json
       - run: gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$ID" -F draft=false -F prerelease=false -f make_latest=true
   android:
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,6 +126,7 @@ jobs:
           name: flick-android
           path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
   ios:
+    needs: tests
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4

@@ -80,7 +80,8 @@ jobs:
           gh release upload "$tag" out/* --clobber
   image:
     if: github.ref_type == 'tag'
-    needs: web
+    # The image is pushed only once every platform's binary has built.
+    needs: [web, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: read

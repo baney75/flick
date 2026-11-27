@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release.yml runs these same checks before it builds anything.
+  workflow_call:
 jobs:
   web:
     runs-on: ubuntu-latest
@@ -24,8 +26,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: src-tauri }
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      # ffmpeg for the playback tests, which fail rather than skip in CI when it is missing.
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf ffmpeg
       - run: mkdir -p dist && cd src-tauri && cargo clippy -- -D warnings
+      - run: cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=4
   server:
     runs-on: ubuntu-latest
     steps:

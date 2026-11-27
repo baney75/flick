@@ -424,9 +424,28 @@ pub mod fixtures {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    /// ffmpeg and ffprobe, or None so a test skips on a computer without them. In CI (`CI` set) a
+    /// missing tool fails the test instead, so a runner without ffmpeg cannot pass these tests unseen.
     pub fn tools() -> Option<(PathBuf, PathBuf)> {
-        let t = (super::find_tool("ffmpeg")?, super::find_tool("ffprobe")?);
-        Some(t)
+        required(
+            super::find_tool("ffmpeg").zip(super::find_tool("ffprobe")),
+            std::env::var_os("CI").is_some(),
+        )
+    }
+
+    fn required<T>(found: Option<T>, ci: bool) -> Option<T> {
+        assert!(
+            found.is_some() || !ci,
+            "CI is set but ffmpeg or ffprobe is missing: install ffmpeg in this job"
+        );
+        found
+    }
+
+    #[test]
+    fn a_missing_ffmpeg_skips_locally_and_fails_in_ci() {
+        assert_eq!(required(None::<()>, false), None);
+        assert_eq!(required(Some(1), true), Some(1));
+        assert!(std::panic::catch_unwind(|| required(None::<()>, true)).is_err());
     }
 
     pub fn scratch(name: &str) -> PathBuf {
