@@ -202,8 +202,11 @@ export function VirtualGrid<T>({ list, min = 220, ratio = 9 / 16, extra = 54, ke
 
   useLayoutEffect(() => {
     const el = box.current!
+    // The grid's width follows the pane it scrolls in. Observing the grid itself would also hear its height,
+    // which changes as the row height below is measured, inside that observer's own callback: WebKit then
+    // drops the notification and reports a ResizeObserver loop.
     const ro = new ResizeObserver(() => setW(el.clientWidth))
-    ro.observe(el)
+    ro.observe(el.closest('.main') ?? el)
     setW(el.clientWidth)
     return () => ro.disconnect()
   }, [])
