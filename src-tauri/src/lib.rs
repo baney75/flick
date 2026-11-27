@@ -1358,6 +1358,8 @@ pub fn run() {
                     remove_old_remux(&cache);
                 });
             }
+            #[cfg(desktop)]
+            torrent::trim_at_launch(app.handle());
             if let Ok(dir) = app.path().app_log_dir() {
                 playlog::init(dir);
             }
