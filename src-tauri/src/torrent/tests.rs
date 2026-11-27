@@ -614,8 +614,9 @@ fn noise(len: usize, salt: u32) -> Vec<u8> {
         .collect()
 }
 
-/// Audit F4: a torrent that grows past the cap while it plays is trimmed back under it when it
-/// stops, oldest folder first, not only at the next start.
+/// Audit F4: a torrent that grows past the cap while it plays is trimmed back toward it when it
+/// stops, oldest folder first, not only at the next start; the torrent that stopped stays cached
+/// even when it alone is over the cap.
 #[test]
 fn a_stop_trims_the_cache_back_under_its_cap() {
     let seeder = Seeder::new("trimstop");
@@ -624,8 +625,8 @@ fn a_stop_trims_the_cache_back_under_its_cap() {
     let gate = Fake::passing();
     let cfg = Config {
         cache: tmp("cache-trimstop"),
-        // Room for the movie, not for the movie and the older torrent.
-        cap: (3 << 20) + (512 << 10),
+        // Room for the older torrent, not for the movie.
+        cap: 2 << 20,
         wait: Duration::from_secs(30),
         dht: false,
         peers: vec![seeder.addr()],
@@ -647,8 +648,10 @@ fn a_stop_trims_the_cache_back_under_its_cap() {
     assert!(old.is_dir(), "nothing trims while the torrent plays");
     e.stop(&hash);
     wait_until(|| !old.exists());
+    // The trim deletes oldest first in one pass: a delete of the stopped torrent would follow at once.
+    std::thread::sleep(Duration::from_millis(500));
     assert!(
-        e.cfg.cache.join(&hash).is_dir(),
+        e.cfg.cache.join(&hash).join("movie.mp4").is_file(),
         "the torrent that stopped stays cached"
     );
 }

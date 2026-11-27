@@ -375,11 +375,11 @@ fn the_cache_trims_the_oldest_torrents_first_and_only_torrent_folders() {
     folder(&cache, "notes", 1024, 1000);
     std::fs::write(cache.join("stray"), vec![0u8; 1 << 20]).unwrap();
 
-    assert!(rules::trim(&cache, 3 * K64, &[]).unwrap().is_empty());
-    let gone = rules::trim(&cache, 2 * K64 + 100, std::slice::from_ref(&old)).unwrap();
+    assert!(rules::trim(&cache, 3 * K64, |_| false).unwrap().is_empty());
+    let gone = rules::trim(&cache, 2 * K64 + 100, |n| n == old).unwrap();
     assert_eq!(gone, [cache.join(&mid)]);
     assert!(cache.join(&old).exists() && cache.join(&new).exists());
-    let gone = rules::trim(&cache, 50, &[]).unwrap();
+    let gone = rules::trim(&cache, 50, |_| false).unwrap();
     assert_eq!(gone, [cache.join(&old), cache.join(&new)]);
     assert!(cache.join("notes/sub/part").exists() && cache.join("stray").exists());
 
@@ -406,7 +406,7 @@ fn the_cache_counts_the_bytes_on_disk_not_a_sparse_file_s_length() {
         .unwrap();
     f.set_len(8 << 30).unwrap();
     aged(&new, 100);
-    assert!(rules::trim(&cache, 1 << 20, &[hex('b')])
+    assert!(rules::trim(&cache, 1 << 20, |n| n == hex('b'))
         .unwrap()
         .is_empty());
     assert!(old.exists());
@@ -425,7 +425,7 @@ fn a_folder_that_will_not_delete_does_not_stop_the_trim() {
     std::fs::set_permissions(stuck.join("sub"), mode(0o555)).unwrap();
     // Root deletes through any mode, so there is nothing to show as root.
     let root = std::fs::File::create(stuck.join("sub/probe")).is_ok();
-    let gone = rules::trim(&cache, 0, &[]).unwrap();
+    let gone = rules::trim(&cache, 0, |_| false).unwrap();
     if !root {
         assert_eq!(
             gone,

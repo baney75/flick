@@ -534,8 +534,9 @@ impl Engine {
     /// the session has closed, so no new session opens its cache folder before then. A close that
     /// passes `close_limit`, panics or is cancelled is given up on: the mark goes too, so the
     /// torrent can play again, and its next session opens a fresh folder.
-    /// Once the session has closed, the cache trims back under its cap: a torrent that grew while
-    /// it played may have pushed it over.
+    /// Once the session has closed, the cache trims back under its cap in a task of its own (a
+    /// torrent that grew while it played may have pushed it over). The trim keeps this torrent,
+    /// and no wait on the close waits for it.
     fn close(&self, hash: &str, session: Arc<Session>) -> JoinHandle<()> {
         let table = Arc::clone(&self.table);
         let mark = Unmark {
@@ -544,7 +545,7 @@ impl Engine {
             closed: false,
         };
         let limit = self.cfg.close_limit;
-        let (cache, cap) = (self.cfg.cache.clone(), self.cfg.cap);
+        let (cache, cap, own) = (self.cfg.cache.clone(), self.cfg.cap, hash.to_string());
         #[cfg(test)]
         let how = *self.stall.lock().unwrap();
         self.rt.spawn(async move {
@@ -559,12 +560,12 @@ impl Engine {
                 Ok(()) => mark.closed = true,
                 Err(_) => eprintln!("torrent: a session took over {limit:?} to close; given up"),
             }
-            // The mark goes first, so this torrent's folder counts like any other; one given up on
-            // is kept as abandoned.
             drop(mark);
-            if let Err(e) = trim(&table, &cache, cap, None) {
-                eprintln!("torrent: trimming the cache failed: {e}");
-            }
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = trim(&table, &cache, cap, Some(&own)) {
+                    eprintln!("torrent: trimming the cache failed: {e}");
+                }
+            });
         })
     }
 
@@ -668,14 +669,17 @@ impl Engine {
 }
 
 /// Trims the cache under `cap`, never deleting the folder of a torrent that is starting, playing,
-/// closing or was given up on, nor `also`'s. The table stays locked while it runs, so no start
-/// opens a folder it is deleting.
+/// closing or was given up on, nor `also`'s. It asks the table just before each delete and never
+/// holds it while deleting, so the gate's hooks never wait on the disk.
 fn trim(table: &Mutex<Table>, cache: &Path, cap: u64, also: Option<&str>) -> io::Result<()> {
-    let t = lock(table);
-    let held = t.slots.keys().chain(&t.closing).chain(t.abandoned.keys());
-    let mut keep: Vec<String> = held.cloned().collect();
-    keep.extend(also.map(str::to_string));
-    rules::trim(cache, cap, &keep).map(drop)
+    let held = |name: &str| {
+        let t = lock(table);
+        also == Some(name)
+            || t.slots.contains_key(name)
+            || t.closing.contains(name)
+            || t.abandoned.contains_key(name)
+    };
+    rules::trim(cache, cap, held).map(drop)
 }
 
 /// Removes a torrent's closing mark when its close task ends, however it ends. A close that
@@ -842,7 +846,7 @@ pub fn trim_at_launch(app: &tauri::AppHandle) {
 
 /// Trims a cache no torrent is using. A cache that was never made has nothing to trim.
 fn trim_idle(cache: &Path, cap: u64) {
-    match rules::trim(cache, cap, &[]) {
+    match rules::trim(cache, cap, |_| false) {
         Ok(_) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => eprintln!("torrent: trimming the cache failed: {e}"),
