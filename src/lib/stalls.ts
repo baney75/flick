@@ -61,6 +61,8 @@ export class Watchdog {
   private played = false
   /** The element failed: nothing is watched until the next attach. */
   private failedNow = false
+  /** A reload was asked for and nothing has played since. */
+  private reloading = false
 
   constructor(public kind: SourceKind, private on: { reload(): void; giveUp(): void }, private t: Timers = real) {}
 
@@ -74,6 +76,8 @@ export class Watchdog {
   /** The element fired `playing`. */
   playing() {
     this.played = true
+    this.reloading = false
+    this.startReloads = 0
     this.resumed()
   }
 
@@ -82,10 +86,17 @@ export class Watchdog {
     this.resumed()
   }
 
-  /** The element failed (an error card, or a conversion started): no reload may follow. */
-  failed() {
+  /**
+   * The element failed: no reload may follow until the next attach. A failure while a reload is in
+   * flight (the network still down) is the stall going on, not a bad file: it gives up and returns true.
+   */
+  failed(): boolean {
     this.resumed()
     this.failedNow = true
+    if (!this.reloading) return false
+    this.reloading = false
+    this.on.giveUp()
+    return true
   }
 
   /**
@@ -101,10 +112,10 @@ export class Watchdog {
     this.arm()
   }
 
-  /** New data arrived (`progress`): a stall that is still fed is not stuck. */
+  /** Bytes arrived (`progress`): a stall that is still fed is not stuck, even before they reach the playhead. */
   data(to: number) {
-    if (!this.open || !(to > this.open.to)) return
-    this.open.to = to
+    if (!this.open) return
+    this.open.to = Math.max(this.open.to, to)
     this.arm()
   }
 
@@ -145,8 +156,10 @@ export class Watchdog {
     s.ms = this.t.now() - s.start
     this.open = null
     // An expected wait has its own reload, so a slow seek does not spend the one a stall during play gets.
-    if ((s.expected ? this.startReloads++ : this.reloads++) === 0) this.on.reload()
-    else this.on.giveUp()
+    if ((s.expected ? this.startReloads++ : this.reloads++) === 0) {
+      this.reloading = true
+      this.on.reload()
+    } else this.on.giveUp()
   }
 }
 

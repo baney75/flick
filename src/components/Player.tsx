@@ -155,7 +155,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     hls.current?.destroy()
     hls.current = null
     playingUrl.current = url
-    if (!dog.current) dog.current = new Watchdog(kindOf(req, url, !!remux.current), { reload, giveUp })
+    // Through a ref: the watchdog outlives this render, and a reload must use the current speed and volume.
+    if (!dog.current) dog.current = new Watchdog(kindOf(req, url, !!remux.current), { reload: () => onStuck.current.reload(), giveUp: () => onStuck.current.giveUp() })
     dog.current.attached()
     // A local event playlist (a flick-tool: stream through ffmpeg) is still growing; start at the top, not the live edge.
     const local = isHls(url) && /^(asset:|https?:\/\/asset\.localhost\/)/.test(url)
@@ -183,10 +184,10 @@ function PlayerInner({ req }: { req: PlayRequest }) {
 
   function onFail(msg: string, unsupported = false) {
     const v = video.current!
-    // No reload behind an error card or during a conversion.
-    dog.current?.failed()
     // A run being replaced loses its folder; the new run plays instead.
     if (restarting.current) return
+    // No reload behind an error card or a conversion; a failed reload says the stream keeps stalling.
+    if (dog.current?.failed()) return
     if (remux.current) { setStatus(null); setError(msg); return }
     const src = req.src
     // A URL with a server-side fallback stream (Jellyfin, Plex) uses that instead.
@@ -304,6 +305,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
       await attach(v, url, 0)
     } catch (e) {
       restarting.current = false
+      if (dog.current?.failed()) return
       setStatus(null)
       setError(String((e as Error)?.message ?? e))
     }
@@ -323,6 +325,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     setStuck(true)
     setError(KEEPS_STALLING)
   }
+  const onStuck = useRef({ reload, giveUp })
+  onStuck.current = { reload, giveUp }
   const bufferedAt = (v: HTMLVideoElement) => {
     for (let i = 0; i < v.buffered.length; i++) {
       if (v.buffered.start(i) <= v.currentTime + 0.5 && v.currentTime <= v.buffered.end(i)) return [v.buffered.start(i), v.buffered.end(i)]

@@ -113,6 +113,39 @@ describe('Watchdog', () => {
     vi.advanceTimersByTime(STALL_LIMIT_MS)
     expect(seen).toEqual(['reload', 'reload'])
   })
+  it('a reload that fails (still offline) gives up instead of reading as a bad file (review r2 F1)', () => {
+    const { w, seen } = dog()
+    expect(w.failed()).toBe(false)
+    w.attached(); w.playing()
+    w.waiting(30, 30)
+    vi.advanceTimersByTime(STALL_LIMIT_MS)
+    w.attached()
+    expect(w.failed()).toBe(true)
+    expect(seen).toEqual(['reload', 'give up'])
+  })
+  it('a reload that plays again leaves a later failure to the player', () => {
+    const { w, seen } = dog()
+    w.waiting(30, 30)
+    vi.advanceTimersByTime(STALL_LIMIT_MS)
+    w.attached(); w.playing()
+    expect(w.failed()).toBe(false)
+    expect(seen).toEqual(['reload'])
+  })
+  it('bytes arriving keep a wait alive before they reach the playhead (review r2 F3, S2)', () => {
+    const { w, seen } = dog(true)
+    w.waiting(0, 0)
+    for (let i = 0; i < 4; i++) { vi.advanceTimersByTime(10_000); w.data(0) }
+    expect(seen).toEqual([])
+  })
+  it('a slow opening, then a slow seek after it played, each reload once (review r2 F3)', () => {
+    const { w, seen } = dog(true)
+    w.waiting(0, 0)
+    vi.advanceTimersByTime(STALL_LIMIT_MS)
+    w.attached(); w.playing()
+    w.waiting(0, 0, true)
+    vi.advanceTimersByTime(STALL_LIMIT_MS)
+    expect(seen).toEqual(['reload', 'reload'])
+  })
   it('keeps the last 50 stalls', () => {
     const { w } = dog()
     for (let i = 0; i < KEEP + 7; i++) { w.waiting(i, i); w.resumed() }
