@@ -56,6 +56,9 @@ describe('desktop self-test perf', () => {
     const slow = (ms: number | null) => { const r = perf(100, 20); r.taps[0] = { ...r.taps[0], invokes: 3, slowestInvokeMs: ms }; (r.start as Record<string, unknown>).homeRowsMs = ms; return r }
     expect(medianReport([slow(7000), slow(null), slow(8000)]).taps[0].slowestInvokeMs).toBe(8000)
     expect(medianReport([slow(7000), slow(null), slow(null)]).start.homeRowsMs).toBeNull()
+    // A run that stopped before a tap also counts as slowest there, not as a tap that waited on nothing.
+    const tapless = perf(100, 20); tapless.taps = []
+    expect(medianReport([slow(7000), slow(8000), tapless]).taps[0].slowestInvokeMs).toBe(8000)
   })
 
   it('prints the app beside the browser and leaves launch rows blank for the browser', () => {

@@ -200,7 +200,8 @@ export function medianReport(reports) {
     settledMs: med(ok.map((r) => r.taps[i]?.settledMs)),
     capped: ok.some((r) => r.taps[i]?.capped),
     invokes: med(ok.map((r) => r.taps[i]?.invokes)),
-    slowestInvokeMs: medSlow(ok.map((r) => (r.taps[i]?.invokes ? r.taps[i].slowestInvokeMs : 0))),
+    // A tap with no invokes waited on nothing (0); a missing tap never answered, so it counts as slowest.
+    slowestInvokeMs: medSlow(ok.map((r) => (!r.taps[i] ? null : r.taps[i].invokes ? r.taps[i].slowestInvokeMs : 0))),
   }))
   const fetched = ok.map((r) => r.scriptFetch).filter(Boolean)
   const scriptFetch = fetched.length ? { kb: fetched[0].kb, ms: med(fetched.map((f) => f.ms)) } : null
@@ -245,7 +246,9 @@ async function perfMain(outPath) {
     if (r.report.error) { console.error(`FAIL: ${r.report.error}`); process.exit(1) }
     if (r.report.phase === 'measured') apps.push(r.report)
   }
-  const browsers = process.argv.includes('--no-browser') ? [] : await browserPerf(runs)
+  if (!apps.length) { console.error('FAIL: the app never reached a measured run.'); process.exit(1) }
+  // A browser failure keeps the app numbers: the browser column then reads n/a.
+  const browsers = process.argv.includes('--no-browser') ? [] : await browserPerf(runs).catch((e) => { console.error(`browser: ${e.message}`); return [] })
   const app = medianReport(apps)
   const browser = medianReport(browsers)
   const startupInvokes = apps.map((r) => invokeSummary(r.invokes, r.start.homeInteractiveMs))
@@ -257,7 +260,6 @@ async function perfMain(outPath) {
     writeFileSync(outPath, JSON.stringify(result, null, 2))
     console.log(`\nWrote ${outPath}`)
   }
-  if (!app) { console.error('FAIL: the app never reached a measured run.'); process.exit(1) }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main()
