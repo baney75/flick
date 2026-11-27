@@ -80,6 +80,8 @@ async fn accept(
             let io = TokioIo::new(stream);
             let conn = hyper::server::conn::http1::Builder::new()
                 .timer(TokioTimer::new())
+                // Header names as tiny_http wrote them, so answers read the same as before.
+                .title_case_headers(true)
                 .header_read_timeout(HEADER_READ)
                 .serve_connection(io, service_fn(move |req| respond(st.clone(), req)));
             tokio::select! {
@@ -160,7 +162,7 @@ impl Stream {
         tokio::task::spawn_blocking(move || {
             let mut left = len;
             while left > 0 {
-                let mut buf = vec![0; CHUNK.min(left as usize)];
+                let mut buf = vec![0; left.min(CHUNK as u64) as usize];
                 let chunk = match body.read(&mut buf) {
                     Ok(0) => Err(io::ErrorKind::UnexpectedEof.into()),
                     Ok(n) => {
