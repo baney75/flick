@@ -793,7 +793,7 @@ mod tests {
                 "-f",
                 "lavfi",
                 "-i",
-                "sine=frequency=440:sample_rate=48000:duration=600",
+                "anullsrc=r=48000:cl=stereo:d=600",
             ])
             .args(["-f", "lavfi", "-i", "color=c=red:s=64x64:d=1"])
             .args([

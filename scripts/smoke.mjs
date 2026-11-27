@@ -14,7 +14,7 @@ const BASE = process.env.SMOKE_BASE ?? `http://localhost:${PORT}`
 const media = 'test-media/Sample.Clip.2023.webm'
 if (!existsSync(media)) {
   mkdirSync('test-media', { recursive: true })
-  execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=30', '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '20',
+  execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=30', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', '20',
     '-c:v', 'libvpx-vp9', '-deadline', 'realtime', '-cpu-used', '8', '-b:v', '1M', '-c:a', 'libopus', '-shortest', media])
 }
 mkdirSync('test-media/shots', { recursive: true })
@@ -250,7 +250,7 @@ try {
   for (let i = 0; i < 50; i++) {
     try { await fetch(`${BASE}/`); break } catch { await new Promise((r) => setTimeout(r, 200)) }
   }
-  const browser = await chromium.launch({ channel: process.env.SMOKE_CHANNEL ?? 'chrome', args: ['--autoplay-policy=no-user-gesture-required'] })
+  const browser = await chromium.launch({ channel: process.env.SMOKE_CHANNEL ?? 'chrome', args: ['--autoplay-policy=no-user-gesture-required', '--mute-audio'] })
   const page = await (await browser.newContext({ viewport: { width: 1280, height: 800 } })).newPage()
   const errors = []
   page.on('pageerror', (e) => errors.push(e.message))
