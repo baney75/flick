@@ -14,6 +14,7 @@ use tauri::{Emitter, Manager};
 
 mod live;
 mod playback;
+mod resolve;
 mod plugins;
 mod selftest;
 mod share;
@@ -1390,6 +1391,7 @@ pub fn run() {
         .manage(share::Share::default())
         .manage(ytdlp::PluginTools::default())
         .manage(playback::Probes::default())
+        .manage(resolve::Resolves::default())
         .manage(live::Live::default())
         .register_asynchronous_uri_scheme_protocol("kodi", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
@@ -1442,6 +1444,7 @@ pub fn run() {
             #[cfg(desktop)]
             torrent::torrent_stats,
             playback::probe_stream,
+            resolve::resolve_stream,
             live::remux_start,
             live::remux_stop
         ])
