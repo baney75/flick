@@ -336,7 +336,9 @@ try {
 const metrics = Object.fromEntries(Object.entries(samples).map(([k, v]) => [k, { unit: v.unit, ...stats(v.s), samples: v.s.map((x) => Math.round(x * 1000) / 1000) }]))
 const meta = { engine, runs: RUNS, throttle: THROTTLE > 1 && ENGINE === 'chromium' ? THROTTLE : 1, viewports: sizes, inject: INJECT || undefined, at: new Date().toISOString(), commit: (() => { try { return execFileSync('git', ['rev-parse', '--short', 'HEAD']).toString().trim() } catch { return '' } })() }
 mkdirSync('perf', { recursive: true })
-writeFileSync(OUT, JSON.stringify({ meta, notes, metrics }, null, 2) + '\n')
+// One metric a line, so a committed baseline diffs by metric.
+const lines = Object.entries(metrics).map(([k, v]) => `    ${JSON.stringify(k)}: ${JSON.stringify(v)}`).join(',\n')
+writeFileSync(OUT, `{\n  "meta": ${JSON.stringify(meta)},\n  "notes": ${JSON.stringify([...new Set(notes)], null, 2).replace(/\n/g, '\n  ')},\n  "metrics": {\n${lines}\n  }\n}\n`)
 console.log(`\n${meta.engine}, ${RUNS} runs, CPU ${meta.throttle}x, commit ${meta.commit}\n`)
 console.log(table(metrics, budgets.budgets))
 if (notes.length) console.log(`\nNotes:\n${[...new Set(notes)].map((n) => `- ${n}`).join('\n')}`)
