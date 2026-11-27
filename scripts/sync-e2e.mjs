@@ -52,9 +52,11 @@ try {
   check(await until(async () => (await a.getByLabel('Default speed').inputValue()) === '1.5'), 'and the other way')
 
   // A plugin installed on one device shows up on the other, with its review done on the first.
-  await a.locator('.list-row', { hasText: 'Internet Archive' }).getByRole('button', { name: 'Install' }).click()
-  await a.getByRole('dialog').getByRole('button', { name: 'Install' }).click()
-  check(await until(() => b.getByRole('link', { name: 'Open Internet Archive' }).isVisible()), 'a plugin installed on one device appears on the other')
+  await a.locator('#plugins').getByRole('button', { name: 'Add' }).click()
+  await a.getByRole('dialog', { name: 'Add to Flick' }).getByRole('button', { name: /Internet Archive/ }).click()
+  await a.waitForURL(/#\/settings\/plugins\/[^/]+$/)
+  check(await until(() => b.locator('#plugins .hub-row', { hasText: 'Internet Archive' }).isVisible()), 'a plugin installed on one device appears on the other')
+  await a.goto(a.url().replace(/#.*$/, '#/settings'))
 
   // A device that was offline catches up when it reconnects.
   await b.reload()
