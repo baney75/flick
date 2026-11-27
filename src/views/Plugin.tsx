@@ -106,6 +106,26 @@ export function useTitleKeys(rec: Source | undefined, target: () => { type: stri
   }, [rec?.sha256, target, done])
 }
 
+/**
+ * A search box's results. Each search gets a number, and only the newest one's answers are shown: an
+ * answer from an older search, or one that lands after the box was cleared, is dropped.
+ */
+export function useSearch(only?: Source) {
+  const [found, setFound] = useState<Found[] | null>(null)
+  const [busy, setBusy] = useState(false)
+  const n = useRef(0)
+  const clear = () => { n.current++; setFound(null); setBusy(false) }
+  const search = async (term: string) => {
+    const me = ++n.current
+    const out: Found[] = []
+    setFound([])
+    setBusy(true)
+    await searchAll(term, (f) => { if (n.current !== me) return; out.push(f); setFound([...out]) }, only)
+    if (n.current === me) setBusy(false)
+  }
+  return { found, busy, search, clear }
+}
+
 /** `/` focuses the page's search box, unless the user is typing or the player is open. */
 function useSlashSearch(input: { current: HTMLInputElement | null }) {
   useEffect(() => {
@@ -180,8 +200,7 @@ export function useCatalogs(rec: Source | undefined, fresh = 0): CatalogDef[] | 
 export function PluginPage({ id }: { id: string }) {
   const rec = sourceById(id)
   const [q, setQ] = useState('')
-  const [results, setResults] = useState<Found[] | null>(null)
-  const [searching, setSearching] = useState(false)
+  const { found: results, busy: searching, search, clear } = useSearch(rec)
   // A grid shows one list of results: each title once, though two catalogs found it.
   const flat = [...new Map((results ?? []).flatMap((f) => f.items).map((m) => [`${m.type}|${m.id}`, m])).values()]
   useEffect(() => { if (rec) loadLibrary(rec) }, [rec?.id])
@@ -195,14 +214,10 @@ export function PluginPage({ id }: { id: string }) {
   const grid = rec.manifest.layout === 'grid'
   const canSearch = rec.manifest.catalogs.some((c) => c.search)
 
-  const run = async (e: Event) => {
+  const run = (e: Event) => {
     e.preventDefault()
-    if (!q.trim()) { setResults(null); return }
-    const out: Found[] = []
-    setResults([])
-    setSearching(true)
-    await searchAll(q.trim(), (f) => { out.push(f); setResults([...out]) }, rec)
-    setSearching(false)
+    if (!q.trim()) clear()
+    else void search(q.trim())
   }
 
   const lib = libraries.value[rec.id]?.items ?? []
@@ -214,7 +229,7 @@ export function PluginPage({ id }: { id: string }) {
         {canSearch && (
           <form class="search" onSubmit={run}>
             <Icon name="search" size={16} />
-            <input ref={input} value={q} onInput={(e) => { const v = (e.target as HTMLInputElement).value; setQ(v); if (!v) setResults(null) }} placeholder={`Search ${name}`} aria-label={`Search ${name}`} />
+            <input ref={input} value={q} onInput={(e) => { const v = (e.target as HTMLInputElement).value; setQ(v); if (!v) clear() }} placeholder={`Search ${name}`} aria-label={`Search ${name}`} />
           </form>
         )}
       </header>
