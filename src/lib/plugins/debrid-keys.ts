@@ -109,11 +109,12 @@ const DOTS = '\u2022\u2022\u2022'
 
 /**
  * An addon address as Flick shows it: any debrid key in it cut to its last 4 characters
- * (`torbox=abc123XYZ9` shows as `torbox=•••XYZ9`). A key inside an encoded config hides every long
- * path segment. The scheme and host always stay as they are.
+ * (`torbox=abc123XYZ9` shows as `torbox=•••XYZ9`). A key inside an encoded config hides the whole
+ * path before manifest.json, since standard base64 can hold "/". The scheme and host always stay.
  */
 export function maskUrl(url: string): string {
-  const keys = findDebridKeys([url.replace(/^stremio:/i, 'https:')]).map((f) => f.key)
+  // findDebridKeys reads https only; an http or stremio address can carry the same key.
+  const keys = findDebridKeys([url.replace(/^(stremio|http):/i, 'https:')]).map((f) => f.key)
   if (!keys.length) return url
   const m = /^([a-z]+:\/\/[^/?#]*)(.*)$/i.exec(url)
   if (!m) return url
@@ -122,7 +123,13 @@ export function maskUrl(url: string): string {
     const shown = DOTS + keyEnd(k)
     if (rest.includes(k)) rest = rest.split(k).join(shown)
     else if (rest.includes(encodeURIComponent(k))) rest = rest.split(encodeURIComponent(k)).join(shown)
-    else rest = rest.replace(/\/([^/?#]{16,})/g, (_, seg: string) => `/${DOTS}${seg.slice(-4)}`)
+    else {
+      const q = rest.search(/[?#]/)
+      const path = q < 0 ? rest : rest.slice(0, q)
+      const mf = /\/manifest\.json$/i.test(path) ? '/manifest.json' : ''
+      const body = path.slice(0, path.length - mf.length).replace(/^\/+/, '')
+      if (body) rest = `/${DOTS}${body.slice(-4)}${mf}${q < 0 ? '' : rest.slice(q)}`
+    }
   }
   return m[1] + rest
 }

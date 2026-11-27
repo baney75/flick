@@ -33,13 +33,25 @@ async function apply(rec: Installed, r: V.ExtensionResult, deps: Deps): Promise<
   return r
 }
 
+/**
+ * Adds and removes for one plugin run one at a time. Each result is a whole list built from the
+ * plugin's settings, so a second call must start after the first one's list is saved and pushed.
+ */
+const queues = new Map<string, Promise<unknown>>()
+function oneAtATime<T>(id: string, job: () => Promise<T>): Promise<T> {
+  const next = (queues.get(id) ?? Promise.resolve()).catch(() => {}).then(job)
+  queues.set(id, next)
+  return next
+}
+
 /** The user confirmed adding this addon. An address that is not https:// or stremio:// never reaches the plugin. */
 export async function addExtension(rec: Installed, url: string, deps: Deps = live): Promise<V.ExtensionResult> {
-  return apply(rec, await deps.call(rec, 'addExtension', [{ url: V.extensionUrl(url) }]), deps)
+  const checked = V.extensionUrl(url)
+  return oneAtATime(rec.id, async () => apply(rec, await deps.call(rec, 'addExtension', [{ url: checked }]), deps))
 }
 
 export async function removeExtension(rec: Installed, id: string, deps: Deps = live): Promise<V.ExtensionResult> {
-  return apply(rec, await deps.call(rec, 'removeExtension', [{ id }]), deps)
+  return oneAtATime(rec.id, async () => apply(rec, await deps.call(rec, 'removeExtension', [{ id }]), deps))
 }
 
 export function hostOf(url: string): string {
