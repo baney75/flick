@@ -41,8 +41,9 @@ export function Library({ start }: { start?: Tab } = {}) {
   useEffect(() => { if (start) setTab(start) }, [start])
   const [q, setQ] = useState('')
   const [sort, setSort] = useState<Sort>('added')
-  // A shelf keeps its own order until the Sort menu is used.
-  const [sorted, setSorted] = useState(false)
+  // A shelf keeps its own order until the Sort menu is used on that shelf: a sort picked on another tab
+  // does not carry in.
+  const [shelfSorts, setShelfSorts] = useState<Partial<Record<ShelfKey, Sort>>>({})
   const [folders, setFolders] = useState<Folder[]>([])
   const [showFolders, setShowFolders] = useState(false)
   const [menu, setMenu] = useState<{ it: Item; x: number; y: number } | null>(null)
@@ -76,8 +77,8 @@ export function Library({ start }: { start?: Tab } = {}) {
   const shelfList = useMemo(() => {
     if (!shelf) return []
     const needle = norm(q.trim())
-    return shelfOrder(shelf, sorted ? sort : undefined).filter((x) => !needle || norm(metaText(x.m)).includes(needle))
-  }, [shelf, q, sort, sorted])
+    return shelfOrder(shelf, shelfSorts[shelf.key as ShelfKey]).filter((x) => !needle || norm(metaText(x.m)).includes(needle))
+  }, [shelf, q, shelfSorts])
   const list = useMemo(() => {
     const needle = norm(q.trim())
     const typed = tab === 'music' || tab === 'books' || tab === 'audiobooks' || tab === 'videos' ? byType(tab) : []
@@ -194,7 +195,11 @@ export function Library({ start }: { start?: Tab } = {}) {
           ))}
         </div>
         {tab !== 'shows' && tab !== 'photos' && tab !== 'continue' && (
-          <select value={shelf && !sorted ? '' : sort} onChange={(e) => { const v = (e.target as HTMLSelectElement).value as Sort | ''; if (v) setSort(v); setSorted(!!v) }} aria-label="Sort">
+          <select value={shelf ? shelfSorts[shelf.key as ShelfKey] ?? '' : sort} aria-label="Sort" onChange={(e) => {
+            const v = (e.target as HTMLSelectElement).value as Sort | ''
+            if (shelf) setShelfSorts({ ...shelfSorts, [shelf.key]: v || undefined })
+            else if (v) setSort(v)
+          }}>
             {shelf && <option value="">Shelf order</option>}
             <option value="added">Recently added</option>
             <option value="title">Title</option>
