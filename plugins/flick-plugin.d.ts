@@ -38,8 +38,19 @@ export interface Meta {
   progress?: { pos: number; dur: number; at: number; videoId?: string }
 }
 export interface Sub { url: string; lang: string; label?: string }
+/** A torrent the desktop app plays behind its VPN gate, or through a debrid service. */
+export interface Torrent {
+  /** 40 hex characters. */
+  infoHash: string
+  /** The file to play, 0 or more; the largest video when absent. */
+  fileIdx?: number
+  /** At most 50 udp://, http:// or https:// trackers. */
+  trackers?: string[]
+}
+/** A stream has a `url`, or a `torrent` in its place. */
 export interface Stream {
-  url: string
+  url?: string
+  torrent?: Torrent
   title?: string
   quality?: string
   kind?: 'video' | 'audio' | 'book'

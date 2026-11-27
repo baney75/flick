@@ -95,6 +95,8 @@ export default {
     ]
     // Japanese audio with English subtitles: the subtitles come on for an English speaker.
     if (id === 'subs') return [{ url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream 720p 🇯🇵', subs: [{ url: '$BASE/subs/en.vtt', lang: 'eng' }] }]
+    // A torrent in place of a url (SPEC-torrent rule 2): the website never plays it.
+    if (id === 'torrent') return [{ torrent: { infoHash: 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c', fileIdx: 0 }, title: 'Smoke torrent 1080p', quality: '1080p' }]
     return [
       { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream SD 480p', quality: '480p' },
       { url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Smoke stream 1080p HDR 1.2 GB', quality: '1080p' },
@@ -706,6 +708,15 @@ try {
   await page.keyboard.press('Escape')
   await page.locator('.player').waitFor({ state: 'detached' })
   await page.evaluate(() => { const s = JSON.parse(localStorage.getItem('flick.settings')); localStorage.setItem('flick.settings', JSON.stringify({ ...s, subs: [] })) })
+
+  // SPEC-torrent rule 29: on the website a torrent row says where it plays, offers no Download, and a tap plays nothing.
+  await page.goto(`${BASE}/#/p/org.smoke.films/movie/torrent`)
+  await page.reload()
+  const torrentRow = page.locator('.stream-item', { hasText: 'Smoke torrent 1080p' })
+  check(await torrentRow.getByText('Torrents play in the Flick desktop app with a VPN on.').waitFor({ timeout: 15000 }).then(() => true, () => false)
+    && await torrentRow.locator('.stream-dl').count() === 0, 'website: a torrent row says it plays in the desktop app with a VPN on, with no Download')
+  await torrentRow.locator('.stream').click({ force: true })
+  check(!(await page.locator('.player').waitFor({ timeout: 1500 }).then(() => true, () => false)), 'website: tapping a torrent row plays nothing')
 
   await page.goto(`${BASE}/#/`)
   await page.getByLabel('Search your plugins').fill('smoke')

@@ -1,7 +1,7 @@
 // Stremio for Flick: sign in to bring your installed addons and library, browse and search their
 // catalogs, open titles, and pick streams. Without an account it starts with Cinemeta and OpenSubtitles.
-// Torrent streams (infoHash) are left out: Flick plays a torrent only through its own engine, behind
-// the VPN gate, and never through the Stremio streaming server.
+// Torrent streams (infoHash) go to Flick as torrents, which play only behind its VPN gate, never
+// through the Stremio streaming server.
 // Addon protocol: https://github.com/Stremio/stremio-addon-sdk/blob/master/docs/protocol.md
 
 const API = 'https://api.strem.io/api'
@@ -93,11 +93,27 @@ export function publicUrl(u) {
   return true
 }
 
-/** One Stremio stream as a Flick stream, or null for one Flick doesn't play (a torrent). */
+const TRACKER = /^(udp|https?):\/\/[\x21-\x7e]+$/
+
+/** A Stremio infoHash stream's torrent: trackers come from its `tracker:` sources, public hosts only. */
+export function torrentOf(s) {
+  if (typeof s.infoHash !== 'string' || !/^[0-9a-f]{40}$/i.test(s.infoHash)) return null
+  const t = { infoHash: s.infoHash.toLowerCase() }
+  if (Number.isSafeInteger(s.fileIdx) && s.fileIdx >= 0) t.fileIdx = s.fileIdx
+  const trackers = (Array.isArray(s.sources) ? s.sources : [])
+    .filter((x) => typeof x === 'string' && x.startsWith('tracker:'))
+    .map((x) => x.slice('tracker:'.length))
+    .filter((x) => x.length <= 2048 && TRACKER.test(x) && publicUrl(x.replace(/^udp:/, 'http:')))
+  if (trackers.length) t.trackers = [...new Set(trackers)].slice(0, 50)
+  return t
+}
+
+/** One Stremio stream as a Flick stream, or null for one Flick doesn't play. */
 export function toStream(s, addon) {
   const title = [s.name, s.title ?? s.description ?? s.behaviorHints?.filename].filter(Boolean).join(' · ').replace(/\n/g, ' ')
   const subs = (s.subtitles ?? []).map((x) => ({ url: x.url, lang: x.lang ?? 'und' }))
   if (s.url) return publicUrl(s.url) ? { url: s.url, title, group: addon, needsDesktop: s.behaviorHints?.notWebReady || undefined, subs } : null
+  if (s.infoHash) { const torrent = torrentOf(s); return torrent ? { torrent, title, group: addon, subs } : null }
   if (s.ytId) return { url: `https://www.youtube.com/watch?v=${encodeURIComponent(s.ytId)}`, title: title || 'YouTube', group: addon, external: true }
   if (s.externalUrl && /^https:\/\//.test(s.externalUrl)) return { url: s.externalUrl, title: title || 'Opens on another site', group: addon, external: true }
   return null
@@ -277,10 +293,7 @@ export default {
     const batches = await Promise.all(list.map(async (a) => {
       try {
         const r = await getJson(ctx, `${base(a.transportUrl)}/stream/${type}/${encodeURIComponent(videoId)}.json`)
-        const all = r.streams ?? []
-        const out = all.map((s) => toStream(s, a.manifest.name)).filter(Boolean)
-        if (!out.length && all.some((s) => s.infoHash)) ctx.log(`${a.manifest.name} offers only torrent streams. Flick plays torrents with its own engine and a VPN on, which isn't here yet.`)
-        return out
+        return (r.streams ?? []).map((s) => toStream(s, a.manifest.name)).filter(Boolean)
       } catch { return [] }
     }))
     return batches.flat()

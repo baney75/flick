@@ -62,7 +62,10 @@ export interface Meta {
   progress?: { pos: number; dur: number; at: number; videoId?: string }
 }
 export interface Sub { url: string; lang: string; label?: string }
-export interface Stream { url: string; title?: string; quality?: string; kind?: 'video' | 'audio' | 'book'; subs?: Sub[]; needsDesktop?: boolean; external?: boolean; group?: string }
+/** A torrent the desktop app plays through its engine or a debrid service (SPEC-torrent rule 2). */
+export interface Torrent { infoHash: string; fileIdx?: number; trackers?: string[] }
+/** A stream has a `url`, or a `torrent` in its place. */
+export interface Stream { url?: string; torrent?: Torrent; title?: string; quality?: string; kind?: 'video' | 'audio' | 'book'; subs?: Sub[]; needsDesktop?: boolean; external?: boolean; group?: string }
 export interface CatalogResult { items: Meta[]; more: boolean }
 export interface ActionResult { ok: boolean; message?: string }
 /** One addon inside a source (a Stremio addon): what extensions() and extensionCatalog() list. */
@@ -298,22 +301,50 @@ export function validateLibrary(x: unknown): Meta[] {
 
 const PLAY_SCHEMES = /^(https?:|flick-tool:)/i
 
+export const MAX_TRACKERS = 50
+const TRACKER = /^(udp|https?):\/\/[\x21-\x7e]+$/
+
+/** A stream's `torrent`, checked the way the desktop engine checks it. A wrong field is a plugin bug, so it fails the list. */
+function torrentOf(x: unknown): Torrent {
+  if (!isObj(x)) return fail('torrent must be { infoHash, fileIdx?, trackers? }.')
+  const hash = typeof x.infoHash === 'string' ? x.infoHash.toLowerCase() : ''
+  if (!/^[0-9a-f]{40}$/.test(hash)) return fail('torrent.infoHash must be 40 hex characters.')
+  const t: Torrent = { infoHash: hash }
+  if (x.fileIdx !== undefined) {
+    if (!Number.isSafeInteger(x.fileIdx) || (x.fileIdx as number) < 0) return fail('torrent.fileIdx must be a whole number, 0 or more.')
+    t.fileIdx = x.fileIdx as number
+  }
+  if (x.trackers !== undefined) {
+    if (!Array.isArray(x.trackers)) return fail('torrent.trackers must be a list.')
+    if (x.trackers.length > MAX_TRACKERS) return fail(`torrent.trackers holds at most ${MAX_TRACKERS} trackers.`)
+    for (const tr of x.trackers) {
+      if (typeof tr === 'string' && tr.length > 2048) return fail('torrent.trackers entries are at most 2048 bytes.')
+      if (typeof tr !== 'string' || !TRACKER.test(tr)) return fail(`torrent.trackers takes udp, http and https trackers: ${JSON.stringify(tr)}`)
+    }
+    if (x.trackers.length) t.trackers = x.trackers as string[]
+  }
+  return t
+}
+
 export function validateStreams(x: unknown): Stream[] {
   if (!Array.isArray(x)) return fail('streams() must return a list.')
   const out: Stream[] = []
   for (const s of x.slice(0, MAX_LIST)) {
-    if (!isObj(s) || typeof s.url !== 'string') continue
-    const url = s.url.trim()
+    if (!isObj(s)) continue
+    // A url stream is never a torrent; a torrent stream plays in the player, never a browser or the reader.
+    const torrent = typeof s.url !== 'string' && s.torrent !== undefined ? torrentOf(s.torrent) : undefined
+    if (!torrent && typeof s.url !== 'string') continue
+    const url = torrent ? '' : (s.url as string).trim()
     if (url.length > 8000) continue
-    const external = s.external === true
-    if (external ? !/^https:\/\//i.test(url) : !PLAY_SCHEMES.test(url)) continue
-    const st: Stream = { url }
+    const external = !torrent && s.external === true
+    if (!torrent && (external ? !/^https:\/\//i.test(url) : !PLAY_SCHEMES.test(url))) continue
+    const st: Stream = torrent ? { torrent } : { url }
     const title = str(s.title, 'title'), quality = str(s.quality, 'quality', false, 40), group = str(s.group, 'group', false, 100)
     if (title) st.title = title
     if (quality) st.quality = quality
     if (group) st.group = group
-    if (s.kind === 'video' || s.kind === 'audio' || s.kind === 'book') st.kind = s.kind
-    if (s.needsDesktop === true) st.needsDesktop = true
+    if (s.kind === 'video' || s.kind === 'audio' || (s.kind === 'book' && !torrent)) st.kind = s.kind
+    if (s.needsDesktop === true && !torrent) st.needsDesktop = true
     if (external) st.external = true
     const subs = list(s.subs, 'subs', 100).filter(isObj).filter((u) => typeof u.url === 'string' && /^https?:\/\//i.test(u.url))
       .map((u) => { const o: Sub = { url: (u.url as string).trim(), lang: str(u.lang, 'lang', false, 20) ?? 'und' }; const l = str(u.label, 'label', false, 100); if (l) o.label = l; return o })

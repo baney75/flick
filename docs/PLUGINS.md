@@ -142,12 +142,19 @@ values go only to that one `action()` call and are not saved; keep what you need
   facts, 40 characters each, under it and on the title page ("1.2M views", "3 years ago"). A
   `landscape` card shows `runtime` on its thumbnail and gives the name two lines.
 - `Video` (an episode, part or chapter): `{ id, title, season?, episode?, released?, thumbnail?, overview? }`.
-- `Stream`: `{ url, title?, quality?, kind? ('video'|'audio'|'book'), subs?: { url, lang, label? }[],
+- `Stream`: `{ url | torrent, title?, quality?, kind? ('video'|'audio'|'book'), subs?: { url, lang, label? }[],
   needsDesktop?: true, external?: true, group? }`. `url` is `https:`, `http:` (desktop, or LAN), or
   `flick-tool:` (a desktop tool result). `kind: 'book'` opens a PDF in the reader. `needsDesktop`
   marks MKV, AVI and similar that the desktop app converts. `external: true` opens an `https:` link
   in the browser instead of the player (a trailer on YouTube, a site that needs its own app).
   `group` names the source a stream came from; the title page shows one filter chip per group.
+  A torrent stream carries `torrent: { infoHash, fileIdx?, trackers? }` in place of `url`: `infoHash`
+  is 40 hex characters, `fileIdx` the file to play (a whole number, 0 or more; the largest video when
+  absent), and `trackers` at most 50 `udp://`, `http://` or `https://` URLs. Flick plays it only in the
+  desktop app with a VPN on (or through a debrid service), never offers Download for it, and ignores
+  `kind: 'book'`, `external` and `needsDesktop` on it. A stream with both `url` and `torrent` is a `url`
+  stream. A wrong `torrent` field is a plugin bug, so it drops the whole list with a message naming
+  the field.
   A stream the viewer can save for offline gets a Download button: one `http:` or `https:` file (not
   an `.m3u8` or `.mpd` playlist, a book or an external link), or a `flick-tool:ytdlp/` stream in the
   desktop app. On the website it shows only where the browser may fetch the file (CORS). A saved

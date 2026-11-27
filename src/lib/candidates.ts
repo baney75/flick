@@ -63,15 +63,13 @@ export interface Debrid {
   cached?: (service: string, infoHash: string) => boolean
 }
 
-/** A stream with SPEC-torrent rule 2's torrent in place of a playable url. */
-export type StreamIn = Omit<Stream, 'url'> & { url?: string; torrent?: { infoHash: string; fileIdx?: number } }
 
 // A fully qualified name's trailing dot is the same host.
 const hostOf = (url: string) => { try { return new URL(url).hostname.toLowerCase().replace(/\.+$/, '') } catch { return '' } }
 const onHost = (host: string, hosts: string[]) => !!host && hosts.some((h) => host === h || host.endsWith(`.${h}`))
 
 /** How a stream's bytes arrive: a torrent through a service or peers, a link on a debrid host, or direct. */
-function viaOf(s: StreamIn, d: Debrid | undefined): Pick<Candidate, 'via' | 'service' | 'vpnOptional'> {
+function viaOf(s: Stream, d: Debrid | undefined): Pick<Candidate, 'via' | 'service' | 'vpnOptional'> {
   if (s.torrent) {
     const hash = s.torrent.infoHash.toLowerCase()
     const svc = d?.order.find((x) => d.cached?.(x.id, hash)) ?? d?.order[0]
@@ -84,7 +82,7 @@ function viaOf(s: StreamIn, d: Debrid | undefined): Pick<Candidate, 'via' | 'ser
 }
 
 /** One candidate per stream a plugin returned for one video, id `${key}#${index}`. */
-export function streamCandidates(key: string, list: StreamIn[], o: { audiobook?: boolean; episode?: boolean; debrid?: Debrid } = {}): Candidate[] {
+export function streamCandidates(key: string, list: Stream[], o: { audiobook?: boolean; episode?: boolean; debrid?: Debrid } = {}): Candidate[] {
   return list.map((s, i) => {
     const media: Candidate['media'] = s.kind === 'book' ? 'book' : s.kind === 'audio' ? (o.audiobook ? 'audiobook' : 'audio') : 'video'
     const c: Candidate = { id: `${key}#${i}`, media, place: 'plugin', text: [s.title, s.group].filter(Boolean).join('\n'), order: i, ...viaOf(s, o.debrid) }
@@ -102,7 +100,7 @@ export function streamCandidates(key: string, list: StreamIn[], o: { audiobook?:
 }
 
 /** Rule 2: every candidate of a title, its library sources and the streams already fetched for it. */
-export function candidatesOf(srcs: Src[], streams?: { key: string; list: StreamIn[]; audiobook?: boolean; episode?: boolean; debrid?: Debrid }, progressAt?: (s: Src) => number | undefined): Candidate[] {
+export function candidatesOf(srcs: Src[], streams?: { key: string; list: Stream[]; audiobook?: boolean; episode?: boolean; debrid?: Debrid }, progressAt?: (s: Src) => number | undefined): Candidate[] {
   const own = srcCandidates(srcs, progressAt)
   if (!streams) return own
   const n = own.length

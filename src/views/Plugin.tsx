@@ -16,7 +16,7 @@ import type { CatalogDef, Meta, Stream, Video } from '../lib/plugins/validate'
 import { sections, qualityOf, hdrOf, sizeOf, downloadable } from '../lib/plugins/streams'
 import { rank, pickLine, subLangFor, needsGate, type Ranked } from '../lib/pick'
 import { streamCandidates } from '../lib/candidates'
-import { ctxNow, current, debridNow, deviceFor, holdGate, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
+import { ctxNow, current, debridNow, deviceFor, holdGate, NO_ENGINE_YET, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
 import { langCode } from '../lib/release'
@@ -252,8 +252,8 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     callPlugin(rec, 'progress', [{ type: meta.type, id: meta.id, videoId, pos, dur }]).catch(() => {})
   } : undefined
 
-  const save = (s: Stream) => {
-    const saved: Saved = { key, plugin: rec.id, title: meta.name, subtitle: label, poster: video?.thumbnail ?? meta.background ?? meta.poster, kind: s.kind === 'audio' ? 'audio' : 'video', url: s.url, ref }
+  const save = (s: Stream, url: string) => {
+    const saved: Saved = { key, plugin: rec.id, title: meta.name, subtitle: label, poster: video?.thumbnail ?? meta.background ?? meta.poster, kind: s.kind === 'audio' ? 'audio' : 'video', url, ref }
     saveStream(saved)
   }
 
@@ -279,9 +279,12 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     const r = rowOf.get(s)
     const shut = shutBy(r)
     if (shut) { notify(shut); return }
-    if (s.external) { window.open(s.url, '_blank', 'noopener'); return }
+    // A torrent has no url to open: it plays once the engine or a debrid service gives it one.
+    const url = s.url
+    if (!url) { notify(r?.blocked ?? NO_ENGINE_YET); return }
+    if (s.external) { window.open(url, '_blank', 'noopener'); return }
     if (s.kind === 'book') {
-      go(`/read-url?u=${encodeURIComponent(s.url)}&t=${encodeURIComponent(meta.name)}&r=${encodeURIComponent(JSON.stringify(ref))}`)
+      go(`/read-url?u=${encodeURIComponent(url)}&t=${encodeURIComponent(meta.name)}&r=${encodeURIComponent(JSON.stringify(ref))}`)
       return
     }
     const subs = [...(s.subs ?? [])]
@@ -305,7 +308,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       title: meta.name,
       subtitle: label,
       kind: s.kind === 'audio' ? 'audio' : 'video',
-      url: s.url,
+      url,
       poster: video?.thumbnail ?? meta.background ?? meta.poster,
       subs: subs.slice(0, 12).map((x) => ({ label: x.label ?? x.lang, lang: x.lang, url: x.url })),
       ref,
@@ -324,7 +327,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     // On the website no stream host is contacted before a tap (a debrid link acts on the account);
     // a host that refuses the browser fails the download with the message to use the Flick app.
     // Downloading a gated stream would fetch it outside the gate's hold, so those rows play only.
-    const canSave = free && how !== null && !gated(rowOf.get(s))
+    const canSave = free && how !== null && !!s.url && !gated(rowOf.get(s))
     const shut = shutBy(rowOf.get(s))
     const why = shut ?? rowOf.get(s)?.blocked
     return (
@@ -342,7 +345,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
             </div>
           <Icon name={s.external ? 'external' : 'play'} size={18} class="stream-go" />
         </button>
-      {canSave && <button class="btn ghost sm stream-dl" onClick={() => save(s)} aria-label={`Download ${s.title ?? meta.name}`}><Icon name="download" size={16} /> Download</button>}
+      {canSave && <button class="btn ghost sm stream-dl" onClick={() => save(s, s.url!)} aria-label={`Download ${s.title ?? meta.name}`}><Icon name="download" size={16} /> Download</button>}
       </div>
     )
   }

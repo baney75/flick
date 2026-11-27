@@ -21,7 +21,8 @@ in a sandboxed iframe and talks to it through `ctx`. The full contract is `docs/
    the addresses (like addon URLs).
 4. Write `catalog`, `meta` and `streams`. Use only `ctx.fetch`, `ctx.store`, `ctx.settings` and
    `ctx.log`. Return plain data in the documented shapes: every meta needs `id`, `type`, `name`;
-   every stream needs a playable `https:` URL (or `http:` on the LAN).
+   every stream needs a playable `https:` URL (or `http:` on the LAN), or a `torrent: { infoHash,
+   fileIdx?, trackers? }` in its place ("Stream" in `docs/PLUGINS.md`).
 5. Series: `meta` returns `videos` with `season`, `episode` and an `id` per episode; `streams` gets
    that id as `videoId`. Movies: `videoId` equals `id`.
 6. Settings and sign-in: declare `settings` and `actions` fields. Mark tokens and passwords

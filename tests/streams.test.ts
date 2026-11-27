@@ -68,5 +68,6 @@ describe('downloadable', () => {
     ['another tool', { url: 'flick-tool:other/abc' }, desktop, null],
     ['a file only the desktop app converts, on the website', { url: 'https://archive.org/download/x/x.avi', needsDesktop: true }, web, null],
     ['a file only the desktop app converts, on the desktop app', { url: 'https://archive.org/download/x/x.avi', needsDesktop: true }, desktop, 'file'],
+    ['a torrent (SPEC-torrent rule 9)', { torrent: { infoHash: 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c' } }, desktop, null],
   ])('%s', (_, st, app, want) => expect(downloadable(st, app)).toBe(want))
 })
