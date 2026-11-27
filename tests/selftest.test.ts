@@ -1,18 +1,54 @@
 import { describe, expect, it } from 'vitest'
-import { failures, invokeSummary, medianReport, override, perfMarkdown, table, webkitPath, youtubeFailures, youtubeTable, IDENTIFIER } from '../scripts/desktop-selftest.mjs'
+import { failures, invokeSummary, medianReport, override, perfMarkdown, table, webkitPath, youtubeFailures, youtubeTable, identifierFor, profileDirs, removeDirs } from '../scripts/desktop-selftest.mjs'
 import { hostOf } from '../src/lib/plugins/selftest'
 
 const ok = (name: string, totalMs: number) => ({ url: `/plugins/${name}.js`, name, totalMs, steps: [{ step: 'fetch', ms: 1 }, { step: 'ping', ms: totalMs - 1 }] })
 
 describe('desktop self-test report', () => {
   it('builds a separate, hidden app', () => {
-    expect(IDENTIFIER).toBe('dev.flick.selftest')
-    const o = override({ app: { windows: [{ label: 'main', width: 1280 }, { label: 'other', visible: true }] } })
-    expect(o).toMatchObject({ identifier: 'dev.flick.selftest', productName: 'Flick Self-test' })
+    const o = override({ app: { windows: [{ label: 'main', width: 1280 }, { label: 'other', visible: true }] } }, 'dev.flick.selftest.0123abcd')
+    expect(o).toMatchObject({ identifier: 'dev.flick.selftest.0123abcd', productName: 'Flick Self-test' })
     expect(o.app.windows).toEqual([
       { label: 'main', width: 1280, visible: false, focus: false, backgroundThrottling: 'disabled' },
       { label: 'other', visible: false, focus: false, backgroundThrottling: 'disabled' },
     ])
+  })
+
+  it('gives each worktree its own identifier, the same one every run', () => {
+    const a = identifierFor('/Users/x/Projects/flick-wt-installspeed')
+    const b = identifierFor('/Users/x/Projects/flick-wt-youtube')
+    expect(a).toMatch(/^dev\.flick\.selftest\.[0-9a-f]{8}$/)
+    expect(b).toMatch(/^dev\.flick\.selftest\.[0-9a-f]{8}$/)
+    expect(a).not.toBe(b)
+    expect(identifierFor('/Users/x/Projects/flick-wt-installspeed')).toBe(a)
+  })
+
+  it("lists only that identifier's folders, and refuses anything that is not one", () => {
+    const id = 'dev.flick.selftest.0123abcd'
+    expect(profileDirs(id, '/h')).toEqual([
+      `/h/Library/Application Support/${id}`, `/h/Library/Caches/${id}`, `/h/Library/WebKit/${id}`,
+      `/h/Library/HTTPStorages/${id}`, `/h/Library/Saved Application State/${id}.savedState`,
+    ])
+    for (const bad of ['com.dbaney.flick', 'dev.flick.selftest', 'dev.flick.selftest.0123ABCD', 'dev.flick.selftest.0123abcd/../../x']) {
+      expect(() => profileDirs(bad, '/h'), bad).toThrow(/not a self-test identifier/)
+    }
+  })
+
+  it('cleanup removes self-test folders only, after looking', () => {
+    const removed: string[] = []
+    const kind: Record<string, 'dir' | 'link' | 'file'> = { '/L/dev.flick.selftest.0123abcd': 'dir', '/L/dev.flick.selftest.0123abcd.savedState': 'link', '/L/dev.flick.selftest.9': 'file' }
+    const fs = {
+      lstatSync: (p: string) => { const k = kind[p]; if (!k) throw new Error('ENOENT'); return { isSymbolicLink: () => k === 'link', isDirectory: () => k === 'dir' } },
+      rmSync: (p: string) => { removed.push(p) },
+    }
+    expect(removeDirs(Object.keys(kind).concat('/L/dev.flick.selftest.missing'), fs)).toEqual(['/L/dev.flick.selftest.0123abcd'])
+    expect(removed).toEqual(['/L/dev.flick.selftest.0123abcd'])
+    // One folder outside the prefix stops the whole call before anything is removed.
+    removed.length = 0
+    for (const bad of ['/h/Library/Application Support/com.dbaney.flick', '/h/Library/Caches/dev.flick.selftest', '/h/Library/Caches']) {
+      expect(() => removeDirs(['/L/dev.flick.selftest.0123abcd', bad], fs), bad).toThrow(/Refusing/)
+    }
+    expect(removed).toEqual([])
   })
 
   it('passes fast plugins and fails slow ones, errors and empty reports', () => {

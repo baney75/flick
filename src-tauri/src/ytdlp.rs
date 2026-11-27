@@ -494,11 +494,14 @@ fn run_tool(
 }
 
 fn env(app: &tauri::AppHandle, state: &PluginTools) -> Result<Env, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("tools");
+    let dir = match crate::selftest::tools_dir(app) {
+        Some(d) => d,
+        None => app
+            .path()
+            .app_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("tools"),
+    };
     Ok(Env {
         dir,
         fetch: state.fetch.clone(),
