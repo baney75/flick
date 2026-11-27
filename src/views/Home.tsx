@@ -10,7 +10,7 @@ import { sources, openPluginRef } from '../lib/plugins/use'
 import { MetaCard, PluginIcon, CatalogRow, useCatalogs, useSearch } from './Plugin'
 import { HOME_ROWS_PER_SOURCE } from '../lib/nav'
 import { addYouTube, installed, offersYouTube } from '../lib/plugins/registry'
-import { sessionSet } from '../lib/session'
+import { sessionGet, sessionSet } from '../lib/session'
 import { useContinue } from './Continue'
 
 export function ResumeCard({ k, p }: { k: string; p: Progress }) {
@@ -146,28 +146,39 @@ export function ShowCard({ eps }: { eps: import('../lib/library').Item[] }) {
  * desktop before YouTube is installed: then the results end with "Search YouTube too" (rule 13).
  */
 function PluginSearch() {
-  const [q, setQ] = useState('')
+  // The last search sent lasts the session: Back to Home or a reload shows its results again, once the
+  // plugins have loaded.
+  const [q, setQ] = useState(() => sessionGet('flick.home.search') ?? '')
   const { found, busy, search, clear } = useSearch()
+  const srcs = sources.value
+  useEffect(() => {
+    const term = sessionGet('flick.home.search')
+    if (term && srcs.length) void search(term)
+  }, [srcs])
+  const send = (term: string) => {
+    sessionSet('flick.home.search', term)
+    if (term) void search(term)
+    else clear()
+  }
   // null: nothing pending; '': installing; anything else: why the install failed.
   const [adding, setAdding] = useState<string | null>(null)
   const offer = offersYouTube(isDesktop, installed.value)
   if (!offer && !sources.value.some((r) => r.manifest.catalogs.some((c) => c.search))) return null
   const run = (e: Event) => {
     e.preventDefault()
-    if (!q.trim()) clear()
-    else void search(q.trim())
+    send(q.trim())
   }
   const addYt = async () => {
     setAdding('')
     try { await addYouTube() } catch (e) { setAdding(e instanceof Error ? e.message : String(e)); return }
     setAdding(null)
-    await search(q.trim())
+    send(q.trim())
   }
   return (
     <div class="home-search">
       <form class="search" onSubmit={run}>
         <Icon name="search" size={16} />
-        <input value={q} onInput={(e) => { const v = (e.target as HTMLInputElement).value; setQ(v); if (!v) clear() }} placeholder="Search your plugins" aria-label="Search your plugins" />
+        <input value={q} onInput={(e) => { const v = (e.target as HTMLInputElement).value; setQ(v); if (!v) send('') }} placeholder="Search your plugins" aria-label="Search your plugins" />
       </form>
       {found && (found.length === 0
         ? <p class="dim">{busy ? 'Searching' : `No results for "${q}".`}</p>
