@@ -44,7 +44,8 @@ pub struct PluginTools {
     /// `flick-tool:ytdlp/<token>` to the page it plays. Only resolve() adds entries.
     tokens: Mutex<HashMap<String, String>>,
     fetch: Arc<Mutex<Fetch>>,
-    /// yt-dlp and ffmpeg for the stream playing now. A new stream or app exit stops them.
+    /// yt-dlp and ffmpeg for the stream playing now. A new stream, the player closing it, or app exit
+    /// stops them.
     job: Mutex<Job>,
     /// YouTube masters per page, looked up early (ytmaster.rs).
     masters: Arc<Masters>,
@@ -56,6 +57,29 @@ pub struct PluginTools {
 struct Job {
     id: u64,
     children: Vec<Child>,
+    /// The folder the stream writes to, so the player can stop its own stream and no other.
+    dir: Option<PathBuf>,
+    /// Counts opens and closes, so a close can tell which opens began before it.
+    clock: u64,
+    /// When the player last closed each folder's stream, on `clock`.
+    closed: HashMap<PathBuf, u64>,
+}
+
+impl Job {
+    /// Whether the player closed `dir`'s stream after an open that began at `began`.
+    fn closed_since(&self, dir: &Path, began: u64) -> bool {
+        self.closed.get(dir).is_some_and(|&at| at > began)
+    }
+}
+
+/// An open that the player closed before it started its processes.
+const CLOSED: &str = "The player closed this stream.";
+
+/// An open of a `flick-tool:` stream begins: its mark on the job's clock.
+fn begin(state: &PluginTools) -> u64 {
+    let mut job = state.job.lock().unwrap();
+    job.clock += 1;
+    job.clock
 }
 
 /// The release file for this computer, and the name Flick saves it under.
@@ -574,8 +598,33 @@ pub(crate) fn own_group(cmd: &mut Command) -> &mut Command {
 }
 
 pub fn stop_job(state: &PluginTools) {
-    let children = std::mem::take(&mut state.job.lock().unwrap().children);
+    let children = {
+        let mut job = state.job.lock().unwrap();
+        job.dir = None;
+        std::mem::take(&mut job.children)
+    };
     kill_all(children);
+}
+
+/// The player closed or replaced the stream that writes to `dir`: stop its processes, end a start
+/// still waiting for its first segment, and remove the folder. An open of `dir` that began before
+/// this starts nothing, and a stream in another folder keeps running.
+fn stop_stream(state: &PluginTools, dir: &Path) {
+    let children = {
+        let mut job = state.job.lock().unwrap();
+        job.clock += 1;
+        let at = job.clock;
+        job.closed.insert(dir.to_path_buf(), at);
+        if job.dir.as_deref() != Some(dir) {
+            Vec::new()
+        } else {
+            job.id += 1;
+            job.dir = None;
+            std::mem::take(&mut job.children)
+        }
+    };
+    kill_all(children);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Stops the job only while it is still stream `id`'s.
@@ -585,20 +634,29 @@ fn stop_job_if(state: &PluginTools, id: u64) {
         if job.id != id {
             return;
         }
+        job.dir = None;
         std::mem::take(&mut job.children)
     };
     kill_all(children);
 }
 
-/// Makes `children` the playing job, stops any older one, and returns the new job's id.
-fn start_job(state: &PluginTools, children: Vec<Child>) -> u64 {
-    let old = {
+/// Makes `children` the playing job, stops any older one, and returns the new job's id. With
+/// `open`, the folder it writes to and when its open began: when the player closed that folder's
+/// stream since, `children` stop instead and the playing job stays.
+fn start_job(state: &PluginTools, children: Vec<Child>, open: Option<(&Path, u64)>) -> Option<u64> {
+    let (old, id) = {
         let mut job = state.job.lock().unwrap();
+        if open.is_some_and(|(dir, began)| job.closed_since(dir, began)) {
+            drop(job);
+            kill_all(children);
+            return None;
+        }
         job.id += 1;
-        std::mem::replace(&mut job.children, children)
+        job.dir = open.map(|(dir, _)| dir.to_path_buf());
+        (std::mem::replace(&mut job.children, children), job.id)
     };
     kill_all(old);
-    state.job.lock().unwrap().id
+    Some(id)
 }
 
 /// Waits for the first segment of stream `id`. Gives up when its processes end with nothing
@@ -685,14 +743,19 @@ fn last_line(p: &Path) -> String {
 /// Serves whatever `source` writes to stdout as a local HLS event playlist in `dir`, so a long video
 /// plays while it streams: ffmpeg copies the tracks into segments, re-encoding nothing. The source's
 /// stderr goes to `dir/<log>`. Returns the playlist once it lists a segment. The yt-dlp fallback uses it,
-/// and so may any other source that writes a stream to stdout.
+/// and so may any other source that writes a stream to stdout. `began` is when its open began
+/// (`begin`): an open the player closed since then touches nothing, not even a newer stream.
 pub(crate) fn local_hls(
     mut source: Command,
     log: &str,
     ffmpeg: &Path,
     dir: &Path,
     state: &PluginTools,
+    began: u64,
 ) -> Result<PathBuf, String> {
+    if state.job.lock().unwrap().closed_since(dir, began) {
+        return Err(CLOSED.into());
+    }
     stop_job(state);
     let playlist = dir.join("index.m3u8");
     if std::fs::read_to_string(&playlist).is_ok_and(|t| t.contains("#EXT-X-ENDLIST")) {
@@ -747,7 +810,9 @@ pub(crate) fn local_hls(
             return Err(e.to_string());
         }
     };
-    let id = start_job(state, vec![yt, ff]);
+    let Some(id) = start_job(state, vec![yt, ff], Some((dir, began))) else {
+        return Err(CLOSED.into());
+    };
     wait_for_segment(state, id, &playlist, dir, log, Duration::from_secs(45))
 }
 
@@ -853,6 +918,8 @@ fn open(
     url: &str,
     fresh: bool,
 ) -> Result<Value, String> {
+    // Before the lookups, which can take minutes: a close during them ends this open.
+    let began = begin(state);
     match choose(state, url, fresh, &|p| find_master(env, p))? {
         Play::Master(m) => {
             // Nothing local plays now: stop an older fallback stream.
@@ -865,10 +932,19 @@ fn open(
             let bin = with_ytdlp(env, Duration::from_secs(300), |b| Ok(b.to_path_buf()))?;
             let mut yt = Command::new(bin);
             yt.args(fallback_args(&page));
-            let p = local_hls(yt, "yt-dlp.log", &ffmpeg, &cache.join(token), state)?;
+            let p = local_hls(yt, "yt-dlp.log", &ffmpeg, &cache.join(token), state, began)?;
             Ok(json!({ "kind": "file", "path": p }))
         }
     }
+}
+
+/// Where `flick-tool:` streams write their local playlists, one folder per token.
+fn stream_cache(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| e.to_string())?
+        .join("ytdlp"))
 }
 
 #[tauri::command]
@@ -877,11 +953,7 @@ pub async fn tool_open(
     url: String,
     fresh: Option<bool>,
 ) -> Result<Value, String> {
-    let cache = app
-        .path()
-        .app_cache_dir()
-        .map_err(|e| e.to_string())?
-        .join("ytdlp");
+    let cache = stream_cache(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<PluginTools>();
         open(
@@ -894,6 +966,21 @@ pub async fn tool_open(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The player closed or replaced `url`: stop its yt-dlp and ffmpeg and remove its folder. Only a
+/// token resolve() made names a folder, so a page can remove nothing else.
+#[tauri::command]
+pub async fn tool_stop(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let cache = stream_cache(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<PluginTools>();
+        if let Ok((_, token)) = page_of(&state, &url) {
+            stop_stream(&state, &cache.join(token));
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Starts finding a stream's master before Play (the title page, a focused card). Never waits.
@@ -1291,8 +1378,8 @@ mod tests {
                     .iter_mut()
                     .all(|c| matches!(c.try_wait(), Ok(None)))
         };
-        let a = start_job(&st, vec![sleeper()]);
-        let b = start_job(&st, vec![sleeper(), sleeper()]);
+        let a = start_job(&st, vec![sleeper()], None).unwrap();
+        let b = start_job(&st, vec![sleeper(), sleeper()], None).unwrap();
         assert_ne!(a, b);
         let err = wait_for_segment(
             &st,
@@ -1337,7 +1424,7 @@ mod tests {
         )
         .spawn()
         .unwrap();
-        start_job(&st, vec![loader]);
+        start_job(&st, vec![loader], None).unwrap();
         let t = Instant::now();
         let pid = loop {
             if let Some(p) = std::fs::read_to_string(&pidfile)
@@ -1375,6 +1462,143 @@ mod tests {
             !left,
             "the loader's child kept running after the stream stopped"
         );
+    }
+
+    /// Audit F1: closing the player stops the fallback stream's yt-dlp and ffmpeg and removes its
+    /// folder; an open that began before the close starts nothing, however late it lands; and a
+    /// stop for another folder leaves a playing stream alone.
+    #[cfg(unix)]
+    #[test]
+    fn closing_a_fallback_stream_stops_its_processes_and_removes_its_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "flick-ytdlp-close-{}-{}",
+            std::process::id(),
+            new_token().unwrap()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let script = |name: &str, body: &str| {
+            let p = root.join(name);
+            std::fs::write(&p, body).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        // yt-dlp that keeps downloading, and ffmpeg that lists one segment, then reads on.
+        let ytdlp = script(
+            "yt-dlp",
+            "#!/bin/sh\necho $$ > \"$0.pid\"\nwhile :; do echo data; sleep 0.05; done\n",
+        );
+        let ffmpeg = script(
+            "ffmpeg",
+            "#!/bin/sh\necho $$ > \"$0.pid\"\nfor a; do last=$a; done\n\
+             printf '#EXTM3U\\n#EXTINF:4,\\nseg0.ts\\n' > \"$last\"\nexec cat > /dev/null\n",
+        );
+        let pid = |p: &Path| -> u32 {
+            let f = PathBuf::from(format!("{}.pid", p.display()));
+            std::fs::read_to_string(f).unwrap().trim().parse().unwrap()
+        };
+        let alive = |pid: u32| {
+            Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        let st = PluginTools::default();
+        let dir = root.join("cache").join("tok");
+        let open = |began| {
+            local_hls(
+                Command::new(&ytdlp),
+                "yt-dlp.log",
+                &ffmpeg,
+                &dir,
+                &st,
+                began,
+            )
+        };
+        // A player closed while its open was still finding the video: that open starts nothing.
+        let late = begin(&st);
+        stop_stream(&st, &dir);
+        assert_eq!(open(late), Err(CLOSED.to_string()));
+        assert!(
+            !root.join("yt-dlp.pid").exists(),
+            "a closed open started yt-dlp"
+        );
+        // The next player's open of the same stream plays.
+        let playlist = open(begin(&st)).unwrap();
+        assert!(playlist.starts_with(&dir));
+        let pids = [pid(&ytdlp), pid(&ffmpeg)];
+        assert!(pids.iter().all(|&p| alive(p)), "the stream never started");
+        // The closed open landing now leaves the newer player's stream alone.
+        assert_eq!(open(late), Err(CLOSED.to_string()));
+        assert!(
+            pids.iter().all(|&p| alive(p)) && playlist.is_file(),
+            "a closed open ended the newer stream"
+        );
+        // Another stream's stop is not this one's.
+        stop_stream(&st, &root.join("cache").join("other"));
+        assert!(
+            pids.iter().all(|&p| alive(p)),
+            "a stop for another folder ended this stream"
+        );
+        assert!(dir.is_dir());
+        stop_stream(&st, &dir);
+        let t = Instant::now();
+        while pids.iter().any(|&p| alive(p)) && t.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let left: Vec<u32> = pids.into_iter().filter(|&p| alive(p)).collect();
+        for p in &left {
+            let _ = Command::new("kill")
+                .args(["-KILL", &p.to_string()])
+                .status();
+        }
+        let gone = !dir.exists();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(left.is_empty(), "still running after close: {left:?}");
+        assert!(gone, "the stream's folder is still on disk");
+        assert!(st.job.lock().unwrap().children.is_empty());
+    }
+
+    /// Audit F1: a close that lands while the stream waits for its first segment ends that wait at
+    /// once instead of holding it for 45 s.
+    #[cfg(unix)]
+    #[test]
+    fn a_close_during_the_start_ends_the_wait() {
+        let st = PluginTools::default();
+        let dir = std::env::temp_dir().join(format!(
+            "flick-ytdlp-closewait-{}-{}",
+            std::process::id(),
+            new_token().unwrap()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sleeper = Command::new("sleep").arg("30").spawn().unwrap();
+        let id = start_job(&st, vec![sleeper], Some((&dir, begin(&st)))).unwrap();
+        let st = Arc::new(st);
+        let (st2, dir2) = (st.clone(), dir.clone());
+        let waiting = std::thread::spawn(move || {
+            let playlist = dir2.join("index.m3u8");
+            let t = Instant::now();
+            let r = wait_for_segment(
+                &st2,
+                id,
+                &playlist,
+                &dir2,
+                "yt-dlp.log",
+                Duration::from_secs(20),
+            );
+            (r, t.elapsed())
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        stop_stream(&st, &dir);
+        let (r, took) = waiting.join().unwrap();
+        assert!(r.is_err());
+        assert!(
+            took < Duration::from_secs(3),
+            "the wait went on for {took:?}"
+        );
+        assert!(!dir.exists());
     }
 
     /// Flick's own yt-dlp, replaced by a script that prints `out` (SPEC-youtube-play cases 1 to 3).
