@@ -536,31 +536,34 @@ export async function kodiPoster(it: Item): Promise<string | null> {
   return thumbUrl(it.id)
 }
 
-// A server stays marked while its library loads. A page closed partway leaves the mark, and the next
-// start loads that server again, so a server added just before the page closed never stays empty.
+// A server stays marked until a load of its library finishes. A page closed partway, or a server
+// that was asleep or offline, leaves the mark, and the next start loads that server again, so a
+// server added just before the page closed never stays empty.
 const loadingKey = (id: string) => `server.loading:${id}`
 
-export async function syncServer(s: Server): Promise<number> {
-  await db.put('kv', loadingKey(s.id), Date.now())
-  try {
-    const items = s.type === 'jellyfin' ? await jellyfinItems(s) : s.type === 'kodi' ? await kodiItems(s) : s.type === 'flick' ? await flickItems(s) : await plexItems(s)
-    const existing = await db.all<Item>('items')
-    const keep = new Set(items.map((i) => i.id))
-    await db.delMany('items', existing.filter((i) => i.server === s.id && !keep.has(i.id)).map((i) => i.id))
-    await db.putMany('items', items.map((i) => [i.id, i]))
-    return items.length
-  } finally {
-    // An error (a wrong code, a server that is off) ends the load too; only an unfinished one resumes.
-    await db.del('kv', loadingKey(s.id))
-  }
+/** Marks a server as not loaded yet. Call it before saving a new server, so no close can come between. */
+export async function markLoading(id: string) {
+  await db.put('kv', loadingKey(id), Date.now())
 }
 
-/** Loads again every saved server whose last load never finished. Returns the servers that loaded. */
+export async function syncServer(s: Server): Promise<number> {
+  await markLoading(s.id)
+  const items = s.type === 'jellyfin' ? await jellyfinItems(s) : s.type === 'kodi' ? await kodiItems(s) : s.type === 'flick' ? await flickItems(s) : await plexItems(s)
+  // Removed while its library loaded: write nothing, or its titles would stay with no server to remove them.
+  if (!(await getServers()).some((x) => x.id === s.id)) return 0
+  const existing = await db.all<Item>('items')
+  const keep = new Set(items.map((i) => i.id))
+  await db.delMany('items', existing.filter((i) => i.server === s.id && !keep.has(i.id)).map((i) => i.id))
+  await db.putMany('items', items.map((i) => [i.id, i]))
+  await db.del('kv', loadingKey(s.id))
+  return items.length
+}
+
+/** Loads again, all at once, every saved server whose last load never finished. Returns those that loaded. */
 export async function resumeServerLoads(): Promise<Server[]> {
-  const out: Server[] = []
-  for (const s of await getServers()) {
-    if ((await db.get('kv', loadingKey(s.id))) === undefined) continue
-    if (await syncServer(s).then(() => true, () => false)) out.push(s)
-  }
-  return out
+  const marked = []
+  for (const s of await getServers()) if ((await db.get('kv', loadingKey(s.id))) !== undefined) marked.push(s)
+  // In parallel, so a server that never answers cannot hold up the rest.
+  const done = await Promise.all(marked.map((s) => syncServer(s).then(() => true, () => false)))
+  return marked.filter((_, i) => done[i])
 }

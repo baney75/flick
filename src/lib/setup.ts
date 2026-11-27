@@ -2,7 +2,7 @@
 // Link form: https://flick-player.pages.dev/#/setup?c=<base64url(JSON)>
 
 import { settings, setSettings, reloadItems, notify, type Settings } from './store'
-import { getServers, saveServer, syncServer, plexManual, flickConnect, type Server } from './servers'
+import { getServers, saveServer, syncServer, markLoading, plexManual, flickConnect, type Server } from './servers'
 import { isDesktop } from './platform'
 import { addFolderPath } from './actions'
 import { installed, install, setPluginSettings, portable, type Candidate } from './plugins/registry'
@@ -185,11 +185,18 @@ export async function applySetup(p: Setup, reviewed: Record<string, Candidate> =
     const label = `${s.type === 'plex' ? 'Plex' : s.type === 'flick' ? 'Flick' : 'Jellyfin'} server at ${s.url}`
     try {
       const srv = await toServer(s)
+      await markLoading(srv.id)
       await saveServer(srv)
-      // A large library takes a while to load, so the setup does not wait for it. A load cut off by
-      // the page closing resumes on the next start (resumeServerLoads).
-      loadServer(srv)
-      out.push({ label, ok: true, detail: 'Connected. Its titles are loading into your library.' })
+      if (srv.type === 'flick') {
+        // The connect already checked the code, and a large library takes a while to load, so the setup
+        // does not wait for it. A load cut off by the page closing resumes on the next start.
+        loadServer(srv)
+        out.push({ label, ok: true, detail: 'Connected. Its titles are loading into your library.' })
+      } else {
+        // The first load is what tests a Jellyfin or Plex token, so the row waits for it.
+        const n = await syncServer(srv)
+        out.push({ label, ok: true, detail: `${n} items` })
+      }
     } catch (e) {
       out.push({ label, ok: false, detail: (e as Error).message })
     }
