@@ -89,13 +89,13 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     ;(async () => {
       try {
         let url = req.url
-        let live: Live | undefined
+        let liveIn: Live | undefined
         if (!url && req.src) {
           const r = await resolve(req.src, (s) => !cancelled && setStatus(s), req.ref.t === 'item' && !req.stream ? req.ref.id : undefined)
           if (cancelled) { r.revoke?.(); return }
           resolved.current = r
           url = r.url
-          live = r.live
+          liveIn = r.live
           if (r.file) setFile(r.file)
           if (r.sidecarSubs?.length) {
             setSubs((s) => [...s, ...r.sidecarSubs!.map((x) => ({ label: x.name, url: vttUrl(x.name, x.text) }))])
@@ -121,17 +121,17 @@ function PlayerInner({ req }: { req: PlayRequest }) {
           return
         }
         // A link the desktop probes, or a source resolve() says needs the remux (a library MKV, a Kodi AVI).
-        const input: Live | null = live ?? (probes(url) ? { input: url, user: '', pass: '' } : null)
+        const input: Live | null = liveIn ?? (probes(url) ? { input: url, user: '', pass: '' } : null)
         if (input) {
           // Only a server that never answers stops here; any other probe failure plays the link as it is,
           // unless it can only play through the remux.
           const slow = setTimeout(() => !cancelled && setStatus(WAITING), 3000)
           const p = await probeStream(input.input, input.user, input.pass).catch((e) => {
-            if (live || messageOf(e) === SLOW_SERVER) throw new Error(messageOf(e))
+            if (liveIn || messageOf(e) === SLOW_SERVER) throw new Error(messageOf(e))
             return null
           }).finally(() => clearTimeout(slow))
           if (cancelled) return
-          if (p && (live || !p.direct)) {
+          if (p && (liveIn || !p.direct)) {
             const local = await openLive(input, p, req.startAt ?? 0)
             if (cancelled || !local) return
             url = local
