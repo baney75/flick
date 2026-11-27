@@ -58,10 +58,27 @@ fn a_stream_asks_for_a_40_hex_hash_and_web_trackers_only() {
         "udp://100.100.100.100:80",
         "http://0.0.0.0/announce",
         "http://[fd7a:115c:a1e0::1]/announce",
+        "udp://127.1:11470",
+        "udp://2130706433:53",
+        "udp://0x7f.1:80",
+        "udp://0177.0.0.1:80",
+        "udp://192.168.1:53",
+        "udp://127.0.0.1.:80",
+        "udp://[::1]:80",
+        "udp://user@10.0.0.2:80",
+        "udp://localhost.:80",
+        "http://localhost./announce",
+        "udp://nas.local.:6969",
     ] {
         let e = field(rules::check_want(&want(HASH, &[inside])));
         assert!(e.contains("inside this network"), "{inside}: {e}");
     }
+    let public = [
+        "udp://1.2.3.4:80",
+        "udp://tracker.example:1337/announce",
+        "udp://[2606:4700::1]:80",
+    ];
+    assert!(rules::check_want(&want(HASH, &public)).is_ok());
     let fits = format!("https://t.example/{}", "a".repeat(2048 - 18));
     assert!(rules::check_want(&want(HASH, &[&fits])).is_ok());
     let long = format!("https://t.example/{}", "a".repeat(2048));
@@ -150,7 +167,15 @@ fn aged(dir: &Path, secs_ago: u64) {
 fn folder(cache: &Path, name: &str, kb: usize, secs_ago: u64) -> PathBuf {
     let d = cache.join(name);
     std::fs::create_dir_all(d.join("sub")).unwrap();
-    std::fs::write(d.join("sub/part"), vec![1u8; kb << 10]).unwrap();
+    // Incompressible bytes, so the blocks on disk match the length on compressing filesystems.
+    let mut x: u32 = 0x9e37_79b9 ^ name.len() as u32;
+    let data: Vec<u8> = (0..kb << 10)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 24) as u8
+        })
+        .collect();
+    std::fs::write(d.join("sub/part"), data).unwrap();
     aged(&d, secs_ago);
     d
 }
@@ -206,29 +231,26 @@ fn the_cache_counts_the_bytes_on_disk_not_a_sparse_file_s_length() {
     std::fs::remove_dir_all(&cache).unwrap();
 }
 
+#[cfg(unix)]
 #[test]
-fn a_folder_that_vanishes_or_will_not_delete_does_not_stop_the_trim() {
+fn a_folder_that_will_not_delete_does_not_stop_the_trim() {
+    use std::os::unix::fs::PermissionsExt;
     let cache = tmp("stuck");
     let hex = |c: char| c.to_string().repeat(40);
     let stuck = folder(&cache, &hex('a'), 64, 300);
     let next = folder(&cache, &hex('b'), 64, 200);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let ro = std::fs::Permissions::from_mode(0o555);
-        std::fs::set_permissions(stuck.join("sub"), ro).unwrap();
-    }
+    let mode = |m| std::fs::Permissions::from_mode(m);
+    std::fs::set_permissions(stuck.join("sub"), mode(0o555)).unwrap();
+    // Root deletes through any mode, so there is nothing to show as root.
+    let root = std::fs::File::create(stuck.join("sub/probe")).is_ok();
     let gone = rules::trim(&cache, 0, &[]).unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
+    if !root {
         assert_eq!(
             gone,
             std::slice::from_ref(&next),
             "the stuck folder is skipped, the next one goes"
         );
-        let rw = std::fs::Permissions::from_mode(0o755);
-        std::fs::set_permissions(stuck.join("sub"), rw).unwrap();
+        std::fs::set_permissions(stuck.join("sub"), mode(0o755)).unwrap();
     }
     assert!(!next.exists());
     std::fs::remove_dir_all(&cache).unwrap();

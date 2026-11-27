@@ -42,7 +42,12 @@ pub fn check_want(w: &Want) -> Result<(String, Vec<String>), String> {
                 && t.starts_with(&format!("{}://", u.scheme()))
         };
         let parsed = tauri::Url::parse(t).ok().filter(web);
-        let host = parsed.as_ref().and_then(|u| u.host_str()).unwrap_or("");
+        // udp isn't a special scheme, so its host is never normalized: judge every tracker's
+        // host as an http URL's, the way the system resolver reads it (127.1, 2130706433 and
+        // 0x7f.1 are all 127.0.0.1).
+        let rest = t.split_once("://").map_or("", |(_, r)| r);
+        let judged = parsed.and_then(|_| tauri::Url::parse(&format!("http://{rest}")).ok());
+        let host = judged.as_ref().and_then(|u| u.host_str()).unwrap_or("");
         if host.is_empty() || !t.bytes().all(|b| b.is_ascii_graphic()) {
             return Err(format!(
                 "torrent.trackers takes udp, http and https trackers: {t:?}"
@@ -105,15 +110,14 @@ pub fn touch(dir: &Path) -> std::io::Result<()> {
 pub fn trim(cache: &Path, cap: u64, keep: &[String]) -> std::io::Result<Vec<PathBuf>> {
     let hex = |n: &str| n.len() == 40 && n.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
     let mut dirs = vec![];
-    for e in std::fs::read_dir(cache)? {
-        let e = e?;
+    // An entry that vanishes or can't be read while the trim runs is simply not counted.
+    for e in std::fs::read_dir(cache)?.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        // A folder that vanishes while the trim reads it is simply not counted.
         let Ok(meta) = e.metadata() else { continue };
         if !hex(&name) || !meta.is_dir() {
             continue;
         }
-        let used = meta.modified()?;
+        let Ok(used) = meta.modified() else { continue };
         let size: u64 = walkdir::WalkDir::new(e.path())
             .into_iter()
             .filter_map(Result::ok)
