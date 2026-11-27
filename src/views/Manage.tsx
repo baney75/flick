@@ -158,7 +158,7 @@ function PluginBody({ p }: { p: Installed }) {
           {src.settings.length > 0 && <SettingsForm key={JSON.stringify(p.settings)} p={p} fields={src.settings} />}
         </section>
       )}
-      {p.kind === 'source' && src?.has.extensions && <section class="panel"><ExtensionsSection p={p} /></section>}
+      <ExtensionsSection p={p} />
       {src && (
         <details class="panel">
           <summary class="small">Log</summary>

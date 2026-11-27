@@ -810,6 +810,10 @@ try {
   const cineRow = named('Cinemeta')
   const cineOk = await cineRow.waitFor({ timeout: 20000 }).then(() => true, () => false) && await cineRow.getByRole('button', { name: /Remove/ }).count() === 0
   check(cineOk, `Stremio's page lists Cinemeta under Addons with no Remove${cineOk ? '' : `: ${JSON.stringify(await page.locator('main').innerText())}`}`)
+  await addonsSec.getByLabel('Addon address').fill('http://torrentio.strem.fun/manifest.json')
+  await addonsSec.getByRole('button', { name: 'Add', exact: true }).click()
+  check(await page.getByText(/must start with https:\/\/ or stremio:\/\//).first().waitFor({ timeout: 10000 }).then(() => true, () => false)
+    && !(await page.getByRole('dialog', { name: /^Add / }).count()), 'an http:// addon address is refused with no confirm')
   await addonsSec.getByLabel('Addon address').fill('stremio://torrentio.strem.fun/torbox=abc123XYZ9/manifest.json')
   await addonsSec.getByRole('button', { name: 'Add', exact: true }).click()
   const addSheet = page.getByRole('dialog', { name: 'Add Torrentio' })
@@ -821,7 +825,7 @@ try {
   await addSheet.waitFor({ state: 'detached' })
   const torRow = named('Torrentio')
   check(await torRow.waitFor({ timeout: 15000 }).then(() => true, () => false) && (await torRow.innerText()).includes('\u2022\u2022\u2022XYZ9') && !(await torRow.innerText()).includes('abc123XYZ9'), 'the added addon is listed with its key masked')
-  check((await page.locator('textarea').first().inputValue()).includes('torrentio.strem.fun'), "the settings form shows the addon Stremio saved")
+  check((await page.getByLabel('Extra addon URLs').inputValue()).includes('torrentio.strem.fun'), "the settings form shows the addon Stremio saved")
   await addonsSec.getByRole('button', { name: 'Browse addons' }).click()
   await addonsSec.getByLabel('Search addons').fill('torrentio')
   const catRow = addonsSec.locator('.ext-browse .ext-row', { has: page.getByText('Torrent Catalogs', { exact: true }) })
@@ -842,7 +846,8 @@ try {
   // Leave Stremio as it was, so later steps never ask Torrent Catalogs for rows.
   page.once('dialog', (d) => d.accept())
   await addonsSec.getByRole('button', { name: 'Remove Torrent Catalogs' }).click()
-  await named('Torrent Catalogs').first().waitFor({ state: 'detached', timeout: 15000 }).catch(() => {})
+  check(await addonsSec.locator('.ext-row:not(.ext-browse .ext-row)', { has: page.getByText('Torrent Catalogs', { exact: true }) }).waitFor({ state: 'detached', timeout: 15000 }).then(() => true, () => false)
+    && await catRow.getByRole('button', { name: 'Add Torrent Catalogs' }).waitFor({ timeout: 5000 }).then(() => true, () => false), 'after a remove, Browse offers Add again')
   await page.unroute(/^https:\/\/(v3-cinemeta\.strem\.io\/addon_catalog\/|torrentio\.strem\.fun\/|torrent-catalogs\.strem\.fun\/)/)
 
   // Phone layout.

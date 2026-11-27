@@ -2,7 +2,7 @@
 // and Browse with search. Nothing is added without a tap, and every add shows the addon's name, what it
 // provides and its host in one confirm step first. Debrid keys in addon addresses show only their last 4.
 
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks'
 import { Icon } from '../components/icons'
 import { notify } from '../lib/store'
 import { addExtension, browseExtensions, hasExtensions, hostOf, inspectExtension, listExtensions, maskUrl, removeExtension } from '../lib/plugins/extensions'
@@ -24,9 +24,24 @@ function Logo({ e }: { e: Extension }) {
 }
 
 function ConfirmAdd({ e, busy, onAdd, onCancel }: { e: Extension; busy: boolean; onAdd: () => void; onCancel: () => void }) {
+  const box = useRef<HTMLDivElement>(null)
+  // Focus starts on Add; Escape cancels and Tab stays inside, before the app's Back handler sees either.
+  useLayoutEffect(() => {
+    box.current?.querySelector<HTMLButtonElement>('button')?.focus()
+    const k = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); if (!busy) onCancel(); return }
+      if (ev.key !== 'Tab') return
+      const btns = [...(box.current?.querySelectorAll<HTMLButtonElement>('button') ?? [])]
+      const i = btns.indexOf(document.activeElement as HTMLButtonElement)
+      ev.preventDefault()
+      btns[(i + (ev.shiftKey ? -1 : 1) + btns.length) % btns.length]?.focus()
+    }
+    addEventListener('keydown', k, true)
+    return () => removeEventListener('keydown', k, true)
+  }, [busy])
   return (
     <div class="sheet-back" role="dialog" aria-modal="true" aria-label={`Add ${e.name}`}>
-      <div class="sheet panel">
+      <div class="sheet panel" ref={box}>
         <h3>Add {e.name}?</h3>
         <div class="facts-list">
           <div><span class="dim">Provides</span> {provides(e)}</div>
@@ -44,9 +59,9 @@ function ConfirmAdd({ e, busy, onAdd, onCancel }: { e: Extension; busy: boolean;
   )
 }
 
-/** The Addons section of a plugin's page; nothing for a plugin without addons. */
+/** The Addons section of a plugin's page, in its own panel; nothing for a plugin without addons or one that is off. */
 export function ExtensionsSection({ p }: { p: Installed }) {
-  return hasExtensions(p) ? <Addons p={p} /> : null
+  return hasExtensions(p) && p.enabled ? <section class="panel"><Addons p={p} /></section> : null
 }
 
 function Addons({ p }: { p: Installed }) {
@@ -54,7 +69,7 @@ function Addons({ p }: { p: Installed }) {
   const [err, setErr] = useState('')
   const [addr, setAddr] = useState('')
   const [busy, setBusy] = useState(false)
-  const [confirm, setConfirm] = useState<Extension | null>(null)
+  const [confirm, setConfirm] = useState<{ e: Extension; typed: boolean } | null>(null)
   const [browsing, setBrowsing] = useState(false)
   const [query, setQuery] = useState('')
   const [found, setFound] = useState<Extension[] | null>(null)
@@ -75,20 +90,20 @@ function Addons({ p }: { p: Installed }) {
   const read = async (ev: Event) => {
     ev.preventDefault()
     setBusy(true)
-    try { setConfirm(await inspectExtension(p, addr)) } catch (e) { notify((e as Error).message, 6000) }
+    try { setConfirm({ e: await inspectExtension(p, addr), typed: true }) } catch (e) { notify((e as Error).message, 6000) }
     setBusy(false)
   }
   const add = async () => {
     if (!confirm) return
+    const { e, typed } = confirm
     setBusy(true)
     try {
-      const r = await addExtension(p, confirm.url)
-      notify(r.message ?? (r.ok ? `Added ${confirm.name}.` : `Could not add ${confirm.name}.`), 6000)
+      const r = await addExtension(p, e.url)
+      notify(r.message ?? (r.ok ? `Added ${e.name}.` : `Could not add ${e.name}.`), 6000)
       if (r.ok) {
         setConfirm(null)
-        setAddr('')
+        if (typed) setAddr('')
         await load()
-        if (browsing) setFound(await browseExtensions(p, query).catch(() => found))
       }
     } catch (e) { notify((e as Error).message, 6000) }
     setBusy(false)
@@ -109,7 +124,7 @@ function Addons({ p }: { p: Installed }) {
       {err && <p class="err">{err}</p>}
       {list?.length === 0 && !err && <p class="small dim">No addons yet.</p>}
       {list?.map((e) => (
-        <div class="list-row ext-row" style={ROW}>
+        <div class="list-row ext-row" style={ROW} key={e.id}>
           <Logo e={e} />
           <div class="grow">
             <div>{e.name}</div>
@@ -130,18 +145,19 @@ function Addons({ p }: { p: Installed }) {
           {found === null && <p class="small dim">Loading the addon catalog…</p>}
           {found?.length === 0 && <p class="small dim">No addons match.</p>}
           {found?.map((e) => (
-            <div class="list-row ext-row" style={ROW}>
+            <div class="list-row ext-row" style={ROW} key={e.id}>
               <Logo e={e} />
               <div class="grow">
                 <div>{e.name}</div>
                 <div class="small dim">{provides(e)} · {hostOf(e.url)}</div>
               </div>
-              {e.installed ? <span class="small dim">Added</span> : <button class="btn sm" onClick={() => setConfirm(e)} aria-label={`Add ${e.name}`}>Add</button>}
+              {/* Added from the list above, so a remove or an add there shows here at once. */}
+              {list?.some((m) => m.id === e.id || m.url === e.url) ? <span class="small dim">Added</span> : <button class="btn sm" onClick={() => setConfirm({ e, typed: false })} aria-label={`Add ${e.name}`}>Add</button>}
             </div>
           ))}
         </div>
       )}
-      {confirm && <ConfirmAdd e={confirm} busy={busy} onAdd={add} onCancel={() => setConfirm(null)} />}
+      {confirm && <ConfirmAdd e={confirm.e} busy={busy} onAdd={add} onCancel={() => setConfirm(null)} />}
     </div>
   )
 }
