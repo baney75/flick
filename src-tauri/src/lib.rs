@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 mod live;
+mod navguard;
 mod playback;
 mod playlog;
 mod resolve;
@@ -1350,7 +1351,13 @@ fn queue_open(app: &tauri::AppHandle, paths: Vec<String>) {
 pub fn run() {
     selftest::mark_launch();
     let context = tauri::generate_context!();
-    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    // The dev server counts as Flick's own pages only in `tauri dev`.
+    let dev_url = tauri::is_dev()
+        .then(|| context.config().build.dev_url.clone())
+        .flatten();
+    let builder = tauri::Builder::default()
+        .plugin(navguard::init(dev_url))
+        .plugin(tauri_plugin_dialog::init());
     let builder = match selftest::init_script(&context.config().identifier) {
         Some(js) => builder.plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("flick-selftest")
