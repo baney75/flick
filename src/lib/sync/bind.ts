@@ -106,10 +106,12 @@ export async function startSyncBinding() {
   })
 }
 
-async function applyRemote(keys: string[]) {
+/** Applies changed doc keys to this device. Exported for tests. */
+export async function applyRemote(keys: string[]) {
   const index = contentIndex(items.value)
   const prog = { ...progress.value }
-  let progChanged = false
+  // What the keys change, applied at the end onto the progress as it is then (see below).
+  const changed = new Map<string, Progress | null>()
   const settingsPatch: Partial<Settings> = {}
   let servers = false, plugins = false
 
@@ -120,19 +122,19 @@ async function applyRemote(keys: string[]) {
       const legacy = v != null && k.startsWith('p:k:st:') ? legacyProgress(k.slice(4), v as Progress) : null
       if (legacy) {
         const [local, row] = legacy
-        if (!prog[local] || prog[local].at < row.at) { prog[local] = row; progChanged = true; await db.put('progress', local, row) }
+        if (!prog[local] || prog[local].at < row.at) { prog[local] = row; changed.set(local, row); await db.put('progress', local, row) }
         continue
       }
       for (const local of localProgressKeys(k, index)) {
         if (v == null) {
-          if (local in prog) { delete prog[local]; progChanged = true; await db.del('progress', local) }
+          if (local in prog) { delete prog[local]; changed.set(local, null); await db.del('progress', local) }
           continue
         }
         const p = v as Progress
         if (prog[local] && prog[local].at >= p.at) continue
         const row: Progress = { ...p, ref: p.ref.t === 'item' ? { t: 'item', id: local } : p.ref }
         prog[local] = row
-        progChanged = true
+        changed.set(local, row)
         await db.put('progress', local, row)
       }
     } else if (k.startsWith('s:')) {
@@ -144,7 +146,16 @@ async function applyRemote(keys: string[]) {
 
   applying = true
   try {
-    if (progChanged) progress.value = prog
+    // Onto the progress as it is now, not the copy taken before the writes above: a place this device
+    // saved while they waited (the player saves as it plays) stays.
+    if (changed.size) {
+      const now = { ...progress.value }
+      for (const [k, row] of changed) {
+        if (!row) delete now[k]
+        else if (!now[k] || now[k].at < row.at) now[k] = row
+      }
+      progress.value = now
+    }
     if (Object.keys(settingsPatch).length) setSettings(settingsPatch)
   } finally {
     applying = false
