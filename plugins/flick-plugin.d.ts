@@ -100,6 +100,8 @@ export interface Plugin {
   settings?: Field[]
   actions?: Action[]
   catalogs: Catalog[]
+  /** The plugin's page: `rows` (default), or `grid`: a search box, one chip per catalog, the chosen one as a grid of cards. */
+  layout?: 'rows' | 'grid'
   /** At most 6 buttons on every title page; each needs titleAction(). */
   titleActions?: TitleAction[]
   /** Optional: the current catalog rows, when they depend on the user (their addons, their account). */

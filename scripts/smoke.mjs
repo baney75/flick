@@ -112,6 +112,21 @@ export default {
     ]
   },
 }`
+// A grid-layout plugin: For You is empty, so the page opens on Topic; Topic pages in twos.
+const GRID_PLUGIN = `
+const vid = (n) => ({ id: 'v' + n, type: 'video', name: 'Grid Video ' + n, posterShape: 'landscape', runtime: '4:0' + n, subtitle: 'Grid Channel' })
+export default {
+  api: 1, id: 'org.smoke.grid', name: 'Smoke Grid', version: '1.0.0', author: 'Smoke', hosts: ['127.0.0.1'], layout: 'grid',
+  catalogs: [{ id: 'foryou', name: 'For You', type: 'video' }, { id: 'topic', name: 'Topic', type: 'video' }, { id: 'find', name: 'Find', type: 'video', search: true }],
+  async catalog(ctx, { id, search, skip = 0 }) {
+    if (search) return { items: [{ ...vid(9), name: 'Found ' + search }] }
+    if (id !== 'topic') return { items: [] }
+    return { items: [1, 2, 3, 4].slice(skip, skip + 2).map(vid), more: skip + 2 < 4 }
+  },
+  async meta(ctx, { id }) { return { ...vid(id.slice(1)), id } },
+  async streams() { return [{ url: '$BASE/media/a1?t=${FLICK_CODE}', title: 'Grid stream 720p', quality: '720p' }] },
+}`
+
 const SMOKE_THEME = {
   flick: 'theme', api: 1, id: 'org.smoke.theme', name: 'Smoke Green', version: '1.0.0', author: 'Smoke',
   light: { bg: '#f4f1ea', surface: '#ffffff', fg: '#1d2420', dim: '#5c675f', line: '#dcd6c8', accent: '#2f7a4f' },
@@ -135,6 +150,7 @@ const flick = createServer((req, res) => {
     if (pluginV2) code = code.replace("version: '1.0.0'", "version: '1.1.0'").replace("hosts: ['127.0.0.1']", "hosts: ['127.0.0.1', 'new.example']")
     return res.writeHead(200, { 'content-type': 'text/javascript' }).end(code)
   }
+  if (u.pathname === '/grid-plugin.js') return res.writeHead(200, { 'content-type': 'text/javascript' }).end(GRID_PLUGIN.replaceAll('$BASE', `http://127.0.0.1:${flick.address().port}`))
   if (u.pathname === '/theme.json') return json(200, SMOKE_THEME)
   if (req.headers.authorization !== `Bearer ${FLICK_CODE}` && u.searchParams.get('t') !== FLICK_CODE) return json(401, { error: 'wrong code' })
   if (u.pathname === '/api/library') {
@@ -919,6 +935,51 @@ try {
   check(!(await wide()), 'phone: the Add picker fits at 390px')
   await page.screenshot({ path: 'test-media/shots/phone-add.png' })
   await page.keyboard.press('Escape')
+
+  // A grid-layout plugin page, in a fresh context: chips, a grid, Show more, / to search, arrows, Enter to play.
+  {
+    const gp = await (await browser.newContext({ viewport: { width: 1280, height: 800 } })).newPage()
+    gp.on('pageerror', (e) => errors.push(e.message))
+    await gp.goto(`${BASE}/#/settings/plugins`)
+    await gp.locator('#plugins').getByRole('button', { name: 'Add' }).click()
+    const add = gp.getByRole('dialog', { name: 'Add to Flick' })
+    await add.getByLabel('Plugin address').fill(`${FLICK_URL}/grid-plugin.js`)
+    await add.getByRole('button', { name: 'Add', exact: true }).click()
+    const review = gp.getByRole('dialog', { name: /^Install / })
+    await review.getByRole('button', { name: 'Install' }).click()
+    await review.waitFor({ state: 'detached' })
+    await gp.goto(`${BASE}/#/p/org.smoke.grid`)
+    const cards = gp.locator('.video-grid button.card')
+    await cards.first().waitFor({ timeout: 15000 }).catch(() => {})
+    const chips = await gp.locator('.chips [role=tab]').allInnerTexts()
+    const on = await gp.locator('.chips [role=tab][aria-selected=true]').innerText().catch(() => '')
+    check(chips.join() === 'For You,Topic' && on === 'Topic' && await cards.count() === 2, `a grid plugin page shows one chip per catalog and opens on the first with titles (${chips.join(', ')}; on ${on}; ${await cards.count()} cards)`)
+    await gp.getByRole('button', { name: 'Show more' }).click()
+    check(await cards.nth(3).waitFor({ timeout: 5000 }).then(() => true, () => false) && !(await gp.getByRole('button', { name: 'Show more' }).count()), 'Show more adds the next page and goes when there is no more')
+    await gp.evaluate(() => document.activeElement?.blur())
+    await gp.keyboard.press('/')
+    check(await gp.evaluate(() => document.activeElement?.getAttribute('aria-label')) === 'Search Smoke Grid', '/ focuses the plugin page search')
+    await gp.keyboard.type('cats')
+    await gp.keyboard.press('Enter')
+    check(await gp.locator('.video-grid .card', { hasText: 'Found cats' }).waitFor({ timeout: 10000 }).then(() => true, () => false), 'grid plugin search shows its results as a grid')
+    await gp.getByLabel('Search Smoke Grid').fill('')
+    await cards.first().waitFor({ timeout: 10000 })
+    await cards.first().focus()
+    await gp.keyboard.press('ArrowRight')
+    check(await gp.evaluate(() => document.activeElement?.textContent ?? '').then((t) => /Grid Video 2/.test(t)), 'the arrow keys move between grid cards')
+    await gp.keyboard.press('Enter')
+    await gp.locator('.streams .play-best').waitFor({ timeout: 15000 })
+    check(await gp.waitForFunction(() => document.activeElement?.classList.contains('play-best'), null, { timeout: 5000 }).then(() => true, () => false), 'a title opened from a grid has Play focused')
+    await gp.keyboard.press('Enter')
+    check(await gp.locator('.player').waitFor({ timeout: 10000 }).then(() => true, () => false), 'Enter on that title plays it')
+    await gp.keyboard.press('Escape')
+    await gp.setViewportSize({ width: 390, height: 844 })
+    await gp.goto(`${BASE}/#/p/org.smoke.grid`)
+    await cards.first().waitFor({ timeout: 15000 })
+    check(await gp.evaluate(() => document.documentElement.scrollWidth <= innerWidth && [...document.querySelectorAll('.video-grid .card')].every((c) => c.getBoundingClientRect().right <= innerWidth)), 'the grid fits a 390 px phone with no sideways scroll')
+    await gp.screenshot({ path: 'test-media/shots/plugin-grid-phone.png' })
+    await gp.context().close()
+  }
 
   // Photos, in fresh contexts so nothing else is in the library. The folder is added the way Safari and
   // Firefox do it (a directory input), which hands Flick the files themselves.

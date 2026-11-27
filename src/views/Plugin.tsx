@@ -1,7 +1,7 @@
 // A source plugin's page (catalog rows, search, its library) and title page (details, seasons and
 // episodes, streams). Everything shown came through the sandbox and the validator.
 
-import { useCallback, useEffect, useState } from 'preact/hooks'
+import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
 import { signal } from '@preact/signals'
 import type { ComponentChildren } from 'preact'
 import { go, play, notify, progress, nowPlaying } from '../lib/store'
@@ -78,6 +78,21 @@ export function useTitleKeys(rec: Source | undefined, target: () => { type: stri
   }, [rec?.sha256, target, done])
 }
 
+/** `/` focuses the page's search box, unless the user is typing or the player is open. */
+function useSlashSearch(input: { current: HTMLInputElement | null }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey || nowPlaying.value || !input.current) return
+      if ((e.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable]')) return
+      e.preventDefault()
+      input.current.focus()
+      input.current.select()
+    }
+    addEventListener('keydown', onKey)
+    return () => removeEventListener('keydown', onKey)
+  }, [])
+}
+
 /** The title the focused card stands for, when it is one of this plugin's cards. */
 function focusedTitle(): { type: string; id: string } | null {
   const raw = (document.activeElement as HTMLElement | null)?.closest?.('[data-target]')?.getAttribute('data-target')
@@ -139,8 +154,11 @@ export function PluginPage({ id }: { id: string }) {
   useEffect(() => { if (rec) loadLibrary(rec) }, [rec?.id])
   const rows = useCatalogs(rec)
   useTitleKeys(rec, focusedTitle)
+  const input = useRef<HTMLInputElement>(null)
+  useSlashSearch(input)
   if (!rec) return <Missing id={id} />
   const name = rec.manifest.name
+  const grid = rec.manifest.layout === 'grid'
   const canSearch = rec.manifest.catalogs.some((c) => c.search)
 
   const run = async (e: Event) => {
@@ -162,13 +180,14 @@ export function PluginPage({ id }: { id: string }) {
         {canSearch && (
           <form class="search" onSubmit={run}>
             <Icon name="search" size={16} />
-            <input value={q} onInput={(e) => { const v = (e.target as HTMLInputElement).value; setQ(v); if (!v) setResults(null) }} placeholder={`Search ${name}`} aria-label={`Search ${name}`} />
+            <input ref={input} value={q} onInput={(e) => { const v = (e.target as HTMLInputElement).value; setQ(v); if (!v) setResults(null) }} placeholder={`Search ${name}`} aria-label={`Search ${name}`} />
           </form>
         )}
       </header>
       {results ? (
         results.length === 0
           ? <p class="dim">{searching ? <><span class="spinner sm" /> Searching</> : `No results for "${q}".`}</p>
+          : grid ? <div class="video-grid">{results.flatMap((f) => f.items).map((m) => <MetaCard rec={rec} m={m} />)}</div>
           : results.map((f) => (
             <section class="row-section">
               <div class="row-head"><h2>{`${f.catalog.name} · ${f.catalog.type}`}</h2><span class="dim small">{f.items.length}</span></div>
@@ -180,10 +199,62 @@ export function PluginPage({ id }: { id: string }) {
           {cont.length > 0 && <Row title="Continue watching">{cont.slice(0, 30).map((m) => <MetaCard rec={rec} m={m} />)}</Row>}
           {lib.length > 0 && <Row title="Library">{lib.slice(0, 60).map((m) => <MetaCard rec={rec} m={m} />)}</Row>}
           {rows === null && <div class="status inline"><span class="spinner" /> Loading</div>}
-          {(rows ?? []).map((c) => <CatalogRow key={`${rec.sha256}|${c.type}|${c.id}`} rec={rec} c={c} />)}
+          {grid ? rows && <GridTabs rec={rec} rows={rows} /> : (rows ?? []).map((c) => <CatalogRow key={`${rec.sha256}|${c.type}|${c.id}`} rec={rec} c={c} />)}
         </>
       )}
     </div>
+  )
+}
+
+const rowKey = (c: CatalogDef) => `${c.type}|${c.id}`
+const tabKey = (rec: Source) => `flick.grid.${rec.id}`
+
+/** A grid-layout plugin's catalogs: one chip each, the chosen one as a grid. Opens on this session's last pick. */
+function GridTabs({ rec, rows }: { rec: Source; rows: CatalogDef[] }) {
+  const [tab, setTab] = useState<string | null>(() => { try { return sessionStorage.getItem(tabKey(rec)) } catch { return null } })
+  // With nothing picked, an empty catalog (For You before anything played) steps to the next one.
+  const [skipped, setSkipped] = useState<string[]>([])
+  const picked = rows.find((c) => rowKey(c) === tab)
+  const cur = picked ?? rows.find((c) => !skipped.includes(rowKey(c))) ?? rows[0]
+  if (!cur) return null
+  const pick = (c: CatalogDef) => {
+    setTab(rowKey(c))
+    try { sessionStorage.setItem(tabKey(rec), rowKey(c)) } catch { /* private mode */ }
+  }
+  return (
+    <>
+      <div class="chips" role="tablist">
+        {rows.map((c) => <button class={`chip ${c === cur ? 'on' : ''}`} role="tab" aria-selected={c === cur} onClick={() => pick(c)}>{c.name}</button>)}
+      </div>
+      <CatalogGrid key={`${rec.sha256}|${rowKey(cur)}`} rec={rec} c={cur} onEmpty={picked ? undefined : () => setSkipped((l) => [...l, rowKey(cur)])} />
+    </>
+  )
+}
+
+function CatalogGrid({ rec, c, onEmpty }: { rec: Source; c: CatalogDef; onEmpty?: () => void }) {
+  const [items, setItems] = useState<Meta[] | null>(null)
+  const [more, setMore] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const load = async (skip: number) => {
+    setBusy(true)
+    try {
+      const r = await callPlugin(rec, 'catalog', [{ id: c.id, type: c.type, skip }])
+      const seen = new Set((skip ? items ?? [] : []).map((m) => m.id))
+      const next = [...(skip ? items ?? [] : []), ...r.items.filter((m) => !seen.has(m.id))]
+      setItems(next)
+      setMore(r.more && r.items.length > 0)
+      if (!next.length) onEmpty?.()
+    } catch { if (!skip) { setItems([]); onEmpty?.() } }
+    setBusy(false)
+  }
+  useEffect(() => { load(0) }, [])
+  if (items === null) return <div class="video-grid">{Array.from({ length: 8 }, () => <div class="card wide skeleton"><div class="art" /></div>)}</div>
+  if (!items.length) return <p class="dim">Nothing in {c.name} yet.</p>
+  return (
+    <>
+      <div class="video-grid">{items.map((m) => <MetaCard rec={rec} m={m} />)}</div>
+      {more && <button class="btn more-grid" disabled={busy} onClick={() => load(items.length)}>{busy ? <span class="spinner sm" /> : null} Show more</button>}
+    </>
   )
 }
 
@@ -313,6 +384,12 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   }, [videoId])
   const key = progressKey(rec.id, videoId)
   useEffect(() => { savedId(key).then(setDlId) }, [key])
+  // On a grid-layout plugin a title opened from the keyboard plays with one more Enter.
+  useEffect(() => {
+    if (list === null || rec.manifest.layout !== 'grid') return
+    const on = document.activeElement
+    if (!on || on === document.body) document.querySelector<HTMLElement>('.streams .play-best')?.focus({ preventScroll: true })
+  }, [list === null])
   const dl = dlId ? downloads.value.get(dlId) : undefined
 
   const groups = [...new Set((list ?? []).map((s) => s.group).filter(Boolean))] as string[]

@@ -41,6 +41,8 @@ export interface PluginManifest {
   settings: Field[]
   actions: ActionDef[]
   catalogs: CatalogDef[]
+  /** How the plugin's page shows its catalogs: `rows` (default) or `grid` (one chip per catalog, a grid of cards). */
+  layout: 'rows' | 'grid'
   titleActions: TitleActionDef[]
   /** A service plugin: what it provides, and the hosts its download links come from (all also in `hosts`). */
   provides: string[]
@@ -232,6 +234,7 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
   if (new Set(titleActions.map((a) => a.id)).size < titleActions.length) fail('Two title actions share an id.')
   const keys = titleActions.flatMap((a) => a.key ?? [])
   if (new Set(keys).size < keys.length) fail('Two title actions share a key.')
+  if (x.layout !== undefined && x.layout !== 'rows' && x.layout !== 'grid') fail('layout must be "rows" or "grid".')
   if (titleActions.length && !fns.includes('titleAction')) fail('The plugin lists titleActions but has no titleAction() function.')
   const m: PluginManifest = {
     api: 1,
@@ -247,6 +250,7 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
     settings,
     actions,
     catalogs,
+    layout: kind !== 'service' && x.layout === 'grid' ? 'grid' : 'rows',
     titleActions,
     provides,
     debridHosts: [...new Set(debridHosts)],
