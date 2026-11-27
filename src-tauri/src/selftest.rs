@@ -1,5 +1,5 @@
 // The desktop self-test (scripts/desktop-selftest.mjs). Only a build with a self-test identifier, started
-// with FLICK_SELFTEST=plugins, perf or youtube, runs it, so the user's own Flick and its data never do. The report goes to the
+// with FLICK_SELFTEST=plugins, perf, youtube or playback, runs it, so the user's own Flick and its data never do. The report goes to the
 // path in FLICK_SELFTEST_OUT, which the web side cannot choose, and then the app quits.
 
 use std::path::PathBuf;
@@ -15,7 +15,7 @@ pub fn is_selftest(identifier: &str) -> bool {
         h.len() == 8 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     })
 }
-const MODES: [&str; 3] = ["plugins", "perf", "youtube"];
+const MODES: [&str; 4] = ["plugins", "perf", "youtube", "playback"];
 static LAUNCHED_MS: OnceLock<u64> = OnceLock::new();
 static SETUP_MS: OnceLock<u64> = OnceLock::new();
 
@@ -55,6 +55,11 @@ pub fn init_script(identifier: &str) -> Option<String> {
         "window.__FLICK_SELFTEST__.rafEmulated=true;\
          window.requestAnimationFrame=function(cb){return setTimeout(function(){cb(performance.now())},16)};\
          window.cancelAnimationFrame=function(id){clearTimeout(id)};"
+    } else if mode == "playback" {
+        // The player's Now Playing handlers, so the run seeks the way the system's controls do.
+        "window.__FLICK_SELFTEST__.actions={};\
+         if(navigator.mediaSession){var own=navigator.mediaSession.setActionHandler.bind(navigator.mediaSession);\
+         navigator.mediaSession.setActionHandler=function(a,f){window.__FLICK_SELFTEST__.actions[a]=f;try{own(a,f)}catch(e){}}};"
     } else {
         ""
     };
@@ -85,7 +90,8 @@ pub fn unthrottle<M: Manager<tauri::Wry>>(app: &M) {
                 let _: () = msg_send![prefs, _setHiddenPageDOMTimerThrottlingEnabled: Bool::NO];
             }
             if has(sel!(_setPageVisibilityBasedProcessSuppressionEnabled:)) {
-                let _: () = msg_send![prefs, _setPageVisibilityBasedProcessSuppressionEnabled: Bool::NO];
+                let _: () =
+                    msg_send![prefs, _setPageVisibilityBasedProcessSuppressionEnabled: Bool::NO];
             }
         });
     }
@@ -152,6 +158,13 @@ pub struct Mode {
     mode: String,
     launched_at: u64,
     setup_at: u64,
+    /// The playback mode's fixture server (scripts/desktop-selftest.mjs), always on this Mac.
+    media: Option<String>,
+}
+
+/// FLICK_SELFTEST_MEDIA, when it names a server on the loopback address: the run never plays anything else.
+fn loopback(url: Option<String>) -> Option<String> {
+    url.filter(|u| u.starts_with("http://127.0.0.1:") && !u.contains('@'))
 }
 
 #[tauri::command]
@@ -161,6 +174,7 @@ pub fn selftest_mode(app: AppHandle) -> Option<Mode> {
         mode: env_mode()?.to_string(),
         launched_at: LAUNCHED_MS.get().copied().unwrap_or(0),
         setup_at: SETUP_MS.get().copied().unwrap_or(0),
+        media: loopback(std::env::var("FLICK_SELFTEST_MEDIA").ok()),
     })
 }
 
@@ -240,7 +254,25 @@ mod tests {
         assert_eq!(gate(IDENTIFIER, None, p()), None);
         assert_eq!(gate(IDENTIFIER, Some("other"), p()), None);
         assert_eq!(gate(IDENTIFIER, Some("plugins"), None), None);
-        assert_eq!(gate(IDENTIFIER, Some("plugins"), Some("rel.json".into())), None);
+        assert_eq!(
+            gate(IDENTIFIER, Some("plugins"), Some("rel.json".into())),
+            None
+        );
+    }
+
+    #[test]
+    fn the_playback_mode_plays_only_from_this_mac() {
+        let p = || Some(PathBuf::from("/tmp/report.json"));
+        assert_eq!(gate(IDENTIFIER, Some("playback"), p()), p());
+        assert_eq!(gate("com.dbaney.flick", Some("playback"), p()), None);
+        let l = |u: &str| loopback(Some(u.into()));
+        assert_eq!(
+            l("http://127.0.0.1:18766"),
+            Some("http://127.0.0.1:18766".into())
+        );
+        assert_eq!(l("https://example.com/a.mkv"), None);
+        assert_eq!(l("http://127.0.0.1:1@example.com/"), None);
+        assert_eq!(loopback(None), None);
     }
 
     #[test]

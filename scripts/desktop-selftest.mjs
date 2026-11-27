@@ -11,10 +11,14 @@
 //       seed a library (first launch), then time a cold start, the bar taps and a Library chip in the
 //       real app (each later launch) and the same steps in Playwright WebKit over http; prints medians
 //   node scripts/desktop-selftest.mjs --mode youtube (or --youtube)  YouTube end to end: install, search, resolve, open
+//   node scripts/desktop-selftest.mjs --mode playback  SPEC-playback case 13: fixture MKV, HEVC+DTS and MP4 made
+//       with ffmpeg and served on 127.0.0.1, played through the real player, with probe, first segment,
+//       ready and seek times
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
 import { basename, join, resolve, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -233,14 +237,15 @@ const APP = join(ROOT, `src-tauri/target/release/bundle/macos/${PRODUCT}.app`)
 
 /** One hidden run of the self-test app in `mode`. Stops the copy by PID when done, on an error, or at 30 s. */
 let toolsDir = null
-async function launch(mode) {
+async function launch(mode, env = {}) {
   if (appPids(APP).length) throw new Error('A self-test app is already running.')
   const dir = mkdtempSync(join(tmpdir(), 'flick-selftest-'))
   const out = join(dir, 'report.json')
   const log = join(dir, 'report.log')
   // -g: not brought forward, -j: launched hidden, -n: a new copy.
   const tools = toolsDir ? ['--env', `FLICK_SELFTEST_TOOLS=${toolsDir}`] : []
-  execFileSync('open', ['-g', '-j', '-n', '--env', `FLICK_SELFTEST=${mode}`, '--env', `FLICK_SELFTEST_OUT=${out}`, ...tools, APP])
+  const extra = Object.entries(env).flatMap(([k, v]) => ['--env', `${k}=${v}`])
+  execFileSync('open', ['-g', '-j', '-n', '--env', `FLICK_SELFTEST=${mode}`, '--env', `FLICK_SELFTEST_OUT=${out}`, ...tools, ...extra, APP])
   const t0 = Date.now()
   let why = ''
   const kids = new Set()
@@ -336,7 +341,7 @@ async function main() {
   if (process.platform !== 'darwin') { console.error('The desktop self-test runs on macOS.'); process.exit(2) }
   const arg = (k) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : undefined }
   const mode = arg('--mode') ?? (process.argv.includes('--youtube') ? 'youtube' : 'plugins')
-  if (!['plugins', 'perf', 'youtube'].includes(mode)) { console.error('--mode is plugins, perf or youtube.'); process.exit(2) }
+  if (!['plugins', 'perf', 'youtube', 'playback'].includes(mode)) { console.error('--mode is plugins, perf, youtube or playback.'); process.exit(2) }
   const id = identifierFor(realpathSync(ROOT))
   if (!process.argv.includes('--no-build')) {
     const conf = JSON.parse(readFileSync(join(ROOT, 'src-tauri/tauri.conf.json'), 'utf8'))
@@ -355,11 +360,12 @@ async function main() {
   }
   clear()
   process.on('exit', clear)
-  // Perf and youtube run yt-dlp inside a deadline a 54 MB first download would miss, so they share one
+  // Perf and youtube (not plugins or playback) run yt-dlp inside a deadline a 54 MB first download would miss, so they share one
   // warmed copy; ytdlp.rs's own tests and `cargo test ytdlp_live` cover the app's install.
-  if (mode !== 'plugins') toolsDir = await ensureTools().catch((e) => { console.error(`FAIL: ${e.message}`); process.exit(1) })
+  if (mode === 'perf' || mode === 'youtube') toolsDir = await ensureTools().catch((e) => { console.error(`FAIL: ${e.message}`); process.exit(1) })
 
   if (mode === 'perf') return perfMain(arg('--out'))
+  if (mode === 'playback') return playbackMain(process.argv.includes('--json'))
   const { report, progress, why } = await launch(mode).catch((e) => { console.error(`FAIL: ${e.message}`); process.exit(1) })
   if (progress) console.log(`Progress:\n${progress}`)
   if (!report) { console.error(`FAIL: ${why} The app was stopped.`); process.exit(1) }
@@ -402,6 +408,86 @@ async function perfMain(outPath) {
     const { writeFileSync } = await import('node:fs')
     writeFileSync(outPath, JSON.stringify(result, null, 2))
     console.log(`\nWrote ${outPath}`)
+  }
+}
+
+
+/** The case 13 media, made here with ffmpeg (never downloaded): testsrc picture and a sine tone. */
+export const FIXTURES = {
+  'a.mkv': [60, 24, ['-c:v', 'libx264', '-g', '48', '-c:a', 'ac3', '-ac', '6']],
+  'b.mp4': [20, 24, ['-c:v', 'libx265', '-tag:v', 'hev1', '-x265-params', 'log-level=error', '-c:a', 'dca', '-strict', '-2', '-ac', '2']],
+  'c.mp4': [10, 24, ['-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart']],
+  // 1 h 35 m at one frame a second with a keyframe every 4: sparse, so it is quick to make.
+  'long.mkv': [5700, 1, ['-c:v', 'libx264', '-g', '4', '-preset', 'ultrafast', '-c:a', 'ac3', '-b:a', '64k']],
+}
+
+function makeFixtures(dir) {
+  for (const [name, [secs, fps, codecs]] of Object.entries(FIXTURES)) {
+    execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', `testsrc=size=320x180:rate=${fps}`, '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000',
+      '-t', String(secs), '-pix_fmt', 'yuv420p', ...codecs, join(dir, name)])
+  }
+}
+
+/** Serves `dir` on 127.0.0.1 with byte ranges, as a stream host would. */
+function serveDir(dir) {
+  const server = createServer((req, res) => {
+    const name = decodeURIComponent(new URL(req.url, 'http://x').pathname.slice(1))
+    const file = join(dir, name)
+    if (!name || name.includes('/') || !existsSync(file)) { res.writeHead(404).end(); return }
+    const size = statSync(file).size
+    const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range ?? '')
+    const type = name.endsWith('.mkv') ? 'video/x-matroska' : 'video/mp4'
+    if (!m) {
+      res.writeHead(200, { 'content-length': size, 'content-type': type, 'accept-ranges': 'bytes' })
+      return req.method === 'HEAD' ? res.end() : createReadStream(file).pipe(res)
+    }
+    const start = m[1] ? Number(m[1]) : Math.max(0, size - Number(m[2]))
+    const end = m[1] && m[2] ? Math.min(Number(m[2]), size - 1) : size - 1
+    res.writeHead(206, { 'content-range': `bytes ${start}-${end}/${size}`, 'content-length': end - start + 1, 'content-type': type, 'accept-ranges': 'bytes' })
+    return req.method === 'HEAD' ? res.end() : createReadStream(file, { start, end }).pipe(res)
+  })
+  return new Promise((ok) => server.listen(0, '127.0.0.1', () => ok({ server, base: `http://127.0.0.1:${server.address().port}` })))
+}
+
+/** Case 13's rule: no case fails, cases 1 and 4 are ready and seek within 3 s, case 3 plays with no ffmpeg. */
+export function playbackFailures(report) {
+  if (!report || !Array.isArray(report.cases)) return [`the self-test itself failed: ${report?.error ?? 'no report'}`]
+  const out = []
+  for (const c of report.cases) {
+    if (c.error) { out.push(`${c.name}: ${c.error}`); continue }
+    const n = c.name[0]
+    if (n === '3' && c.remuxRuns) out.push(`${c.name}: started ffmpeg for a stream that plays directly`)
+    if (n !== '3' && !c.remuxRuns) out.push(`${c.name}: played without a remux run`)
+    if ((n === '1' || n === '4') && c.readyMs > 3000) out.push(`${c.name}: ready in ${c.readyMs} ms, over 3000`)
+    if (n === '4' && !(c.seekMs <= 3000)) out.push(`${c.name}: seek ready in ${c.seekMs} ms, over 3000`)
+    if (n === '4' && !/^1:30:0\d/.test(c.shown ?? '')) out.push(`${c.name}: the player shows ${c.shown} after the seek`)
+  }
+  return out
+}
+
+export function playbackTable(report) {
+  const head = ['Case', 'Probe ms', 'First segment ms', 'Ready ms', 'Seek ms', 'Runs', 'Plays from', 'Shown', 'Stalls']
+  const rows = report.cases.map((c) => [c.name, c.probeMs, c.firstSegmentMs, c.readyMs, c.seekMs, c.remuxRuns, c.src, c.shown, c.error ? `ERROR ${c.error}` : c.stalls].map((x) => (x == null || x === '' ? '-' : String(x))))
+  const w = head.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)))
+  const line = (r) => `| ${r.map((c, i) => c.padEnd(w[i])).join(' | ')} |`
+  return [line(head), `| ${w.map((n) => '-'.repeat(n)).join(' | ')} |`, ...rows.map(line)].join('\n')
+}
+
+async function playbackMain(json) {
+  const dir = mkdtempSync(join(tmpdir(), 'flick-playback-'))
+  try {
+    makeFixtures(dir)
+    const { server, base } = await serveDir(dir)
+    const { report, progress, why } = await launch('playback', { FLICK_SELFTEST_MEDIA: base }).finally(() => server.close())
+    if (progress) console.log(`Progress:\n${progress}`)
+    if (!report) { console.error(`FAIL: ${why} The app was stopped.`); process.exit(1) }
+    if (json) console.log(JSON.stringify(report, null, 2))
+    if (report.cases) console.log(playbackTable(report))
+    const bad = playbackFailures(report)
+    if (bad.length) { console.error(`\nFAIL\n${bad.join('\n')}`); process.exit(1) }
+    console.log('\nPASS: cases 1 to 4 played in the hidden app within their limits.')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 }
 

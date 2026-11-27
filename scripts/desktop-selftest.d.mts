@@ -18,3 +18,6 @@ export function perfMarkdown(app: any, browser: any): string
 export function webkitPath(webkit: { executablePath(): string }, cache?: string, fs?: { existsSync(p: string): boolean; readdirSync(p: string): string[] }): string | undefined
 export function youtubeFailures(report: unknown): string[]
 export function youtubeTable(report: unknown): string
+export const FIXTURES: Record<string, [number, number, string[]]>
+export function playbackFailures(report: unknown): string[]
+export function playbackTable(report: { cases: Record<string, unknown>[] }): string
