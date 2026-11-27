@@ -24,7 +24,7 @@ try {
     procs[1].stdout.on('data', on); procs[1].stderr.on('data', on)
   })
   await until(async () => { try { return (await fetch(BASE)).ok } catch { return false } })
-  const browser = await chromium.launch({ channel: process.env.SMOKE_CHANNEL ?? 'chrome' })
+  const browser = await chromium.launch({ channel: process.env.SMOKE_CHANNEL ?? 'chrome', args: ['--mute-audio'] })
   const open = async () => {
     const ctx = await browser.newContext({ permissions: ['clipboard-read', 'clipboard-write'] })
     // Init scripts run in every frame; the plugin sandbox has no storage, as intended.

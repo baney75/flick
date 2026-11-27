@@ -171,7 +171,7 @@ export function ctxNow(): Omit<PickCtx, 'picked'> {
 const known = () => installed.value.filter((p) => p.kind === 'service')
 const infoOf = (p: { id: string; manifest: object }): ServiceInfo => {
   const m = p.manifest as PluginManifest
-  return { id: p.id, vpnOptional: m.vpnOptional === true, debridHosts: (m.debridHosts ?? []).map((h) => h.toLowerCase().replace(/^\.+|\.+$/g, '')) }
+  return { id: p.id, vpnOptional: m.vpnOptional === true, debridHosts: (m.debridHosts ?? []).map((h) => h.toLowerCase().replace(/^\*\./, '').replace(/^\.+|\.+$/g, '')) }
 }
 
 /**
