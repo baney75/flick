@@ -241,13 +241,23 @@ fn a_file_name_that_would_leave_the_cache_is_refused() {
         (b"Movie", &[long]),
         (b"Movie", &[".", "evil.mp4"]),
     ];
+    // librqbit refuses some of these itself ("can't be read"); Flick's own check refuses every
+    // part either way, so neither layer alone stands between a torrent and the disk.
     for (name, path) in cases {
         let t = torrent(name, &[entry(path, 10), entry(&["ok.mp4"], 10)], PIECE);
-        assert!(rules::vet(&t).is_err(), "{path:?} passed");
+        let e = rules::vet(&t).unwrap_err();
+        assert!(
+            e.contains("won't write") || e.contains("can't be read"),
+            "{path:?}: {e}"
+        );
+        let bad = path.iter().find(|p| !super::safe_part(p.as_bytes()));
+        assert!(bad.is_some(), "Flick's own check passes {path:?}");
     }
-    for name in [&b"/etc/x"[..], b"..", b"C:", b"a\0b"] {
-        let t = torrent(name, &[entry(&[], 10)], PIECE);
-        assert!(rules::vet(&t).is_err(), "name {name:?} passed");
+    // A folder torrent's name is checked by Flick, not librqbit.
+    for name in [&b"/etc/x"[..], b"..", b"C:", b"a\0b", b"."] {
+        let t = torrent(name, &[entry(&["x.mp4"], 10), entry(&["y.mp4"], 10)], PIECE);
+        let e = rules::vet(&t).unwrap_err();
+        assert!(e.contains("won't write"), "name {name:?}: {e}");
     }
     // A name librqbit itself accepts still meets Flick's own check.
     let t = torrent(b"Movie", &[entry(&["C:evil.mp4"], 10)], PIECE);
@@ -426,4 +436,56 @@ fn a_folder_that_will_not_delete_does_not_stop_the_trim() {
     }
     assert!(!next.exists());
     std::fs::remove_dir_all(&cache).unwrap();
+}
+
+/// `t` with the bencoded `from` replaced by `to`.
+fn edit(t: &[u8], from: &str, to: &str) -> Vec<u8> {
+    let s = String::from_utf8_lossy(t);
+    assert!(s.contains(from), "{from} not in the torrent");
+    s.replacen(from, to, 1).into_bytes()
+}
+
+#[test]
+fn file_lengths_that_do_not_match_the_pieces_are_refused() {
+    let one = torrent(b"movie.mp4", &[entry(&[], 1)], PIECE);
+    let huge = edit(&one, "6:lengthi1e", &format!("6:lengthi{}e", 1u64 << 62));
+    let two = torrent(b"M", &[entry(&["a.mp4"], 1), entry(&["b.mp4"], 1)], PIECE);
+    let overflow = edit(&two, "6:lengthi1e", &format!("6:lengthi{}e", u64::MAX));
+    let zero_piece = edit(&one, "12:piece lengthi65536e", "12:piece lengthi0e");
+    let hash = "\u{7}".repeat(20);
+    let extra_hash = edit(
+        &one,
+        &format!("6:pieces20:{hash}"),
+        &format!("6:pieces40:{hash}{hash}"),
+    );
+    for (what, t) in [
+        ("2^62 bytes", huge),
+        ("u64::MAX", overflow),
+        ("piece length 0", zero_piece),
+        ("an extra hash", extra_hash),
+    ] {
+        let e = rules::vet(&t).unwrap_err();
+        assert!(e.contains("don't match its pieces"), "{what}: {e}");
+    }
+    assert!(rules::vet(&one).is_ok());
+}
+
+#[test]
+fn two_files_that_would_share_a_path_on_disk_are_refused() {
+    let same = [entry(&["A.mp4"], 10), entry(&["a.mp4"], 10)];
+    let e = rules::vet(&torrent(b"M", &same, PIECE)).unwrap_err();
+    assert!(e.contains("won't write"), "{e}");
+    for files in [
+        [entry(&["a"], 10), entry(&["a", "b.mp4"], 10)],
+        [entry(&["A", "b.mp4"], 10), entry(&["a"], 10)],
+    ] {
+        let e = rules::vet(&torrent(b"M", &files, PIECE)).unwrap_err();
+        assert!(e.contains("needs a folder"), "{e}");
+    }
+    // An entry with no path at all would be the torrent's own folder; librqbit refuses it.
+    let none = [entry(&[], 10), entry(&["ok.mp4"], 10)];
+    let e = rules::vet(&torrent(b"M", &none, PIECE)).unwrap_err();
+    assert!(e.contains("no name"), "{e}");
+    let apart = [entry(&["a", "b.mp4"], 10), entry(&["a", "c.mp4"], 10)];
+    assert!(rules::vet(&torrent(b"M", &apart, PIECE)).is_ok());
 }

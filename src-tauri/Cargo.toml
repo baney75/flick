@@ -41,8 +41,9 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 # The token-guarded 127.0.0.1 server the player reads a torrent from (src/torrent_http.rs).
 tiny_http = "0.12"
-# Plays torrent streams from source plugins (src/torrent.rs): rustls, not OpenSSL, no UPnP. Exact
-# pin; its tree is pinned in Cargo.lock.
+# Plays torrent streams from source plugins (src/torrent.rs): rustls, not OpenSSL. Its UPnP code
+# maps a port only for a listener, and the engine never listens. Exact pin; its tree is pinned in
+# Cargo.lock.
 librqbit = { version = "=9.1.0", default-features = false, features = ["rust-tls"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

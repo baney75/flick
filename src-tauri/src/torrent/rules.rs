@@ -6,6 +6,7 @@ pub mod tests;
 
 use crate::torrent_http::media_type;
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -99,16 +100,35 @@ pub fn vet(torrent: &[u8]) -> Result<Vetted, String> {
     }
     let unreadable = |e: &dyn std::fmt::Display| format!("This torrent can't be read: {e}");
     let meta = librqbit::torrent_from_bytes(torrent).map_err(|e| unreadable(&e))?;
-    let info = meta.info.data.validate().map_err(|e| unreadable(&e))?;
-    if info.info().piece_length > MAX_PIECE {
+    let raw = &meta.info.data;
+    if raw.piece_length > MAX_PIECE {
         return Err("This torrent's pieces are over 16 MB, so Flick won't open it.".into());
     }
+    // librqbit's own check overflows on lengths that don't match the piece hashes, so these come
+    // first: the lengths add up, and there is one 20-byte hash per piece of that total.
+    let lens: Vec<u64> = match &raw.files {
+        Some(files) => files.iter().map(|f| f.length).collect(),
+        None => raw.length.into_iter().collect(),
+    };
+    let total = lens.iter().try_fold(0u64, |t, l| t.checked_add(*l));
+    let hashes = raw.pieces.as_ref().len() as u64;
+    let fits = total.is_some_and(|t| {
+        raw.piece_length > 0
+            && hashes.is_multiple_of(20)
+            && t.div_ceil(raw.piece_length.into()) == hashes / 20
+    });
+    if !fits {
+        return Err(unreadable(&"its file lengths don't match its pieces"));
+    }
+    let info = meta.info.data.validate().map_err(|e| unreadable(&e))?;
     if let Some(name) = &info.info().name {
         if !safe_part(name.as_ref()) {
             return Err(unsafe_name(name.as_ref()));
         }
     }
     let mut files = vec![];
+    // Paths as a case-insensitive disk (APFS, NTFS) sees them, and the folders they need.
+    let (mut paths, mut dirs) = (HashSet::new(), HashSet::new());
     for f in info.iter_file_details() {
         if files.len() == MAX_FILES {
             return Err("This torrent has over 10,000 files, so Flick won't open it.".into());
@@ -118,6 +138,19 @@ pub fn vet(torrent: &[u8]) -> Result<Vetted, String> {
             return Err(unsafe_name(bad));
         }
         let attrs = f.attrs();
+        if !attrs.padding {
+            let lower: Vec<String> = parts
+                .iter()
+                .map(|p| String::from_utf8_lossy(p).to_lowercase())
+                .collect();
+            for n in 1..lower.len() {
+                dirs.insert(lower[..n].join("/"));
+            }
+            let path = lower.join("/");
+            if !paths.insert(path) {
+                return Err(unsafe_name(parts.last().copied().unwrap_or_default()));
+            }
+        }
         if attrs.symlink || f.symlink_path.is_some() {
             return Err(
                 "This torrent holds a link to another file, so Flick won't open it.".into(),
@@ -132,6 +165,11 @@ pub fn vet(torrent: &[u8]) -> Result<Vetted, String> {
             name.unwrap_or_default()
         };
         files.push((name, f.len));
+    }
+    if paths.iter().any(|p| dirs.contains(p)) {
+        return Err(
+            "This torrent has a file where another needs a folder, so Flick won't open it.".into(),
+        );
     }
     Ok(Vetted { files })
 }
