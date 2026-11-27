@@ -305,10 +305,12 @@ pub async fn probe_stream(
 /// Fixture media and a fixture server for the playback tests. Media is made with ffmpeg in the test.
 #[cfg(test)]
 pub mod fixtures {
+    use std::collections::HashMap;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     pub fn tools() -> Option<(PathBuf, PathBuf)> {
@@ -337,16 +339,65 @@ pub mod fixtures {
         assert!(ok.success(), "ffmpeg could not make {out:?}");
     }
 
+    /// How the fixture server answers one path that is not a plain file.
+    #[derive(Clone)]
+    pub enum Route {
+        /// After a wait, a 302 to another path on this server.
+        Redirect(Duration, String),
+        /// A valid 200 typed video/mp4, then bytes that are no media at all.
+        Garbage,
+        /// The file's headers, then nothing more.
+        StallBody,
+    }
+
+    pub fn redirect(after: Duration, to: &str) -> Route {
+        Route::Redirect(after, to.into())
+    }
+
+    pub struct Server {
+        pub base: String,
+        hits: Arc<Mutex<HashMap<String, usize>>>,
+    }
+
+    impl Server {
+        /// How many requests reached `path`.
+        pub fn hits(&self, path: &str) -> usize {
+            *self.hits.lock().unwrap().get(path).unwrap_or(&0)
+        }
+    }
+
     /// Serves `dir` over http on a free port with byte ranges; `hang` never answers at all.
     pub fn serve(dir: PathBuf, hang: bool) -> String {
+        serve_with(dir, hang, vec![]).base
+    }
+
+    pub fn serve_routes(dir: PathBuf, routes: Vec<(&str, Route)>) -> Server {
+        serve_with(dir, false, routes)
+    }
+
+    fn type_of(path: &str) -> &'static str {
+        match path.rsplit('.').next() {
+            Some("mp4") => "video/mp4",
+            Some("mkv") => "video/x-matroska",
+            _ => "application/octet-stream",
+        }
+    }
+
+    fn serve_with(dir: PathBuf, hang: bool, routes: Vec<(&str, Route)>) -> Server {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
+        let routes: HashMap<String, Route> = routes
+            .into_iter()
+            .map(|(p, r)| (p.to_string(), r))
+            .collect();
+        let hits = Arc::new(Mutex::new(HashMap::<String, usize>::new()));
+        let counted = hits.clone();
         std::thread::spawn(move || {
             for s in l.incoming().flatten() {
-                let dir = dir.clone();
+                let (dir, routes, hits) = (dir.clone(), routes.clone(), counted.clone());
                 std::thread::spawn(move || {
                     let mut r = BufReader::new(s.try_clone().unwrap());
-                    let (mut path, mut range) = (String::new(), None::<u64>);
+                    let (mut path, mut range) = (String::new(), None::<(u64, Option<u64>)>);
                     let mut line = String::new();
                     while r.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
                         if let Some(p) = line.strip_prefix("GET ") {
@@ -358,36 +409,67 @@ pub mod fixtures {
                                 .into();
                         }
                         if let Some(v) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
-                            range = v.split('-').next().and_then(|n| n.trim().parse().ok());
+                            let (a, b) = v.trim().split_once('-').unwrap_or((v.trim(), ""));
+                            range = a.parse().ok().map(|a| (a, b.parse().ok()));
                         }
                         line.clear();
                     }
+                    *hits.lock().unwrap().entry(path.clone()).or_default() += 1;
                     if hang {
                         std::thread::sleep(Duration::from_secs(30));
                         return;
                     }
+                    let mut w = &s;
+                    match routes.get(&path) {
+                        Some(Route::Redirect(after, to)) => {
+                            std::thread::sleep(*after);
+                            let _ = w.write_all(format!("HTTP/1.1 302 Found\r\nLocation: /{to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
+                            return;
+                        }
+                        Some(Route::Garbage) => {
+                            let junk: Vec<u8> =
+                                (0..200_000u32).map(|i| (i * 7919 % 251) as u8).collect();
+                            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", junk.len());
+                            let _ = w
+                                .write_all(head.as_bytes())
+                                .and_then(|_| w.write_all(&junk));
+                            return;
+                        }
+                        Some(Route::StallBody) => {
+                            let _ = w.write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Type: video/x-matroska\r\nContent-Range: bytes 0-0/50000000\r\nAccept-Ranges: bytes\r\nContent-Length: 50000000\r\n\r\n");
+                            std::thread::sleep(Duration::from_secs(30));
+                            return;
+                        }
+                        None => {}
+                    }
                     let Ok(data) = std::fs::read(dir.join(&path)) else {
-                        let _ = (&s).write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                        let _ = w.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                         return;
                     };
-                    let from = range.unwrap_or(0).min(data.len() as u64) as usize;
+                    let n = data.len() as u64;
+                    let from = range.map_or(0, |r| r.0).min(n);
+                    let to = range
+                        .and_then(|r| r.1)
+                        .map_or(n, |b| (b + 1).min(n))
+                        .max(from);
                     let head = match range {
                         Some(_) => format!(
-                            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {from}-{}/{}\r\n",
-                            data.len().saturating_sub(1),
-                            data.len()
+                            "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {from}-{}/{n}\r\n",
+                            to.saturating_sub(1)
                         ),
                         None => "HTTP/1.1 200 OK\r\n".into(),
                     };
-                    let head = format!("{head}Accept-Ranges: bytes\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", data.len() - from);
-                    let mut w = &s;
+                    let head = format!("{head}Content-Type: {}\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", type_of(&path), to - from);
                     let _ = w
                         .write_all(head.as_bytes())
-                        .and_then(|_| w.write_all(&data[from..]));
+                        .and_then(|_| w.write_all(&data[from as usize..to as usize]));
                 });
             }
         });
-        format!("http://127.0.0.1:{port}")
+        Server {
+            base: format!("http://127.0.0.1:{port}"),
+            hits,
+        }
     }
 }
 
