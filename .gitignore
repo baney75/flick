@@ -7,3 +7,6 @@ src-tauri/gen
 .DS_Store
 test-media
 .wrangler/
+perf/results*.json
+perf/profiles/
+perf/debug.png

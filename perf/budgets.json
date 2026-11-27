@@ -1,0 +1,27 @@
+{
+  "about": "SPEC-perf rule 5: p95 at 1280x800 on the seeded library, unthrottled. Milliseconds, except scroll.dropped (percent of frames) and cls.* (layout shift score). A PR that loosens one says why in its body.",
+  "budgets": {
+    "start.interactive": 1000,
+    "nav.home-library": 100,
+    "nav.library-settings": 100,
+    "nav.settings-home": 100,
+    "chip.all": 100,
+    "chip.movies": 100,
+    "chip.music": 100,
+    "chip.shows": 100,
+    "chip.photos": 100,
+    "chip.continue": 100,
+    "chip.shelf": 100,
+    "search.keystroke": 50,
+    "scroll.longTask": 50,
+    "scroll.dropped": 5,
+    "scroll.shelf.longTask": 50,
+    "scroll.shelf.dropped": 5,
+    "title.open": 150,
+    "settings.plugins": 100,
+    "settings.add": 100,
+    "settings.plugin-page": 100,
+    "home.search": 150,
+    "cls.*": 0.05
+  }
+}
