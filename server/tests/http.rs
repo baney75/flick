@@ -298,6 +298,79 @@ fn stop_returns_while_a_client_holds_a_large_stream_open() {
     drop(s);
 }
 
+/// Starts a media request on a 256 MB file (sparse, so it costs no disk) and stops reading after the
+/// first bytes, the way a paused player does.
+fn paused_stream(h: &flick_server::Handle, base: &std::path::Path) -> TcpStream {
+    let big = base.join("Movies/big.mp4");
+    if !big.exists() {
+        fs::File::create(&big).unwrap().set_len(256 << 20).unwrap();
+    }
+    let auth = format!("Authorization: Bearer {}\r\n", h.token());
+    assert_eq!(
+        send(h.port(), "GET", "/api/library?rescan=1", &auth).status,
+        200
+    );
+    let id = flick_server::index::item_id("Movies", "big.mp4");
+    let mut s = TcpStream::connect(("127.0.0.1", h.port())).unwrap();
+    write!(s, "GET /media/{id} HTTP/1.1\r\nHost: x\r\n{auth}\r\n").unwrap();
+    let mut first = [0u8; 4096];
+    s.read_exact(&mut first).unwrap();
+    s
+}
+
+/// Long enough for the socket buffers of a paused stream to fill, so the server is stuck writing.
+fn let_it_stall() {
+    std::thread::sleep(std::time::Duration::from_millis(500));
+}
+
+#[test]
+fn sixteen_paused_streams_do_not_freeze_the_server() {
+    let (h, _, _, base) = setup("paused");
+    let held: Vec<_> = (0..16).map(|_| paused_stream(&h, &base)).collect();
+    let_it_stall();
+    let port = h.port();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(send(port, "GET", "/api/info", "").status);
+    });
+    assert_eq!(
+        rx.recv_timeout(std::time::Duration::from_secs(5)),
+        Ok(200),
+        "16 paused streams kept the server from answering"
+    );
+    drop(held);
+    h.stop();
+}
+
+#[test]
+fn stop_frees_the_port_even_with_a_paused_stream() {
+    let (h, _, _, base) = setup("free");
+    let held = paused_stream(&h, &base);
+    let_it_stall();
+    let port = h.port();
+    let t = std::time::Instant::now();
+    h.stop();
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(1),
+        "stop took {:?}",
+        t.elapsed()
+    );
+    // A restart, as the desktop app does when sharing is turned off and on, gets the same port.
+    let again = start(Config {
+        media: vec![base.join("Movies")],
+        port,
+        name: "Test box".into(),
+        lan: false,
+        config_dir: base.join("cfg"),
+        web: None,
+    })
+    .expect("the port is free after stop");
+    assert_eq!(again.port(), port);
+    assert_eq!(send(port, "GET", "/api/info", "").status, 200);
+    drop(held);
+    again.stop();
+}
+
 /// A shared folder on a drive that mounts after the server started is served once a rescan finds it,
 /// and a folder already resolved stays pinned: swapping it for a link later serves nothing new.
 #[cfg(unix)]

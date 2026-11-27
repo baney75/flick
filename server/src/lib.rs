@@ -1,5 +1,6 @@
 //! flick-server: share media folders with Flick over HTTP (API contract v1).
 //! The library keeps no process-global state and never prints, so the desktop app can embed it.
+mod http;
 pub mod index;
 pub mod reach;
 pub mod service;
@@ -15,7 +16,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, RwLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
-use tiny_http::{Header, Method, Request, Response, Server};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_PORT: u16 = 8740;
@@ -35,9 +35,6 @@ pub struct Config {
     /// Flick web app folder. `None` serves the built-in copy with the `embed-web` feature, else a text page.
     pub web: Option<PathBuf>,
 }
-
-const WORKERS: usize = 16;
-const STOP_WAIT: Duration = Duration::from_secs(2);
 
 struct State {
     name: String,
@@ -90,7 +87,7 @@ pub struct Handle {
     token: String,
     name: String,
     web: bool,
-    server: Arc<Server>,
+    transport: http::Transport,
     stop_tx: Option<mpsc::Sender<()>>,
     threads: Vec<JoinHandle<()>>,
     state: Arc<State>,
@@ -125,16 +122,9 @@ impl Handle {
     fn shutdown(&mut self) {
         self.stop_tx.take();
         self.state.stopping.store(true, Ordering::SeqCst);
-        for _ in 0..WORKERS {
-            self.server.unblock();
-        }
-        // Streams end at their next read. A client that stopped reading can hold a worker in a
-        // blocked write, so wait at most STOP_WAIT and then let such a worker go on its own.
-        let deadline = std::time::Instant::now() + STOP_WAIT;
+        self.transport.stop();
+        // The rescan thread ends at its next wait; one caught mid-scan finishes on its own.
         for t in self.threads.drain(..) {
-            while !t.is_finished() && std::time::Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(20));
-            }
             if t.is_finished() {
                 let _ = t.join();
             }
@@ -215,14 +205,9 @@ pub fn serves_web(web: Option<PathBuf>) -> bool {
 pub fn start(cfg: Config) -> Result<Handle, String> {
     let token = access_code(&cfg.config_dir, false)?;
     let host = if cfg.lan { "0.0.0.0" } else { "127.0.0.1" };
-    let server = Arc::new(
-        Server::http((host, cfg.port)).map_err(|e| format!("bind {host}:{}: {e}", cfg.port))?,
-    );
-    let port = server
-        .server_addr()
-        .to_ip()
-        .map(|a| a.port())
-        .unwrap_or(cfg.port);
+    let bind = |e: std::io::Error| format!("bind {host}:{}: {e}", cfg.port);
+    let listener = std::net::TcpListener::bind((host, cfg.port)).map_err(bind)?;
+    let port = listener.local_addr().map_err(bind)?.port();
     let web = web::Web::new(cfg.web);
     let serves_web = web.available();
     let name = cfg.name.clone();
@@ -247,27 +232,16 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
             st.rescan(true);
         }
     });
-    // A fixed set of workers answers requests, so a flood of connections can't spawn threads
-    // without bound or crash the server when the OS refuses one.
-    let shared = state.clone();
-    let mut threads = vec![rescan];
-    for _ in 0..WORKERS {
-        let (srv, st) = (server.clone(), state.clone());
-        threads.push(std::thread::spawn(move || {
-            while let Ok(req) = srv.recv() {
-                serve(&st, req);
-            }
-        }));
-    }
+    let transport = http::listen(listener, state.clone()).map_err(|e| format!("start: {e}"))?;
     Ok(Handle {
         port,
         token,
         name,
         web: serves_web,
-        server,
+        transport,
         stop_tx: Some(stop_tx),
-        threads,
-        state: shared,
+        threads: vec![rescan],
+        state,
     })
 }
 
@@ -311,7 +285,7 @@ impl Reply {
             len,
         }
     }
-    fn json(status: u16, body: serde_json::Value) -> Reply {
+    pub(crate) fn json(status: u16, body: serde_json::Value) -> Reply {
         Reply::bytes(status, body.to_string().into_bytes()).with("Content-Type", "application/json")
     }
     fn not_found() -> Reply {
@@ -598,39 +572,4 @@ fn media(
         res = res.with("Content-Range", format!("bytes {start}-{end}/{total}"));
     }
     res
-}
-
-/// Carries one tiny_http request through `answer`.
-fn serve(st: &State, req: Request) {
-    let get = |k: &'static str| {
-        req.headers()
-            .iter()
-            .find(|h| h.field.equiv(k))
-            .map(|h| h.value.to_string())
-    };
-    let ask = Req {
-        verb: match req.method() {
-            Method::Get => Verb::Get,
-            Method::Head => Verb::Head,
-            Method::Options => Verb::Options,
-            _ => Verb::Other,
-        },
-        target: req.url().to_string(),
-        authorization: get("Authorization"),
-        range: get("Range"),
-    };
-    let reply = answer(st, &ask);
-    let headers = reply
-        .headers
-        .iter()
-        .map(|(k, v)| Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap())
-        .collect();
-    let res = Response::new(
-        reply.status.into(),
-        headers,
-        reply.body,
-        Some(reply.len as usize),
-        None,
-    );
-    let _ = req.respond(res.with_chunked_threshold(usize::MAX));
 }
