@@ -1348,6 +1348,14 @@ try {
   }))
   await gp.reload()
   await gp.locator('.vgrid .card').first().waitFor({ timeout: 10000 })
+  // A poster that loads on screen fades in; one that loads in a row drawn ahead of the scroll shows at once.
+  await gp.waitForTimeout(800)
+  const fades = await gp.evaluate(() => [...document.querySelectorAll('.vgrid .card .art img.in')].map((img) => {
+    const r = img.getBoundingClientRect()
+    return { on: r.bottom > 0 && r.top < innerHeight, now: img.classList.contains('now') }
+  }))
+  const onScreen = fades.filter((f) => f.on), ahead = fades.filter((f) => !f.on)
+  check(onScreen.length > 0 && ahead.length > 0 && onScreen.every((f) => !f.now) && ahead.every((f) => f.now), `posters on screen fade in and posters loaded below the fold do not (${onScreen.filter((f) => !f.now).length}/${onScreen.length} on screen fade, ${ahead.filter((f) => f.now).length}/${ahead.length} below show at once)`)
   const wrongArt = []
   const gridAtEnd = () => gp.evaluate(() => { const m = document.querySelector('.main'); return m.scrollTop + m.clientHeight >= m.scrollHeight - 4 })
   for (let y = 0; y < 40 && !(await gridAtEnd()); y++) {

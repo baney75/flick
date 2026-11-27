@@ -189,6 +189,7 @@ label.toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
 .vgrid .card .art { aspect-ratio: auto; height: var(--art-h); }
 .card img { width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .25s; display: block; }
 .card img.in { opacity: 1; }
+.card img.now { transition: none; }
 .art-ph { position: absolute; inset: 0; display: grid; place-items: center; color: var(--faint); background: linear-gradient(135deg, var(--surface-2), var(--surface)); }
 .card:hover .art, .card:focus-visible .art { transform: translateY(-2px); box-shadow: 0 0 0 2px var(--accent), var(--shadow); }
 .play-hint { position: absolute; inset: 0; display: grid; place-items: center; color: #fff; opacity: 0; background: rgb(0 0 0 / .28); transition: opacity .15s; }
