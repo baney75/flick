@@ -532,6 +532,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    // Case 10, the run (rule 5): the one restart after a decode error, mid-file, transcodes what a plain
+    // run copied. 8-bit HEVC with AC-3 comes out H.264 and AAC; 10-bit HEVC stays 10-bit in HEVC main10.
+    #[test]
+    fn a_forced_transcode_run_converts_what_a_plain_run_copies() {
+        let Some((ffmpeg, ffprobe)) = tools() else {
+            return eprintln!("skipped: needs ffmpeg");
+        };
+        let dir = scratch("case10");
+        let x265 = ["-c:v", "libx265", "-x265-params", "log-level=error", "-g", "48", "-c:a", "ac3"];
+        fixture(&ffmpeg, &dir.join("h8.mkv"), 20, 24, &x265);
+        fixture(&ffmpeg, &dir.join("h10.mkv"), 20, 24, &[&x265[..], &["-pix_fmt", "yuv420p10le"]].concat());
+        let base = serve(dir.clone(), false);
+        let st = Live::default();
+        let runs = dir.join("runs");
+        let p = probe(&ffprobe, &format!("{base}/h8.mkv"), None, LIMIT, &[]).unwrap();
+        assert!(!p.deep, "{p:?}");
+        let s = start(&st, &ffmpeg, &runs, &format!("{base}/h8.mkv"), None, &p, 8.0).unwrap();
+        assert_eq!(codecs_of(&ffprobe, &s.playlist), "hevc,hvc1 ac3,ac-3");
+        let s = start(&st, &ffmpeg, &runs, &format!("{base}/h8.mkv"), None, &p.transcoded(), 8.0).unwrap();
+        assert_eq!(codecs_of(&ffprobe, &s.playlist), "h264,avc1 aac,mp4a");
+        let p = probe(&ffprobe, &format!("{base}/h10.mkv"), None, LIMIT, &[]).unwrap();
+        assert!(p.deep, "{p:?}");
+        let s = start(&st, &ffmpeg, &runs, &format!("{base}/h10.mkv"), None, &p.transcoded(), 8.0).unwrap();
+        assert_eq!(codecs_of(&ffprobe, &s.playlist), "hevc,hvc1 aac,mp4a");
+        let out = Command::new(&ffprobe)
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=profile,pix_fmt", "-of", "csv=p=0"])
+            .arg(&s.playlist)
+            .output()
+            .unwrap();
+        let got = String::from_utf8_lossy(&out.stdout);
+        assert!(got.lines().next().unwrap_or("").starts_with("Main 10,yuv420p10le"), "{got}");
+        stop(&st);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn run_args_copy_what_plays_and_convert_the_rest() {
         let p = StreamProbe {
