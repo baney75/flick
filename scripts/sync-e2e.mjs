@@ -2,8 +2,9 @@
 // then a setting changed on one shows up on the other, and the device list sees both.
 import { chromium } from 'playwright'
 import { spawn } from 'node:child_process'
+import { freePort } from './free-port.mjs'
 
-const PORT = 4179, RELAY_PORT = 8797
+const PORT = await freePort(), RELAY_PORT = await freePort()
 const BASE = `http://localhost:${PORT}`
 const procs = [
   spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore', detached: true }),

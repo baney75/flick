@@ -6,8 +6,9 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, utimesSync, rmSync 
 import { createServer } from 'node:http'
 import { make as makeAudio } from '../tests/media-setup.mjs'
 import { makeEpub, EVIL } from './epub-fixture.mjs'
+import { freePort } from './free-port.mjs'
 
-const PORT = 4178
+const PORT = Number(process.env.SMOKE_PORT) || await freePort()
 // SMOKE_BASE=https://flick-player.pages.dev checks a deployed site instead of a local build.
 const BASE = process.env.SMOKE_BASE ?? `http://localhost:${PORT}`
 const media = 'test-media/Sample.Clip.2023.webm'
