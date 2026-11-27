@@ -240,8 +240,10 @@ function frameFor(rec: Installed): Promise<Frame> {
       setSecrets(rec.id, rec)
       await registerHosts(rec)
       mark('start.hosts')
+      // Until load answers, a frame that ends is a failed start, which the catch below reports.
+      let loaded = false
       const fr = await openFrame(ctxHandler(rec.id, isDesktop, invoke, service), document, (why) => {
-        if (frames.get(rec.id) !== f) return
+        if (!loaded || frames.get(rec.id) !== f) return
         frames.delete(rec.id)
         logLine(rec.id, why === 'navigated'
           ? 'Stopped: its page loaded again, so Flick lost touch with it. It starts again on the next call.'
@@ -252,6 +254,7 @@ function frameFor(rec: Installed): Promise<Frame> {
       // frame here: no one else holds it, and its Worker could still run and ask Flick for things.
       try {
         await fr.rpc.call('load', [rec.code, platformName(), rec.settings])
+        loaded = true
       } catch (e) {
         fr.rpc.close()
         fr.iframe.remove()
