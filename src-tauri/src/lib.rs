@@ -14,6 +14,10 @@ use tauri::{Emitter, Manager};
 
 mod plugins;
 mod share;
+// The torrent engine and its checks; the engine and the app's commands join it next in this series.
+#[cfg(desktop)]
+#[cfg_attr(not(test), allow(dead_code))]
+mod torrent;
 // The torrent engine (next in this series) is its first caller.
 #[cfg(desktop)]
 #[cfg_attr(not(test), allow(dead_code))]
@@ -2093,7 +2097,12 @@ mod tests {
 
     #[test]
     fn photos_count_as_media() {
-        for p in ["/p/IMG_1234.JPG", "/p/IMG_1235.heic", "/p/a.webp", "/p/b.avif"] {
+        for p in [
+            "/p/IMG_1234.JPG",
+            "/p/IMG_1235.heic",
+            "/p/a.webp",
+            "/p/b.avif",
+        ] {
             assert!(is_media(Path::new(p)), "{p}");
         }
     }

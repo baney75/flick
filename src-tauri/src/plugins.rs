@@ -419,9 +419,18 @@ mod tests {
     #[test]
     fn a_redirect_never_leaves_https() {
         let u = |s: &str| Url::parse(s).unwrap();
-        assert!(downgrades(&u("https://api.torbox.app/a"), &u("http://api.torbox.app/b")));
-        assert!(!downgrades(&u("https://api.torbox.app/a"), &u("https://x.tb-cdn.st/b")));
-        assert!(!downgrades(&u("http://192.168.1.2/a"), &u("http://192.168.1.2/b")));
+        assert!(downgrades(
+            &u("https://api.torbox.app/a"),
+            &u("http://api.torbox.app/b")
+        ));
+        assert!(!downgrades(
+            &u("https://api.torbox.app/a"),
+            &u("https://x.tb-cdn.st/b")
+        ));
+        assert!(!downgrades(
+            &u("http://192.168.1.2/a"),
+            &u("http://192.168.1.2/b")
+        ));
     }
 
     #[test]
