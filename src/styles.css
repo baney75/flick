@@ -465,6 +465,9 @@ html.tv .hrow { grid-auto-columns: 300px; padding: 10px 6px 14px; }
 .pick-line { align-self: center; }
 .pick-why { color: var(--dim); margin: 0; align-self: center; }
 .row.end { justify-content: flex-end; margin-top: 8px; }
+.manage .back-link { display: inline-flex; align-items: center; gap: 4px; margin-bottom: 10px; color: var(--dim); text-decoration: none; }
+.manage .page-head h1 { margin-right: auto; overflow-wrap: anywhere; }
+.manage > .panel, .manage > details.panel { margin-bottom: 16px; }
 .facts-list { display: grid; gap: 6px; margin: 10px 0; }
 .facts-list .dim { display: inline-block; min-width: 110px; }
 /* Audiobook player */
