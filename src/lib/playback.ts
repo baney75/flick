@@ -243,12 +243,21 @@ export class Remux {
   private n = 0
   /** This player's token: the desktop stops only its own run, so a closing player never stops the next one's. */
   readonly owner = `${Date.now().toString(36)}-${++players}`
-  constructor(readonly url: string, readonly probe: StreamProbe, private user = '', private pass = '', private call: Call = invoke, readonly safe = false) {}
+  /** The source's length: the probe's, or one learned after a safe run started; 0 while unknown. */
+  length: number
+  constructor(readonly url: string, readonly probe: StreamProbe, private user = '', private pass = '', private call: Call = invoke, readonly safe = false) {
+    this.length = probe.duration
+  }
+
+  /** Whether the source's length is known: a safe run's is not until a probe reads it. */
+  get known(): boolean {
+    return this.length > 0
+  }
 
   /** Starts a run at source time `at` (stopping the last). Returns its playlist URL, or null when a newer run replaced it. */
   async open(at: number): Promise<string | null> {
     const n = ++this.n
-    const max = this.probe.duration > 1 ? this.probe.duration - 1 : Infinity
+    const max = this.length > 1 ? this.length - 1 : Infinity
     const from = Math.min(Math.max(0, at), max)
     try {
       const r = await this.call<{ url: string; at: number }>('remux_start', { url: this.url, user: this.user, pass: this.pass, at: from, owner: this.owner, safe: this.safe })
@@ -266,9 +275,15 @@ export class Remux {
     return this.at + clock
   }
 
-  /** The source's length: the probe's, since a growing playlist does not know it. */
+  /** The source's length, since a growing playlist does not know it. Unknown, it is the source time the
+   *  run has written to (`fallback` is the run's own length), so the clock never passes it. */
   duration(fallback: number): number {
-    return this.probe.duration > 0 ? this.probe.duration : fallback
+    return this.known ? this.length : this.at + (fallback || 0)
+  }
+
+  /** Where a seek to `t` lands: inside a known length; anywhere ahead when the length is unknown. */
+  clamp(t: number, d: number): number {
+    return Math.max(0, this.known && d > 1 ? Math.min(t, d - 1) : t)
   }
 
   stop() {

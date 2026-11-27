@@ -207,6 +207,12 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     remux.current = r
     setDur(p.duration)
     setStatus(convertLine(p))
+    // A safe run asks the warmed server once more for the length, for the seek bar and saved progress.
+    if (!r.known) {
+      probeStream(input.input, input.user, input.pass).then((q) => {
+        if (remux.current === r && q.duration > 0) { r.length = q.duration; setDur(q.duration) }
+      }).catch(() => {})
+    }
     return r.open(at)
   }
 
@@ -343,7 +349,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     const r = remux.current
     if (!r) { v.currentTime = t; return }
     const d = durOf()
-    const plan = planSeek(d > 1 ? Math.min(t, d - 1) : t, r.at, writtenOf(v.seekable))
+    const plan = planSeek(r.clamp(t, d), r.at, writtenOf(v.seekable))
     if ('local' in plan) { v.currentTime = plan.local; return }
     setTime(plan.restart)
     restartAt(r, plan.restart)
@@ -411,7 +417,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   const save = useCallback(() => {
     const v = video.current
     const d = durOf()
-    if (!v || !d || !isFinite(d) || restarting.current) return
+    // A safe run's length is not known yet: no progress until it is, so a title never looks finished.
+    if (!v || !d || !isFinite(d) || restarting.current || remux.current?.known === false) return
     const pos = clock()
     saveProgress(req.key, { pos, dur: d, at: Date.now(), title: req.title, subtitle: req.subtitle, poster: req.poster, ref: req.ref })
     req.onSave?.(pos, d)
@@ -449,7 +456,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     else v.pause()
   }
   const seekBy = (d: number) => {
-    seekTo(Math.max(0, Math.min((durOf() || 0) - 0.1, clock() + d)))
+    const r = remux.current
+    seekTo(r && !r.known ? Math.max(0, clock() + d) : Math.max(0, Math.min((durOf() || 0) - 0.1, clock() + d)))
     flash(`${d > 0 ? '+' : '−'}${Math.abs(d)}s`)
   }
   const setVol = (x: number) => {

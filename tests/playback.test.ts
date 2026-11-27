@@ -268,7 +268,27 @@ describe('planStream (rules 1 and 2)', () => {
     expect(f.calls[0].args!.safe).toBe(true)
     f.answer(0)
     await opened
-    expect(r.duration(120)).toBe(120)
+    expect(r.duration(120)).toBe(162)
+  })
+  // Review r1 first-F1: a safe run resumed at 40:00 has no source length. Its clock must not pass its
+  // length, a forward seek must not jump back to the start, and no progress is saved until it is known.
+  it('a safe run resumed at 2400 s keeps source time until its length is learned', async () => {
+    const f = fake()
+    const r = new Remux('https://cdn.example/x.mkv', SAFE, '', '', f.call, true)
+    const opened = r.open(2400)
+    f.answer(0)
+    await opened
+    expect(r.known).toBe(false)
+    // 60 s of the run written: the length shown is the source time reached, never the run's own 60 s.
+    expect(r.duration(60)).toBe(2460)
+    expect(r.time(5)).toBe(2405)
+    // A seek past what is written goes there (a new run), not to minute one.
+    expect(r.clamp(2405 + 600, r.duration(60))).toBe(3005)
+    expect(planSeek(r.clamp(3005, r.duration(60)), r.at, 60)).toEqual({ restart: 3005 })
+    r.length = 7200
+    expect(r.known).toBe(true)
+    expect(r.duration(60)).toBe(7200)
+    expect(r.clamp(9000, r.duration(60))).toBe(7199)
   })
   it('playsDirectly reads the type or the extension', () => {
     expect(playsDirectly('https://x/dl/1', 'video/mp4')).toBe(true)
