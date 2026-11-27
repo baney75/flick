@@ -27,6 +27,7 @@ import { EngineWait } from './EngineWait'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
 import { langCode } from '../lib/release'
+import { sessionGet, sessionSet } from '../lib/session'
 
 type Shape = NonNullable<Meta['posterShape']>
 const cardShape = (s?: Shape) => (s === 'landscape' ? 'wide' : s === 'square' ? 'square' : 'poster')
@@ -244,7 +245,7 @@ const tabKey = (rec: Source) => `flick.grid.${rec.id}`
 
 /** A grid-layout plugin's catalogs: one chip each, the chosen one as a grid. Opens on this session's last pick. */
 function GridTabs({ rec, rows }: { rec: Source; rows: CatalogDef[] }) {
-  const [tab, setTab] = useState<string | null>(() => { try { return sessionStorage.getItem(tabKey(rec)) } catch { return null } })
+  const [tab, setTab] = useState<string | null>(() => sessionGet(tabKey(rec)))
   // With nothing picked, an empty catalog (For You before anything played) steps to the next one.
   const [skipped, setSkipped] = useState<string[]>([])
   const picked = rows.find((c) => rowKey(c) === tab)
@@ -252,7 +253,7 @@ function GridTabs({ rec, rows }: { rec: Source; rows: CatalogDef[] }) {
   if (!cur) return null
   const pick = (c: CatalogDef) => {
     setTab(rowKey(c))
-    try { sessionStorage.setItem(tabKey(rec), rowKey(c)) } catch { /* private mode */ }
+    sessionSet(tabKey(rec), rowKey(c))
   }
   return (
     <>

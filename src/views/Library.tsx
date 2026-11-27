@@ -14,6 +14,7 @@ import { hasOpfs } from '../lib/platform'
 import { downloads, cancelDownload, removeDownload } from '../lib/downloads'
 import { canDownload, isSaved, save, badgeFor } from '../lib/offline'
 import { photoSet } from '../lib/photos'
+import { sessionGet, sessionSet } from '../lib/session'
 import { Photos } from './Photos'
 import { ContinueGrid, useContinue } from './Continue'
 
@@ -32,7 +33,7 @@ const posterOf = (x: Entry) => isTitle(x)
 
 /** `start: 'continue'` is `#/continue`, which opens Library on its Continue chip. */
 export function Library({ start }: { start?: Tab } = {}) {
-  const saved = (() => { try { return sessionStorage.getItem('flick.tab') as Tab | null } catch { return null } })()
+  const saved = sessionGet('flick.tab') as Tab | null
   const [tab, setTab] = useState<Tab>(() => start ?? saved ?? 'all')
   const cont = useContinue()
   // With no tab picked this session, Library opens on Continue once something is in progress.
@@ -134,7 +135,7 @@ export function Library({ start }: { start?: Tab } = {}) {
   // Books are tall like posters even without a cover, so they share the poster grid.
   const posterMode = list.length > 0 && (list.every((i) => !isTitle(i) && i.kind === 'book') || list.filter(posterOf).length > list.length / 2)
 
-  const pick = (t: Tab) => { picked.current = true; setTab(t); try { sessionStorage.setItem('flick.tab', t) } catch { /* private mode */ } }
+  const pick = (t: Tab) => { picked.current = true; setTab(t); sessionSet('flick.tab', t) }
 
   const remove = async (it: Item) => {
     setMenu(null)
