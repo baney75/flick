@@ -513,6 +513,25 @@ try {
   await page.getByText('Done').waitFor()
   check(await page.locator('.list-row', { hasText: `Flick server at ${FLICK_URL}` }).getByText('5 items').isVisible(), 'setup link with a Flick server connects it')
 
+  // Each server has its own page under Settings > Plugins; a new one starts as its connect form.
+  const kvServers = () => page.evaluate(() => new Promise((res) => { const r = indexedDB.open('flick'); r.onsuccess = () => { const q = r.result.transaction('kv').objectStore('kv').get('servers'); q.onsuccess = () => res(q.result ?? []) } }))
+  await page.goto(`${BASE}/#/settings/plugins/new/jellyfin`)
+  await page.getByRole('heading', { name: 'Add Jellyfin or Emby' }).waitFor()
+  check(await page.getByLabel('Server address').isVisible() && await page.getByLabel('Username').isVisible() && await page.getByLabel('Password').isVisible() && (await kvServers()).length === 1, 'Add > Jellyfin opens a page with address, username and password, and saves nothing yet')
+  const nas = (await kvServers())[0]
+  await page.goto(`${BASE}/#/settings/plugins/${encodeURIComponent(nas.id)}`)
+  await page.getByRole('heading', { name: 'Smoke NAS' }).waitFor()
+  check(await page.locator('.facts-list', { hasText: '5 items' }).isVisible() && await page.getByRole('button', { name: 'Sync now' }).isVisible(), 'a server page shows its item count and Sync now')
+  page.once('dialog', (d) => d.accept())
+  await page.getByRole('button', { name: 'Remove' }).click()
+  check(await page.waitForURL(/#\/settings\/plugins$/, { timeout: 5000 }).then(() => true, () => false) && (await kvServers()).length === 0, 'Remove on a server page removes it and goes back to Plugins')
+  await page.goto(`${BASE}/#/settings/plugins/new/flick`)
+  await page.getByLabel('Address').fill(FLICK_URL)
+  await page.getByLabel('Access code').fill(FLICK_CODE)
+  await page.getByRole('button', { name: 'Connect' }).click()
+  check(await page.waitForURL(new RegExp(`#/settings/plugins/${nas.id}$`), { timeout: 8000 }).then(() => true, () => false), 'connecting a new server opens its page')
+  check(await page.locator('.facts-list', { hasText: '5 items' }).waitFor({ timeout: 8000 }).then(() => true, () => false), 'the new server page shows its items once synced')
+
   // Plugin sandbox: the real host page, framed the way the runtime frames it (sandbox="allow-scripts"),
   // loads plugin code over a MessagePort and cannot reach Flick's storage, page or remote modules.
   const probe = await page.evaluate(async () => {
@@ -585,6 +604,9 @@ try {
   await sheet.getByRole('button', { name: 'Install' }).click()
   await sheet.waitFor({ state: 'detached' })
   check(await count() === 1, 'Install saves the plugin')
+  await page.goto(`${BASE}/#/settings/plugins/org.smoke.films`)
+  await page.getByRole('heading', { name: 'Smoke Films' }).waitFor()
+  check(await page.getByText('Not from Flick').isVisible() && await page.getByLabel('On').isChecked() && await page.getByText('Log', { exact: true }).isVisible(), 'a plugin page shows where it is from, its switch and its log')
   check(!(await page.locator('.nav-item', { hasText: 'Smoke Films' }).count()), 'a plugin gets no bar item')
   await page.getByRole('link', { name: 'Open Smoke Films' }).click()
   check(await page.getByText('Smoke Clip').first().waitFor({ timeout: 15000 }).then(() => true, () => false), 'plugin page shows its catalog')

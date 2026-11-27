@@ -41,7 +41,7 @@ function Services() {
 }
 
 /** Keys in the user's Stremio addons, offered one button each. Nothing is saved before the tap. */
-function FromStremio() {
+export function FromStremio({ only }: { only?: string } = {}) {
   const [urls, setUrls] = useState<string[]>([])
   const [busy, setBusy] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
@@ -51,7 +51,7 @@ function FromStremio() {
     stremioAddonUrls().then((u) => { if (!stale) setUrls(u) })
     return () => { stale = true }
   }, [rec?.enabled, rec?.official, rec?.sha256, rec && JSON.stringify(rec.settings)])
-  const offers = keyOffers(urls, allServices.value)
+  const offers = keyOffers(urls, allServices.value).filter((f) => !only || f.serviceId === only)
   if (!offers.length && !msg) return null
   const use = async (f: FoundKey) => {
     setBusy(f.serviceId + f.key)
@@ -75,20 +75,29 @@ function FromStremio() {
   )
 }
 
-function ServiceRow({ s, first, last }: { s: Service; first: boolean; last: boolean }) {
+/** The service's account line ("TorBox: Pro until 2027-03-01"), checked when its key or code changes. */
+export function useAccount(s: Service): { line: string | null; bad: boolean } {
   const [line, setLine] = useState<string | null>(null)
   const [bad, setBad] = useState(false)
-  const [change, setChange] = useState(false)
   const keyed = hasKey(s)
   useEffect(() => {
     if (!keyed || !s.enabled) return
     setLine(null)
     setBad(false)
+    let stale = false
     callPlugin(s, 'account', []).then(
-      (r) => { setLine(accountLine(s.manifest.name, r)); setBad(!r.ok) },
-      (e) => { setLine(`${s.manifest.name}: ${(e as Error).message}`); setBad(true) },
+      (r) => { if (!stale) { setLine(accountLine(s.manifest.name, r)); setBad(!r.ok) } },
+      (e) => { if (!stale) { setLine(`${s.manifest.name}: ${(e as Error).message}`); setBad(true) } },
     )
+    return () => { stale = true }
   }, [s.sha256, keyed && String(s.settings[keyField(s.manifest)!]), s.enabled])
+  return { line, bad }
+}
+
+function ServiceRow({ s, first, last }: { s: Service; first: boolean; last: boolean }) {
+  const [change, setChange] = useState(false)
+  const keyed = hasKey(s)
+  const { line, bad } = useAccount(s)
   const drop = async () => { await removeService(s.id); notify(`${s.manifest.name} removed, with its key.`) }
   return (
     <div class="plugin-row">
@@ -136,7 +145,7 @@ function AddService({ offer }: { offer: OfficialEntry[] }) {
   )
 }
 
-function KeyForm({ from, onSaved }: { from: Candidate | Service; onSaved?: () => void }) {
+export function KeyForm({ from, onSaved }: { from: Candidate | Service; onSaved?: () => void }) {
   const m = from.manifest as PluginManifest
   const f = m.settings.find((x) => x.key === keyField(m))
   const [key, setKey] = useState('')

@@ -63,7 +63,7 @@ export function ServersPanel() {
   )
 }
 
-function JellyfinForm({ onAdd }: { onAdd: (s: Srv.Server) => void }) {
+export function JellyfinForm({ onAdd, heading = true }: { onAdd: (s: Srv.Server) => void; heading?: boolean }) {
   const [url, setUrl] = useState('')
   const [user, setUser] = useState('')
   const [pw, setPw] = useState('')
@@ -78,7 +78,7 @@ function JellyfinForm({ onAdd }: { onAdd: (s: Srv.Server) => void }) {
   }
   return (
     <form class="panel" onSubmit={submit}>
-      <h3>Jellyfin or Emby</h3>
+      {heading && <h3>Jellyfin or Emby</h3>}
       <label>Server address<input required placeholder="http://192.168.1.20:8096" value={url} onInput={(e) => setUrl((e.target as HTMLInputElement).value)} /></label>
       <label>Username<input required autocomplete="username" value={user} onInput={(e) => setUser((e.target as HTMLInputElement).value)} /></label>
       <label>Password<input type="password" autocomplete="current-password" value={pw} onInput={(e) => setPw((e.target as HTMLInputElement).value)} /></label>
@@ -88,7 +88,7 @@ function JellyfinForm({ onAdd }: { onAdd: (s: Srv.Server) => void }) {
   )
 }
 
-function FlickForm({ onAdd, here }: { onAdd: (s: Srv.Server) => void; here: Srv.FlickInfo | null }) {
+export function FlickForm({ onAdd, here, heading = true }: { onAdd: (s: Srv.Server) => void; here: Srv.FlickInfo | null; heading?: boolean }) {
   const [url, setUrl] = useState('')
   const [code, setCode] = useState('')
   const [err, setErr] = useState<string | null>(null)
@@ -102,7 +102,7 @@ function FlickForm({ onAdd, here }: { onAdd: (s: Srv.Server) => void; here: Srv.
   }
   return (
     <form class="panel" onSubmit={submit}>
-      <h3>Flick server (NAS)</h3>
+      {heading && <h3>Flick server (NAS)</h3>}
       {here
         ? <p class="dim small">This page comes from the Flick server {here.name}. Enter the access code it printed.</p>
         : <p class="dim small">Run flick-server on the computer or NAS that holds your media. It prints a setup link; open that on this device, or paste the address and code here.</p>}
@@ -115,7 +115,7 @@ function FlickForm({ onAdd, here }: { onAdd: (s: Srv.Server) => void; here: Srv.
   )
 }
 
-function KodiForm({ onAdd }: { onAdd: (s: Srv.Server) => void }) {
+export function KodiForm({ onAdd, heading = true }: { onAdd: (s: Srv.Server) => void; heading?: boolean }) {
   const [url, setUrl] = useState('')
   const [user, setUser] = useState('')
   const [pw, setPw] = useState('')
@@ -130,7 +130,7 @@ function KodiForm({ onAdd }: { onAdd: (s: Srv.Server) => void }) {
   }
   return (
     <form class="panel" onSubmit={submit}>
-      <h3>Kodi</h3>
+      {heading && <h3>Kodi</h3>}
       <p class="dim small">In Kodi, turn on Settings, Services, Control, Allow remote control via HTTP. Flick plays files straight from Kodi. MKV and AVI files play after a quick convert in the Mac, Windows and Linux apps.</p>
       <label>Kodi address<input required placeholder="http://192.168.1.30:8080" value={url} onInput={(e) => setUrl((e.target as HTMLInputElement).value)} /></label>
       <label>Username<input autocomplete="username" placeholder="Empty if Kodi has no password" value={user} onInput={(e) => setUser((e.target as HTMLInputElement).value)} /></label>
@@ -141,7 +141,7 @@ function KodiForm({ onAdd }: { onAdd: (s: Srv.Server) => void }) {
   )
 }
 
-function PlexForm({ onAdd }: { onAdd: (s: Srv.Server) => void }) {
+export function PlexForm({ onAdd, heading = true }: { onAdd: (s: Srv.Server) => void; heading?: boolean }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [manual, setManual] = useState(false)
@@ -174,7 +174,7 @@ function PlexForm({ onAdd }: { onAdd: (s: Srv.Server) => void }) {
   }
   return (
     <div class="panel">
-      <h3>Plex</h3>
+      {heading && <h3>Plex</h3>}
       <p class="dim small">Sign in on plex.tv and approve Flick. Flick finds your servers on its own.</p>
       <div class="row">
         <button class="btn primary" onClick={signIn} disabled={busy}>{busy ? 'Waiting for Plex…' : 'Sign in with Plex'}</button>

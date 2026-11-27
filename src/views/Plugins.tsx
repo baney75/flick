@@ -18,7 +18,7 @@ Start from https://raw.githubusercontent.com/baney75/flick/main/plugins/template
 Clone https://github.com/baney75/flick, run npm install, and run npm run plugin:check -- plugin.js until every line is PASS.
 Then publish plugin.js as a GitHub gist and give me its raw URL (without the commit hash) to paste into Flick under Settings > Plugins > Add by URL.`
 
-const hostWords = (h: string) => (h === '*' ? 'any public website' : h)
+export const hostWords = (h: string) => (h === '*' ? 'any public website' : h)
 
 export function ReviewSheet({ c, extra, onDone }: { c: Candidate; extra?: string; onDone: (installed: boolean) => void }) {
   const [busy, setBusy] = useState(false)
@@ -189,7 +189,7 @@ function FieldInput({ f, value, set }: { f: Field; value: unknown; set: (v: unkn
   )
 }
 
-function SettingsForm({ p, fields }: { p: Installed; fields: Field[] }) {
+export function SettingsForm({ p, fields }: { p: Installed; fields: Field[] }) {
   const [vals, setVals] = useState<Record<string, unknown>>(p.settings)
   const save = async (e: Event) => {
     e.preventDefault()
@@ -204,7 +204,7 @@ function SettingsForm({ p, fields }: { p: Installed; fields: Field[] }) {
   )
 }
 
-function ActionForm({ p, a }: { p: Installed; a: ActionDef }) {
+export function ActionForm({ p, a }: { p: Installed; a: ActionDef }) {
   const [vals, setVals] = useState<Record<string, unknown>>({})
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
