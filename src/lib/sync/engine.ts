@@ -18,10 +18,13 @@ export interface SyncState { paired: boolean; secret: string | null; device: str
 
 // `from` is the sending tab, so tabs of one browser exchange entries like separate writers; `dev` is
 // the device, which is what the device list shows. Messages without `dev` come from older builds.
+// A digest too big for one message goes out in `parts` messages that share a `set` id; the receiver
+// answers once it holds them all. Older builds send one part and no `set`.
+type Parts = { set?: string; part?: number; parts?: number }
 type Msg = (
   | { type: 'hello'; from: string; name: string }
-  | { type: 'welcome'; from: string; name: string; to: string; rows: DigestRow[] }
-  | { type: 'digest'; from: string; to: string; rows: DigestRow[] }
+  | ({ type: 'welcome'; from: string; name: string; to: string; rows: DigestRow[] } & Parts)
+  | ({ type: 'digest'; from: string; to: string; rows: DigestRow[] } & Parts)
   | { type: 'entries'; from: string; to?: string; list: [string, Entry][] }
   | { type: 'bye'; from: string }
   | { type: 'beat'; from: string }
@@ -160,7 +163,7 @@ export function publish(changes: [key: string, value: unknown][]) {
   if (!changes.length) return
   const list = changes.map(([k, v]) => [k, write(doc, clock, tab, k, v)] as [string, Entry])
   saveDocSoon()
-  send({ type: 'entries', from: tab, list })
+  sendEntries(undefined, list)
 }
 
 // Offer keys this device has and the doc does not. Seeded entries carry time 1, so any
@@ -173,7 +176,7 @@ export function seed(changes: [string, unknown][]) {
   })
   if (!list.length) return
   saveDocSoon()
-  send({ type: 'entries', from: tab, list })
+  sendEntries(undefined, list)
 }
 
 // The device that starts a group writes its data with real times; devices that join later only seed
@@ -215,6 +218,7 @@ function retire() {
   ws = null
   group = null
   byeSealed = null
+  gathering.clear()
   clearTimeout(retryTimer)
   clearInterval(beatTimer)
   if (sock) { sock.onopen = sock.onmessage = sock.onclose = null; try { sock.close() } catch { /* already closed */ } }
@@ -291,16 +295,21 @@ function receive(m: Msg) {
   switch (m.type) {
     case 'hello':
       if (peer) seePeer(who, m.name, true)
-      send({ type: 'welcome', from: me, name: sync.value.name, to: m.from, rows: digest(doc) })
+      for (const rows of split(digest(doc))) send({ type: 'welcome', from: me, name: sync.value.name, to: m.from, rows, ...rows.parts })
       break
-    case 'welcome':
+    case 'welcome': {
       if (peer) seePeer(who, m.name, true)
-      send({ type: 'digest', from: me, to: m.from, rows: digest(doc) })
-      sendEntries(m.from, missingFor(doc, m.rows))
+      const rows = gather(m)
+      if (!rows) break
+      for (const mine of split(digest(doc))) send({ type: 'digest', from: me, to: m.from, rows: mine, ...mine.parts })
+      sendEntries(m.from, missingFor(doc, rows))
       break
-    case 'digest':
-      sendEntries(m.from, missingFor(doc, m.rows))
+    }
+    case 'digest': {
+      const rows = gather(m)
+      if (rows) sendEntries(m.from, missingFor(doc, rows))
       break
+    }
     case 'entries': {
       const changed = merge(doc, clock, m.list)
       if (changed.length) { saveDocSoon(); onChange(changed) }
@@ -320,17 +329,54 @@ function receive(m: Msg) {
   }
 }
 
-// The relay caps a message at 256 KiB; sealed text is about 4/3 the JSON size.
-function sendEntries(to: string, list: [string, Entry][]) {
-  let chunk: [string, Entry][] = []
+// The relay caps a message at 256 KiB. Sealed text is base64, about 4/3 the UTF-8 size of the JSON,
+// so each part keeps its rows under 150,000 bytes: about 200 KiB sealed, with room for the envelope.
+const PART_BYTES = 150_000
+const utf8 = new TextEncoder()
+type Part<T> = T[] & { parts: Parts }
+
+function split<T>(rows: T[]): Part<T>[] {
+  const out: T[][] = []
+  let chunk: T[] = []
   let size = 0
-  for (const row of list) {
-    const n = JSON.stringify(row).length
-    if (size + n > 150_000 && chunk.length) { send({ type: 'entries', from: tab, to, list: chunk }); chunk = []; size = 0 }
+  for (const row of rows) {
+    const n = utf8.encode(JSON.stringify(row)).length + 1
+    if (size + n > PART_BYTES && chunk.length) { out.push(chunk); chunk = []; size = 0 }
     chunk.push(row)
     size += n
   }
-  if (chunk.length) send({ type: 'entries', from: tab, to, list: chunk })
+  if (chunk.length || !out.length) out.push(chunk)
+  // One part needs no set, so a small digest looks exactly as it did to older builds.
+  const set = out.length > 1 ? randomId() : undefined
+  return out.map((c, part) => Object.assign(c, { parts: set ? { set, part, parts: out.length } : {} }))
+}
+
+function sendEntries(to: string | undefined, list: [string, Entry][]) {
+  if (!list.length) return
+  for (const chunk of split(list)) send({ type: 'entries', from: tab, to, list: [...chunk] })
+}
+
+// Digest parts held until the set is complete, by sender and set. A set that never completes (the
+// sender went away) is dropped after a minute, and all of them when the connection is retired.
+const gathering = new Map<string, { rows: DigestRow[][]; got: number; at: number }>()
+const MAX_PARTS = 1000
+const GATHER_MS = 60_000
+
+function gather(m: { type: string; from: string; rows: DigestRow[] } & Parts): DigestRow[] | null {
+  if (!Array.isArray(m.rows)) return null
+  if (m.set === undefined || m.parts === undefined) return m.rows
+  const { parts, part } = m
+  if (!Number.isInteger(parts) || parts < 1 || parts > MAX_PARTS || !Number.isInteger(part) || part! < 0 || part! >= parts) return null
+  const now = Date.now()
+  for (const [k, g] of gathering) if (now - g.at > GATHER_MS) gathering.delete(k)
+  const key = `${m.type} ${m.from} ${m.set}`
+  const g = gathering.get(key) ?? { rows: new Array<DigestRow[]>(parts), got: 0, at: now }
+  if (g.rows.length !== parts) return null
+  if (!g.rows[part!]) { g.rows[part!] = m.rows; g.got++ }
+  gathering.set(key, g)
+  if (g.got < parts) return null
+  gathering.delete(key)
+  return g.rows.flat()
 }
 
 function send(m: Msg) {
