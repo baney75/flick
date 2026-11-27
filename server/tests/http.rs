@@ -313,8 +313,11 @@ fn paused_stream(h: &flick_server::Handle, base: &std::path::Path) -> TcpStream 
     let id = flick_server::index::item_id("Movies", "big.mp4");
     let mut s = TcpStream::connect(("127.0.0.1", h.port())).unwrap();
     write!(s, "GET /media/{id} HTTP/1.1\r\nHost: x\r\n{auth}\r\n").unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
     let mut first = [0u8; 4096];
-    s.read_exact(&mut first).unwrap();
+    s.read_exact(&mut first)
+        .expect("the stream started within 5 seconds");
     s
 }
 
