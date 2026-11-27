@@ -87,11 +87,16 @@ async function isOfficial(url: string | null): Promise<boolean> {
 }
 
 // ---------- install ----------
+/** Runs one install step; a failure says which step it was, and the Add sheet shows that as given. */
+async function step<T>(name: string, f: () => T | Promise<T>): Promise<T> {
+  try { return await f() } catch (e) { throw new Error(`${name} failed: ${e instanceof Error ? e.message : String(e)}`) }
+}
+
 /** Read code from a URL or text and check it. Nothing is saved until install(). */
 export async function prepare(src: { url?: string; text?: string }, deps: Deps = live): Promise<Candidate> {
   const url = src.url?.trim() || null
   if (url && !/^(https:\/\/|\/)/i.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1)[:/]/i.test(url)) throw new Error('A plugin address must start with https://.')
-  const code = src.text ?? (await deps.fetchText(url!))
+  const code = src.text ?? (await step('Downloading the plugin', () => deps.fetchText(url!)))
   mark('fetch')
   if (code.length > MAX_CODE) throw new Error('That file is over 2 MB, too big for a plugin.')
   let kind: Candidate['kind'] = 'source'
@@ -100,10 +105,10 @@ export async function prepare(src: { url?: string; text?: string }, deps: Deps =
   try { json = JSON.parse(code) } catch { json = undefined }
   if (json !== undefined) {
     kind = 'theme'
-    manifest = V.validateTheme(json)
+    manifest = await step('Checking the theme', () => V.validateTheme(json))
   } else {
-    const r = await deps.inspect(code)
-    const m = V.validateManifest(r.manifest, r.fns)
+    const r = await step('Starting the plugin', () => deps.inspect(code))
+    const m = await step('Checking the plugin', () => V.validateManifest(r.manifest, r.fns))
     kind = m.kind
     manifest = m
   }
@@ -137,7 +142,7 @@ export async function install(c: Candidate, settings?: Record<string, unknown>):
     installedAt: old?.installedAt ?? Date.now(),
     checkedAt: Date.now(),
   }
-  await save(rec)
+  await step('Saving the plugin', () => save(rec))
   mark('save')
   await registerHosts(rec).catch(() => {})
   mark('registerHosts')

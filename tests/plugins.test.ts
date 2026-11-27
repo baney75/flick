@@ -107,6 +107,31 @@ describe('plugin validation', () => {
   })
 })
 
+describe('install errors name the step that failed', () => {
+  const ok: R.Deps = { fetchText: async () => 'code', inspect: async () => ({ manifest: manifest(), fns: FNS }) }
+  it.each([
+    ['the download', { ...ok, fetchText: async () => { throw new TypeError('Load failed') } }, 'Downloading the plugin failed: Load failed'],
+    ['a 404', { ...ok, fetchText: async (u: string) => { throw new Error(`${u} answered 404.`) } }, 'Downloading the plugin failed: https://p.example/x.js answered 404.'],
+    ['the sandbox', { ...ok, inspect: async () => { throw new Error('The plugin sandbox did not start.') } }, 'Starting the plugin failed: The plugin sandbox did not start.'],
+    ['a string thrown', { ...ok, inspect: async () => { throw 'gone' } }, 'Starting the plugin failed: gone'],
+    ['the manifest', { ...ok, inspect: async () => ({ manifest: manifest({ id: 'Films' }), fns: FNS }) }, /^Checking the plugin failed: .*reverse-DNS/],
+    ['a theme', { ...ok, fetchText: async () => '{"nope":1}' }, /^Checking the theme failed: /],
+  ] as [string, R.Deps, string | RegExp][])('%s', async (_, deps, msg) => {
+    vi.stubGlobal('fetch', async () => ({ json: async () => ({ plugins: [] }) }))
+    await expect(R.prepare({ url: 'https://p.example/x.js' }, deps)).rejects.toThrow(msg)
+  })
+  it('an address or size problem keeps its own words', async () => {
+    await expect(R.prepare({ url: 'ftp://x' }, ok)).rejects.toThrow(/^A plugin address must start with https:\/\/\.$/)
+  })
+  it('saving', async () => {
+    vi.stubGlobal('fetch', async () => ({ json: async () => ({ plugins: [] }) }))
+    const c = await R.prepare({ url: 'https://p.example/x.js' }, ok)
+    const put = vi.spyOn(db, 'put').mockRejectedValueOnce(new Error('QuotaExceededError'))
+    await expect(R.install(c)).rejects.toThrow('Saving the plugin failed: QuotaExceededError')
+    put.mockRestore()
+  })
+})
+
 describe('update permission rule', () => {
   it('lists only new hosts and tools', () => {
     expect(V.addedPermissions({ hosts: ['a.org'], tools: [] }, { hosts: ['a.org'], tools: [] })).toEqual([])
