@@ -1,4 +1,4 @@
-// The desktop self-test (scripts/desktop-selftest.mjs). Only a build with the self-test identifier, started
+// The desktop self-test (scripts/desktop-selftest.mjs). Only a build with a self-test identifier, started
 // with FLICK_SELFTEST=plugins, perf or youtube, runs it, so the user's own Flick and its data never do. The report goes to the
 // path in FLICK_SELFTEST_OUT, which the web side cannot choose, and then the app quits.
 
@@ -6,7 +6,15 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use tauri::{AppHandle, Manager};
 
-pub const IDENTIFIER: &str = "dev.flick.selftest";
+/// Every self-test build is `dev.flick.selftest.<8 hex>`, the hex from its worktree's path, so two
+/// worktrees never share a profile. Nothing else, Flick's own com.dbaney.flick above all, passes.
+pub const PREFIX: &str = "dev.flick.selftest.";
+
+pub fn is_selftest(identifier: &str) -> bool {
+    identifier.strip_prefix(PREFIX).is_some_and(|h| {
+        h.len() == 8 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
 const MODES: [&str; 3] = ["plugins", "perf", "youtube"];
 static LAUNCHED_MS: OnceLock<u64> = OnceLock::new();
 static SETUP_MS: OnceLock<u64> = OnceLock::new();
@@ -38,7 +46,7 @@ fn env_mode() -> Option<&'static str> {
 /// last DOM change, so the perf check sees start-up from the first frame. A window that is never shown
 /// has no display, so in perf mode animation frames are emulated at 60 Hz (rafEmulated tells the report).
 pub fn init_script(identifier: &str) -> Option<String> {
-    if identifier != IDENTIFIER {
+    if !is_selftest(identifier) {
         return None;
     }
     let mode = env_mode()?;
@@ -93,7 +101,20 @@ pub fn requested() -> bool {
 /// True only in the self-test build started for a self-test: the hide and no-focus rules key on this, so
 /// another build started with FLICK_SELFTEST set behaves as usual.
 pub fn active<M: Manager<tauri::Wry>>(app: &M) -> bool {
-    requested() && app.config().identifier == IDENTIFIER
+    requested() && is_selftest(&app.config().identifier)
+}
+
+/// The yt-dlp folder the script shares between runs (FLICK_SELFTEST_TOOLS), read-only, so a run whose
+/// profile is new each time does not download yt-dlp again. Only a self-test run honors it.
+pub fn tools_dir<M: Manager<tauri::Wry>>(app: &M) -> Option<PathBuf> {
+    tools_gate(
+        active(app),
+        std::env::var_os("FLICK_SELFTEST_TOOLS").map(PathBuf::from),
+    )
+}
+
+fn tools_gate(active: bool, dir: Option<PathBuf>) -> Option<PathBuf> {
+    dir.filter(|d| active && d.is_absolute())
 }
 
 /// A self-test run shows no window and no Dock icon, whatever the config says.
@@ -110,7 +131,7 @@ pub fn stay_hidden<M: Manager<tauri::Wry>>(app: &M) {
 /// Where the report goes, or None unless the identifier, the mode and the path all say self-test.
 /// The self-test modes: every bundled plugin's install, or YouTube end to end (search, resolve, open).
 fn gate(identifier: &str, mode: Option<&str>, out: Option<PathBuf>) -> Option<PathBuf> {
-    if identifier != IDENTIFIER || !mode.is_some_and(|m| MODES.contains(&m)) {
+    if !is_selftest(identifier) || !mode.is_some_and(|m| MODES.contains(&m)) {
         return None;
     }
     out.filter(|p| p.is_absolute())
@@ -177,6 +198,35 @@ pub fn selftest_done(app: AppHandle, report: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const IDENTIFIER: &str = "dev.flick.selftest.0123abcd";
+
+    #[test]
+    fn a_selftest_identifier_is_the_prefix_and_8_hex() {
+        assert!(is_selftest(IDENTIFIER));
+        for bad in [
+            "com.dbaney.flick",
+            "dev.flick.selftest",
+            "dev.flick.selftest.",
+            "dev.flick.selftest.0123abc",
+            "dev.flick.selftest.0123abcde",
+            "dev.flick.selftest.0123ABCD",
+            "dev.flick.selftest.0123abcg",
+            "dev.flick.selftest.0123abcd.x",
+            "com.dbaney.flick.selftest.0123abcd",
+        ] {
+            assert!(!is_selftest(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn only_a_selftest_run_reads_the_shared_tools_folder() {
+        let d = || Some(PathBuf::from("/Users/x/Library/Caches/flick-selftest-tools"));
+        assert_eq!(tools_gate(true, d()), d());
+        assert_eq!(tools_gate(false, d()), None);
+        assert_eq!(tools_gate(true, Some("rel".into())), None);
+        assert_eq!(tools_gate(true, None), None);
+    }
 
     #[test]
     fn only_the_selftest_identifier_with_the_mode_and_an_absolute_path_runs() {

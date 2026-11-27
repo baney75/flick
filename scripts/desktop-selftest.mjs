@@ -1,7 +1,8 @@
 // Installs every plugin in plugins/index.json inside the real desktop app and times each step.
-// Builds "Flick Self-test" with its own identifier (dev.flick.selftest, so its data is separate from the
-// user's Flick) and no visible window, starts it hidden with `open -g -j -n`, waits up to 30 s for its
-// report, stops the copy it started and prints a table. Fails when any plugin errors or takes over 2 s. macOS only.
+// Builds "Flick Self-test" with this worktree's own identifier (dev.flick.selftest.<8 hex of the path>, so
+// its data is separate from the user's Flick and from other worktrees) and no visible window, starts it
+// hidden with `open -g -j -n`, waits up to 30 s for its report, stops the copy it started, prints a table
+// and removes that identifier's profile folders. Perf and youtube runs take yt-dlp from a read-only cache. Fails when any plugin errors or takes over 2 s. macOS only.
 //
 //   node scripts/desktop-selftest.mjs            build, then run
 //   node scripts/desktop-selftest.mjs --no-build run the last self-test build
@@ -12,12 +13,98 @@
 //   node scripts/desktop-selftest.mjs --mode youtube (or --youtube)  YouTube end to end: install, search, resolve, open
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { join, resolve, dirname } from 'node:path'
+import { basename, join, resolve, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
-export const IDENTIFIER = 'dev.flick.selftest'
+export const PREFIX = 'dev.flick.selftest.'
+const ID_RE = /^dev\.flick\.selftest\.[0-9a-f]{8}$/
+
+/** This worktree's self-test identifier: the prefix and 8 hex of its real path's SHA-256. */
+export function identifierFor(root) {
+  return PREFIX + createHash('sha256').update(root).digest('hex').slice(0, 8)
+}
+
+/** The folders macOS and WebKit make for an app identifier, under ~/Library. */
+export function profileDirs(id, home = homedir()) {
+  if (!ID_RE.test(id)) throw new Error(`${id} is not a self-test identifier.`)
+  const lib = join(home, 'Library')
+  return [
+    ...['Application Support', 'Caches', 'WebKit', 'HTTPStorages'].map((d) => join(lib, d, id)),
+    join(lib, 'Saved Application State', `${id}.savedState`),
+  ]
+}
+
+/** Removes these folders, after looking: every name must start with the self-test prefix (none is
+ *  removed otherwise), and a link or a file is left alone. Returns what it removed. */
+export function removeDirs(paths, fs = { lstatSync, rmSync }) {
+  const bad = paths.filter((p) => !basename(p).startsWith(PREFIX))
+  if (bad.length) throw new Error(`Refusing to remove ${bad.join(', ')}: not a ${PREFIX}* folder.`)
+  const removed = []
+  for (const p of paths) {
+    let st
+    try { st = fs.lstatSync(p) } catch { continue }
+    if (st.isSymbolicLink() || !st.isDirectory()) continue
+    fs.rmSync(p, { recursive: true, force: true })
+    removed.push(p)
+  }
+  return removed
+}
+
+/** yt-dlp for perf and youtube runs, shared read-only: fetched once (again after 7 days), checked against the
+ *  release's SHA2-256SUMS, unpacked like the app does and run once so macOS scans it now, not during a
+ *  measured run. A lock beside the folder keeps two worktrees from filling it at once. */
+export const TOOLS = join(homedir(), 'Library/Caches/flick-selftest-tools')
+/** The app's own layout for the unpacked build (MAC_DIR and SUM_FILE in src-tauri/src/ytdlp.rs). */
+export const TOOLS_LAYOUT = { dir: 'yt-dlp_macos', bin: 'yt-dlp_macos', sum: 'release.sha256' }
+const TOOLS_DAYS = 7
+export async function ensureTools(dir = TOOLS) {
+  const live = join(dir, TOOLS_LAYOUT.dir)
+  const bin = join(live, TOOLS_LAYOUT.bin)
+  const fresh = () => existsSync(bin) && Date.now() - statSync(join(live, TOOLS_LAYOUT.sum)).mtimeMs < TOOLS_DAYS * 86_400_000
+  if (fresh()) return dir
+  const lock = `${dir}.lock`
+  for (;;) {
+    try { mkdirSync(lock); break } catch {
+      // A lock older than 10 minutes was left by a run that stopped.
+      try { if (Date.now() - statSync(lock).mtimeMs > 10 * 60_000) rmSync(lock, { recursive: true, force: true }) } catch { /* gone already */ }
+      await sleep(500)
+    }
+  }
+  const writable = (p) => { if (existsSync(p)) execFileSync('chmod', ['-R', 'u+w', p]) }
+  try {
+    if (fresh()) return dir
+    const base = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download'
+    console.log(`Fetching yt-dlp into ${dir}.`)
+    const sums = await (await fetch(`${base}/SHA2-256SUMS`)).text()
+    const want = sums.split('\n').map((l) => l.trim().split(/\s+/)).find(([, n]) => n === 'yt-dlp_macos.zip')?.[0]
+    if (!want) throw new Error('The yt-dlp release lists no yt-dlp_macos.zip.')
+    const zip = Buffer.from(await (await fetch(`${base}/yt-dlp_macos.zip`)).arrayBuffer())
+    if (createHash('sha256').update(zip).digest('hex') !== want) throw new Error('yt-dlp_macos.zip does not match its release checksum.')
+    mkdirSync(dir, { recursive: true })
+    writable(dir)
+    const tmp = mkdtempSync(join(dir, 'new-'))
+    const zp = join(tmp, 'build.zip')
+    const out = join(tmp, TOOLS_LAYOUT.dir)
+    writeFileSync(zp, zip)
+    execFileSync('/usr/bin/ditto', ['-x', '-k', zp, out])
+    writeFileSync(join(out, TOOLS_LAYOUT.sum), want)
+    if (existsSync(live)) renameSync(live, join(tmp, 'old'))
+    renameSync(out, live)
+    rmSync(tmp, { recursive: true, force: true })
+    execFileSync(bin, ['--version'], { stdio: 'ignore' })
+  } finally {
+    if (existsSync(dir)) {
+      writable(dir)
+      for (const n of readdirSync(dir)) if (n.startsWith('new-')) rmSync(join(dir, n), { recursive: true, force: true })
+      execFileSync('chmod', ['-R', 'a-w', dir])
+    }
+    rmSync(lock, { recursive: true, force: true })
+  }
+  return dir
+}
 export const LIMIT_MS = 2000
 const WAIT_MS = 30_000
 
@@ -61,8 +148,8 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
 export const PRODUCT = 'Flick Self-test'
 /** The build override: its own identifier and name, and no window ever shown. WebKit suspends a hidden
  *  window's page after a few seconds, which stopped every answer that took longer, so throttling is off. */
-export function override(conf) {
-  return { identifier: IDENTIFIER, productName: PRODUCT, app: { windows: conf.app.windows.map((w) => ({ ...w, visible: false, focus: false, backgroundThrottling: 'disabled' })) } }
+export function override(conf, identifier) {
+  return { identifier, productName: PRODUCT, app: { windows: conf.app.windows.map((w) => ({ ...w, visible: false, focus: false, backgroundThrottling: 'disabled' })) } }
 }
 
 /** PIDs of processes running from this bundle only. */
@@ -145,13 +232,15 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const APP = join(ROOT, `src-tauri/target/release/bundle/macos/${PRODUCT}.app`)
 
 /** One hidden run of the self-test app in `mode`. Stops the copy by PID when done, on an error, or at 30 s. */
+let toolsDir = null
 async function launch(mode) {
   if (appPids(APP).length) throw new Error('A self-test app is already running.')
   const dir = mkdtempSync(join(tmpdir(), 'flick-selftest-'))
   const out = join(dir, 'report.json')
   const log = join(dir, 'report.log')
   // -g: not brought forward, -j: launched hidden, -n: a new copy.
-  execFileSync('open', ['-g', '-j', '-n', '--env', `FLICK_SELFTEST=${mode}`, '--env', `FLICK_SELFTEST_OUT=${out}`, APP])
+  const tools = toolsDir ? ['--env', `FLICK_SELFTEST_TOOLS=${toolsDir}`] : []
+  execFileSync('open', ['-g', '-j', '-n', '--env', `FLICK_SELFTEST=${mode}`, '--env', `FLICK_SELFTEST_OUT=${out}`, ...tools, APP])
   const t0 = Date.now()
   let why = ''
   const kids = new Set()
@@ -248,15 +337,27 @@ async function main() {
   const arg = (k) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : undefined }
   const mode = arg('--mode') ?? (process.argv.includes('--youtube') ? 'youtube' : 'plugins')
   if (!['plugins', 'perf', 'youtube'].includes(mode)) { console.error('--mode is plugins, perf or youtube.'); process.exit(2) }
+  const id = identifierFor(realpathSync(ROOT))
   if (!process.argv.includes('--no-build')) {
     const conf = JSON.parse(readFileSync(join(ROOT, 'src-tauri/tauri.conf.json'), 'utf8'))
-    const r = spawnSync('npx', ['tauri', 'build', '--bundles', 'app', '--config', JSON.stringify(override(conf))], { cwd: ROOT, stdio: 'inherit' })
+    const r = spawnSync('npx', ['tauri', 'build', '--bundles', 'app', '--config', JSON.stringify(override(conf, id))], { cwd: ROOT, stdio: 'inherit' })
     if (r.status !== 0) { console.error('The self-test build failed.'); process.exit(1) }
   }
   if (!existsSync(APP)) { console.error(`No app at ${APP}. Run without --no-build.`); process.exit(1) }
   // Never start a build that would open the user's own Flick data or show a window.
-  const id = execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIdentifier', join(APP, 'Contents/Info.plist')], { encoding: 'utf8' }).trim()
-  if (id !== IDENTIFIER) { console.error(`${APP} is not ${IDENTIFIER}. Build it with this script.`); process.exit(1) }
+  const built = execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIdentifier', join(APP, 'Contents/Info.plist')], { encoding: 'utf8' }).trim()
+  if (built !== id) { console.error(`${APP} is ${built}, not this worktree's ${id}. Build it with this script.`); process.exit(1) }
+  // Each run starts from an empty profile (one a stopped run left is cleared first) and leaves none
+  // behind, never while a copy still runs.
+  const clear = () => {
+    if (appPids(APP).length) { console.error(`Kept ${id}'s profile: a self-test copy is still running.`); return }
+    for (const p of removeDirs(profileDirs(id))) console.log(`Removed ${p}`)
+  }
+  clear()
+  process.on('exit', clear)
+  // Perf and youtube run yt-dlp inside a deadline a 54 MB first download would miss, so they share one
+  // warmed copy; ytdlp.rs's own tests and `cargo test ytdlp_live` cover the app's install.
+  if (mode !== 'plugins') toolsDir = await ensureTools().catch((e) => { console.error(`FAIL: ${e.message}`); process.exit(1) })
 
   if (mode === 'perf') return perfMain(arg('--out'))
   const { report, progress, why } = await launch(mode).catch((e) => { console.error(`FAIL: ${e.message}`); process.exit(1) })
