@@ -1319,8 +1319,12 @@ name = "flick-server"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bytes",
  "ctrlc",
  "getrandom 0.3.4",
+ "http-body",
+ "hyper",
+ "hyper-util",
  "if-addrs",
  "image",
  "include_dir",
@@ -1328,7 +1332,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tiny_http",
+ "tokio",
  "walkdir",
 ]
 
