@@ -114,8 +114,10 @@ pub fn vet(torrent: &[u8]) -> Result<Vetted, String> {
     if raw.piece_length > MAX_PIECE {
         return Err("This torrent's pieces are over 16 MB, so Flick won't open it.".into());
     }
-    // librqbit's own check overflows on lengths that don't match the piece hashes, so these come
-    // first: the lengths add up, and there is one 20-byte hash per piece of that total.
+    // librqbit's own check overflows on lengths its piece hashes don't cover, so these come first:
+    // the lengths add up, and there is a 20-byte hash for every piece of that total. A spare hash
+    // at the end is harmless (librqbit's own torrents end with one when the length is a whole
+    // number of pieces).
     let lens: Vec<u64> = match &raw.files {
         Some(files) => files.iter().map(|f| f.length).collect(),
         None => raw.length.into_iter().collect(),
@@ -125,7 +127,7 @@ pub fn vet(torrent: &[u8]) -> Result<Vetted, String> {
     let fits = total.is_some_and(|t| {
         raw.piece_length > 0
             && hashes.is_multiple_of(20)
-            && t.div_ceil(raw.piece_length.into()) == hashes / 20
+            && t.div_ceil(raw.piece_length.into()) <= hashes / 20
     });
     if !fits {
         return Err(unreadable(&"its file lengths don't match its pieces"));
