@@ -17,7 +17,10 @@ use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, DhtSessionConfig, ManagedTorrent, Session,
     SessionOptions,
 };
-use rules::{Want, DROPPED, MAX_ACTIVE, MAX_PEERS, NO_PEERS, TOO_MANY, UPLOAD_BPS};
+use rules::{
+    Want, CHECK_SLOW, CHECK_WAIT, DROPPED, MAX_ACTIVE, MAX_PEERS, METADATA, NO_PEERS, TOO_MANY,
+    UPLOAD_BPS,
+};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, SeekFrom};
 use std::net::SocketAddr;
@@ -61,7 +64,8 @@ impl Gate for Watch {
 pub struct Config {
     pub cache: PathBuf,
     pub cap: u64,
-    /// Metadata and the first data must arrive within this (rule 7: 45 seconds).
+    /// Metadata and the first data must arrive within this (rule 7: 45 seconds). The check of a
+    /// replay's cached pieces doesn't count against it (CHECK_WAIT).
     pub wait: Duration,
     pub dht: bool,
     /// Peers every torrent also tries (tests: a seeder on this computer).
@@ -399,10 +403,10 @@ impl Engine {
         let session = Session::new_with_opts(dir.clone(), opts)
             .await
             .map_err(|e| format!("The torrent engine didn't start: {e:#}"))?;
-        let run = self.fetch(&session, hash, trackers, file_idx, dir);
+        let run = self.fetch(&session, hash, trackers, file_idx, dir, deadline);
         // A stop or a VPN drop ends the start at once; the caller gives the reason.
         let result = tokio::select! {
-            r = timeout_at(deadline, run) => r.unwrap_or_else(|_| Err(NO_PEERS.to_string())),
+            r = run => r,
             () = cancel.notified() => Err(DROPPED.to_string()),
         };
         match result {
@@ -446,7 +450,9 @@ impl Engine {
         closed(self.cfg.stop_wait, vec![self.close(hash, session)]).await;
     }
 
-    /// Metadata, the checks, then only the chosen file, until its first data arrives.
+    /// Metadata (saved in the cache folder, or from peers), the checks, then only the chosen file,
+    /// until its first data arrives or its first piece is already on disk (#113). Metadata and the
+    /// first data must come by `deadline`; the check of cached pieces gets CHECK_WAIT on top.
     async fn fetch(
         &self,
         session: &Arc<Session>,
@@ -454,30 +460,46 @@ impl Engine {
         trackers: &[String],
         file_idx: Option<usize>,
         dir: PathBuf,
+        deadline: Instant,
     ) -> Result<(Arc<ManagedTorrent>, rules::Vetted, usize, u64, String), String> {
         let folder = Some(dir.to_string_lossy().into_owned());
-        let peers = Some(self.cfg.peers.clone());
-        let list = AddTorrentOptions {
-            list_only: true,
-            output_folder: folder.clone(),
-            initial_peers: peers,
-            ..Default::default()
-        };
-        let link = rules::magnet(hash, trackers);
         fn failed(e: impl std::fmt::Display) -> String {
             format!("This torrent didn't open: {e:#}")
         }
-        let listed = session
-            .add_torrent(AddTorrent::from_url(link), Some(list))
-            .await
-            .map_err(failed)?;
-        let AddTorrentResponse::ListOnly(listed) = listed else {
-            return Err("This torrent didn't open.".into());
+        let no_peers = |_| NO_PEERS.to_string();
+        let saved = self.cfg.cache.join(hash).join(METADATA);
+        let cached = rules::saved_metadata(&saved, hash);
+        let fetched = cached.is_none();
+        let (bytes, mut peers) = match cached {
+            Some(b) => (b, vec![]),
+            None => {
+                let list = AddTorrentOptions {
+                    list_only: true,
+                    output_folder: folder.clone(),
+                    initial_peers: Some(self.cfg.peers.clone()),
+                    ..Default::default()
+                };
+                let link = rules::magnet(hash, trackers);
+                let listed = session.add_torrent(AddTorrent::from_url(link), Some(list));
+                let listed = timeout_at(deadline, listed)
+                    .await
+                    .map_err(no_peers)?
+                    .map_err(failed)?;
+                let AddTorrentResponse::ListOnly(listed) = listed else {
+                    return Err("This torrent didn't open.".into());
+                };
+                (listed.torrent_bytes.to_vec(), listed.seen_peers)
+            }
         };
-        let vetted = rules::vet(&listed.torrent_bytes)?;
+        let vetted = rules::vet(&bytes)?;
         let file = rules::pick_file(&vetted, file_idx)?;
         let (name, len) = vetted.files[file].clone();
-        let mut peers = listed.seen_peers;
+        if let Err(e) = fetched.then(|| std::fs::write(&saved, &bytes)).transpose() {
+            eprintln!(
+                "flick: torrent metadata not saved at {}: {e}",
+                saved.display()
+            );
+        }
         peers.extend(&self.cfg.peers);
         let add = AddTorrentOptions {
             only_files: Some(vec![file]),
@@ -485,29 +507,51 @@ impl Engine {
             overwrite: true,
             initial_peers: Some(peers),
             peer_limit: Some(MAX_PEERS),
+            // Saved metadata carries no trackers, so a replay announces to the stream's own.
+            trackers: Some(trackers.to_vec()),
             ..Default::default()
         };
-        let added = session
-            .add_torrent(
-                AddTorrent::TorrentFileBytes(listed.torrent_bytes),
-                Some(add),
-            )
+        let added = session.add_torrent(AddTorrent::from_bytes(bytes), Some(add));
+        let added = timeout_at(deadline, added)
             .await
+            .map_err(no_peers)?
             .map_err(failed)?;
         let handle = added
             .into_handle()
             .ok_or_else(|| "This torrent didn't open.".to_string())?;
-        let mut first = None;
-        loop {
-            let got = handle.stats().file_progress.get(file).copied();
-            match (got, first) {
-                (Some(b), _) if b >= len => break,
-                (Some(b), Some(f)) if b > f => break,
-                (Some(b), None) => first = Some(b),
-                _ => {}
+        // Fastresume is off, so the pieces already cached are hashed again first.
+        let began = Instant::now();
+        timeout(CHECK_WAIT, handle.wait_until_initialized())
+            .await
+            .map_err(|_| CHECK_SLOW.to_string())?
+            .map_err(failed)?;
+        let deadline = deadline + began.elapsed();
+        let start = handle
+            .with_metadata(|m| m.file_infos[file].piece_range.start)
+            .map_err(failed)?;
+        let api = librqbit::Api::new(Arc::clone(session), None);
+        let id = librqbit::api::TorrentIdOrHash::Id(handle.id());
+        let on_disk = || {
+            api.api_dump_haves(id)
+                .is_ok_and(|(have, _)| have.get(start as usize).is_some_and(|b| *b))
+        };
+        let first_data = async {
+            let mut first = None;
+            loop {
+                let got = handle.stats().file_progress.get(file).copied();
+                match (got, first) {
+                    (Some(b), _) if b >= len => break,
+                    (Some(b), Some(f)) if b > f => break,
+                    (Some(b), None) => first = Some(b),
+                    _ => {}
+                }
+                if on_disk() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
+        };
+        timeout_at(deadline, first_data).await.map_err(no_peers)?;
         Ok((handle, vetted, file, len, name))
     }
 

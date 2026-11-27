@@ -512,3 +512,23 @@ fn two_files_that_would_share_a_path_on_disk_are_refused() {
     let apart = [entry(&["a", "b.mp4"], 10), entry(&["a", "c.mp4"], 10)];
     assert!(rules::vet(&torrent(b"M", &apart, PIECE)).is_ok());
 }
+
+#[test]
+fn saved_metadata_opens_only_its_own_torrent() {
+    let path = tmp("metadata").join(rules::METADATA);
+    assert_eq!(rules::saved_metadata(&path, HASH), None, "none saved");
+    let t = torrent(b"Movie", &[entry(&["movie.mp4"], 5000)], PIECE);
+    std::fs::write(&path, &t).unwrap();
+    let own = librqbit::torrent_from_bytes(&t)
+        .unwrap()
+        .info_hash
+        .as_string();
+    assert_eq!(rules::saved_metadata(&path, &own), Some(t));
+    assert_eq!(
+        rules::saved_metadata(&path, HASH),
+        None,
+        "another torrent's"
+    );
+    std::fs::write(&path, b"d4:junke").unwrap();
+    assert_eq!(rules::saved_metadata(&path, &own), None, "unreadable");
+}
