@@ -2097,12 +2097,7 @@ mod tests {
 
     #[test]
     fn photos_count_as_media() {
-        for p in [
-            "/p/IMG_1234.JPG",
-            "/p/IMG_1235.heic",
-            "/p/a.webp",
-            "/p/b.avif",
-        ] {
+        for p in ["/p/IMG_1234.JPG", "/p/IMG_1235.heic", "/p/a.webp", "/p/b.avif"] {
             assert!(is_media(Path::new(p)), "{p}");
         }
     }

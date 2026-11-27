@@ -32,16 +32,27 @@ pub fn check_want(w: &Want) -> Result<(String, Vec<String>), String> {
             "torrent.trackers holds at most {MAX_TRACKERS} trackers."
         ));
     }
-    let schemes = ["udp://", "http://", "https://"];
     for t in &w.trackers {
-        let plain = t.len() <= 2048 && t.bytes().all(|b| b.is_ascii_graphic());
-        if !plain
-            || !schemes
-                .iter()
-                .any(|s| t.starts_with(s) && t.len() > s.len())
-        {
+        if t.len() > 2048 {
+            return Err("torrent.trackers entries are at most 2048 bytes.".into());
+        }
+        // The literal prefix too, so the parsed URL is the string the engine gets.
+        let web = |u: &tauri::Url| {
+            matches!(u.scheme(), "udp" | "http" | "https")
+                && t.starts_with(&format!("{}://", u.scheme()))
+        };
+        let parsed = tauri::Url::parse(t).ok().filter(web);
+        let host = parsed.as_ref().and_then(|u| u.host_str()).unwrap_or("");
+        if host.is_empty() || !t.bytes().all(|b| b.is_ascii_graphic()) {
             return Err(format!(
                 "torrent.trackers takes udp, http and https trackers: {t:?}"
+            ));
+        }
+        // Like a plugin's own requests (plugins.rs), a tracker never points at this computer or
+        // the LAN. Every engine socket is also bound to the VPN tunnel.
+        if crate::plugins::is_private(&host.to_ascii_lowercase()) {
+            return Err(format!(
+                "torrent.trackers can't point inside this network: {t:?}"
             ));
         }
     }
@@ -89,24 +100,26 @@ pub fn touch(dir: &Path) -> std::io::Result<()> {
     std::fs::File::open(dir)?.set_modified(SystemTime::now())
 }
 
-/// Deletes the least recently used torrent folders (40-hex names only) until the cache holds at
-/// most `cap` bytes, never one in `keep`. Returns what it deleted.
+/// Deletes the least recently used torrent folders (40-hex names only) until the cache takes at
+/// most `cap` bytes on disk, never one in `keep`. Returns what it deleted.
 pub fn trim(cache: &Path, cap: u64, keep: &[String]) -> std::io::Result<Vec<PathBuf>> {
     let hex = |n: &str| n.len() == 40 && n.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
     let mut dirs = vec![];
     for e in std::fs::read_dir(cache)? {
         let e = e?;
         let name = e.file_name().to_string_lossy().into_owned();
-        if !hex(&name) || !e.file_type()?.is_dir() {
+        // A folder that vanishes while the trim reads it is simply not counted.
+        let Ok(meta) = e.metadata() else { continue };
+        if !hex(&name) || !meta.is_dir() {
             continue;
         }
-        let used = e.metadata()?.modified()?;
+        let used = meta.modified()?;
         let size: u64 = walkdir::WalkDir::new(e.path())
             .into_iter()
             .filter_map(Result::ok)
             .filter_map(|f| f.metadata().ok())
             .filter(|m| m.is_file())
-            .map(|m| m.len())
+            .map(|m| on_disk(&m))
             .sum();
         dirs.push((used, size, name, e.path()));
     }
@@ -120,9 +133,26 @@ pub fn trim(cache: &Path, cap: u64, keep: &[String]) -> std::io::Result<Vec<Path
         if keep.contains(&name) {
             continue;
         }
-        std::fs::remove_dir_all(&path)?;
+        // One folder that won't delete doesn't stop the trim; the next folder may.
+        if let Err(e) = std::fs::remove_dir_all(&path) {
+            eprintln!("torrent cache: can't delete {}: {e}", path.display());
+            continue;
+        }
         total -= size;
         gone.push(path);
     }
     Ok(gone)
+}
+
+/// The bytes a file takes on disk: a torrent's files are sparse until their pieces arrive.
+fn on_disk(m: &std::fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        m.blocks() * 512
+    }
+    #[cfg(not(unix))]
+    {
+        m.len()
+    }
 }

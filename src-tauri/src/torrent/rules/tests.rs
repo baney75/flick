@@ -37,12 +37,36 @@ fn a_stream_asks_for_a_40_hex_hash_and_web_trackers_only() {
         "ws://t.example",
         "udp://t.example/a b",
         "udp://t.example/\u{e9}",
+        "http:t.example",
+        "magnet:?xt=urn:btih:x",
     ] {
         let e = field(rules::check_want(&want(HASH, &[bad])));
-        assert!(e.contains("torrent.trackers"), "{bad}: {e}");
+        assert!(e.contains("udp, http and https"), "{bad}: {e}");
     }
+    for inside in [
+        "http://127.0.0.1:11470/settings",
+        "http://127.1/announce",
+        "http://localhost:6969/announce",
+        "http://LOCALHOST/announce",
+        "http://nas.local/announce",
+        "http://[::1]/announce",
+        "http://[::ffff:192.168.1.1]/announce",
+        "udp://192.168.1.1:80",
+        "udp://10.0.0.2:53",
+        "https://172.16.0.1/announce",
+        "udp://169.254.169.254:80",
+        "udp://100.100.100.100:80",
+        "http://0.0.0.0/announce",
+        "http://[fd7a:115c:a1e0::1]/announce",
+    ] {
+        let e = field(rules::check_want(&want(HASH, &[inside])));
+        assert!(e.contains("inside this network"), "{inside}: {e}");
+    }
+    let fits = format!("https://t.example/{}", "a".repeat(2048 - 18));
+    assert!(rules::check_want(&want(HASH, &[&fits])).is_ok());
     let long = format!("https://t.example/{}", "a".repeat(2048));
-    assert!(rules::check_want(&want(HASH, &[&long])).is_err());
+    let e = field(rules::check_want(&want(HASH, &[&long])));
+    assert!(e.contains("at most 2048 bytes"), "{e}");
     let many: Vec<String> = (0..51).map(|i| format!("udp://t{i}.example:80")).collect();
     let many: Vec<&str> = many.iter().map(String::as_str).collect();
     assert!(field(rules::check_want(&want(HASH, &many))).contains("at most 50"));
@@ -122,29 +146,35 @@ fn aged(dir: &Path, secs_ago: u64) {
         .unwrap();
 }
 
+/// A torrent folder holding `kb` KiB of written data.
+fn folder(cache: &Path, name: &str, kb: usize, secs_ago: u64) -> PathBuf {
+    let d = cache.join(name);
+    std::fs::create_dir_all(d.join("sub")).unwrap();
+    std::fs::write(d.join("sub/part"), vec![1u8; kb << 10]).unwrap();
+    aged(&d, secs_ago);
+    d
+}
+
+const K64: u64 = 64 << 10;
+
 #[test]
 fn the_cache_trims_the_oldest_torrents_first_and_only_torrent_folders() {
     let cache = tmp("trim");
     let hex = |c: char| c.to_string().repeat(40);
     let (old, mid, new) = (hex('a'), hex('b'), hex('c'));
     for (name, age) in [(&old, 300), (&mid, 200), (&new, 100)] {
-        let d = cache.join(name);
-        std::fs::create_dir_all(d.join("sub")).unwrap();
-        std::fs::write(d.join("sub/part"), vec![0u8; 100]).unwrap();
-        aged(&d, age);
+        folder(&cache, name, 64, age);
     }
-    std::fs::create_dir_all(cache.join("notes")).unwrap();
-    std::fs::write(cache.join("notes/big"), vec![0u8; 1000]).unwrap();
-    aged(&cache.join("notes"), 1000);
-    std::fs::write(cache.join("stray"), vec![0u8; 1000]).unwrap();
+    folder(&cache, "notes", 1024, 1000);
+    std::fs::write(cache.join("stray"), vec![0u8; 1 << 20]).unwrap();
 
-    assert!(rules::trim(&cache, 300, &[]).unwrap().is_empty());
-    let gone = rules::trim(&cache, 250, std::slice::from_ref(&old)).unwrap();
+    assert!(rules::trim(&cache, 3 * K64, &[]).unwrap().is_empty());
+    let gone = rules::trim(&cache, 2 * K64 + 100, std::slice::from_ref(&old)).unwrap();
     assert_eq!(gone, [cache.join(&mid)]);
     assert!(cache.join(&old).exists() && cache.join(&new).exists());
     let gone = rules::trim(&cache, 50, &[]).unwrap();
     assert_eq!(gone, [cache.join(&old), cache.join(&new)]);
-    assert!(cache.join("notes/big").exists() && cache.join("stray").exists());
+    assert!(cache.join("notes/sub/part").exists() && cache.join("stray").exists());
 
     let d = cache.join(&old);
     std::fs::create_dir_all(&d).unwrap();
@@ -152,5 +182,54 @@ fn the_cache_trims_the_oldest_torrents_first_and_only_torrent_folders() {
     rules::touch(&d).unwrap();
     let used = std::fs::metadata(&d).unwrap().modified().unwrap();
     assert!(used.elapsed().unwrap() < Duration::from_secs(60));
+    std::fs::remove_dir_all(&cache).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn the_cache_counts_the_bytes_on_disk_not_a_sparse_file_s_length() {
+    let cache = tmp("sparse");
+    let hex = |c: char| c.to_string().repeat(40);
+    let old = folder(&cache, &hex('a'), 64, 300);
+    // A torrent just started: its 8 GB file is allocated at full length with 64 KiB arrived.
+    let new = folder(&cache, &hex('b'), 64, 100);
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(new.join("sub/part"))
+        .unwrap();
+    f.set_len(8 << 30).unwrap();
+    aged(&new, 100);
+    assert!(rules::trim(&cache, 1 << 20, &[hex('b')])
+        .unwrap()
+        .is_empty());
+    assert!(old.exists());
+    std::fs::remove_dir_all(&cache).unwrap();
+}
+
+#[test]
+fn a_folder_that_vanishes_or_will_not_delete_does_not_stop_the_trim() {
+    let cache = tmp("stuck");
+    let hex = |c: char| c.to_string().repeat(40);
+    let stuck = folder(&cache, &hex('a'), 64, 300);
+    let next = folder(&cache, &hex('b'), 64, 200);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let ro = std::fs::Permissions::from_mode(0o555);
+        std::fs::set_permissions(stuck.join("sub"), ro).unwrap();
+    }
+    let gone = rules::trim(&cache, 0, &[]).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            gone,
+            std::slice::from_ref(&next),
+            "the stuck folder is skipped, the next one goes"
+        );
+        let rw = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(stuck.join("sub"), rw).unwrap();
+    }
+    assert!(!next.exists());
     std::fs::remove_dir_all(&cache).unwrap();
 }

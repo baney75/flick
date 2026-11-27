@@ -62,7 +62,7 @@ fn is_private_ip(ip: IpAddr) -> bool {
 }
 
 /// A name only an explicit entry may reach: a private address, `localhost`, `.local`.
-fn is_private(host: &str) -> bool {
+pub(crate) fn is_private(host: &str) -> bool {
     let h = host.trim_start_matches('[').trim_end_matches(']');
     if let Ok(ip) = h.parse::<IpAddr>() {
         return is_private_ip(ip);
@@ -419,18 +419,9 @@ mod tests {
     #[test]
     fn a_redirect_never_leaves_https() {
         let u = |s: &str| Url::parse(s).unwrap();
-        assert!(downgrades(
-            &u("https://api.torbox.app/a"),
-            &u("http://api.torbox.app/b")
-        ));
-        assert!(!downgrades(
-            &u("https://api.torbox.app/a"),
-            &u("https://x.tb-cdn.st/b")
-        ));
-        assert!(!downgrades(
-            &u("http://192.168.1.2/a"),
-            &u("http://192.168.1.2/b")
-        ));
+        assert!(downgrades(&u("https://api.torbox.app/a"), &u("http://api.torbox.app/b")));
+        assert!(!downgrades(&u("https://api.torbox.app/a"), &u("https://x.tb-cdn.st/b")));
+        assert!(!downgrades(&u("http://192.168.1.2/a"), &u("http://192.168.1.2/b")));
     }
 
     #[test]
