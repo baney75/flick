@@ -460,6 +460,13 @@ fn file_lengths_that_do_not_match_the_pieces_are_refused() {
         &format!("6:pieces20:{hash}"),
         &format!("6:pieces60:{hash}{hash}{hash}"),
     );
+    let spare = |t: &[u8]| {
+        edit(
+            t,
+            &format!("6:pieces20:{hash}"),
+            &format!("6:pieces40:{hash}{hash}"),
+        )
+    };
     let odd_hash = edit(
         &one,
         &format!("6:pieces20:{hash}"),
@@ -472,19 +479,17 @@ fn file_lengths_that_do_not_match_the_pieces_are_refused() {
         ("too few hashes", short),
         ("a partial hash", odd_hash),
         ("two spare hashes", two_spare),
+        ("a spare hash after a part piece", spare(&one)),
     ] {
         let e = rules::vet(&t).unwrap_err();
         assert!(e.contains("don't match its pieces"), "{what}: {e}");
     }
     assert!(rules::vet(&one).is_ok());
-    let spare = edit(
-        &one,
-        &format!("6:pieces20:{hash}"),
-        &format!("6:pieces40:{hash}{hash}"),
-    );
+    let whole = edit(&one, "6:lengthi1e", &format!("6:lengthi{PIECE}e"));
+    assert!(rules::vet(&whole).is_ok());
     assert!(
-        rules::vet(&spare).is_ok(),
-        "a spare hash at the end is harmless"
+        rules::vet(&spare(&whole)).is_ok(),
+        "a spare hash after whole pieces is harmless"
     );
 }
 

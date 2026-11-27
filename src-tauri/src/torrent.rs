@@ -92,6 +92,8 @@ impl Start {
 
 struct Running {
     token: u64,
+    /// Its files after the checks, so another file of it is judged before this one stops.
+    vetted: rules::Vetted,
     session: Arc<Session>,
     iface: String,
     file: usize,
@@ -194,7 +196,11 @@ impl Engine {
                 }
                 Some(Slot::Starting(s)) if s.ended.is_some() => return Err(STOPPING.into()),
                 Some(Slot::Starting(_)) => return Err("This torrent is still starting.".into()),
-                _ => {}
+                // Another file of it: one it can't play leaves the one that plays alone.
+                Some(Slot::Running(r)) => {
+                    rules::pick_file(&r.vetted, want.file_idx)?;
+                }
+                None => {}
             }
             // Another file of a running torrent replaces it.
             let old = t.slots.remove(&hash);
@@ -215,7 +221,10 @@ impl Engine {
         };
         // The old session closes before a new one opens the same cache folder.
         if let Some(Slot::Running(r)) = old {
-            self.end(&hash, r, true);
+            if !self.end(&hash, r, true) {
+                self.forget(&hash, token);
+                return Err(STOPPING.into());
+            }
         }
         let id = hold_id(&hash, token);
         let gate = self.gate.hold(&id);
@@ -330,7 +339,7 @@ impl Engine {
             () = cancel.notified() => Err(DROPPED.to_string()),
         };
         match result {
-            Ok((handle, file, len, name)) => {
+            Ok((handle, vetted, file, len, name)) => {
                 let key = format!("{hash}/{file}");
                 let rt = self.rt.handle().clone();
                 let src = Arc::new(File {
@@ -343,6 +352,7 @@ impl Engine {
                 match self.server.add(&key, src) {
                     Ok(url) => Ok(Running {
                         token,
+                        vetted,
                         session,
                         iface: iface.to_string(),
                         file,
@@ -370,7 +380,7 @@ impl Engine {
         trackers: &[String],
         file_idx: Option<usize>,
         dir: PathBuf,
-    ) -> Result<(Arc<ManagedTorrent>, usize, u64, String), String> {
+    ) -> Result<(Arc<ManagedTorrent>, rules::Vetted, usize, u64, String), String> {
         let folder = Some(dir.to_string_lossy().into_owned());
         let peers = Some(self.cfg.peers.clone());
         let list = AddTorrentOptions {
@@ -424,30 +434,32 @@ impl Engine {
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        Ok((handle, file, len, name))
+        Ok((handle, vetted, file, len, name))
     }
 
     /// Stops a torrent: the player's URL goes away at once and its session closes every socket.
-    /// With `wait` it blocks until the session closes; without, the gate hears the release after
-    /// the hook that asked returns (hooks must not call back into the gate).
-    fn end(&self, hash: &str, r: Running, wait: bool) {
+    /// With `wait` it blocks until the session closes and says whether it closed in time; without,
+    /// the gate hears the release after the hook that asked returns (hooks must not call back
+    /// into the gate), and it answers true.
+    fn end(&self, hash: &str, r: Running, wait: bool) -> bool {
         self.server.remove(&r.key);
         let id = hold_id(hash, r.token);
         let session = r.session;
         if wait {
             self.gate.release(&id);
-            self.rt.block_on(stop(&session));
+            self.rt.block_on(stop(&session))
         } else {
             let gate = Arc::clone(&self.gate);
             self.rt.spawn(async move {
                 gate.release(&id);
                 stop(&session).await;
             });
+            true
         }
     }
 
-    /// Playback of `hash` stopped. A torrent still starting ends its start. Blocks until the
-    /// session closes, so it runs on a blocking thread.
+    /// Playback of `hash` stopped. A running torrent's session closes before this returns, so it
+    /// runs on a blocking thread; a torrent still starting is told to end and closes on its own.
     pub fn stop(&self, hash: &str) {
         let hash = hash.to_ascii_lowercase();
         let running = {
@@ -466,14 +478,28 @@ impl Engine {
     /// Every torrent stops (the gate failed, or the app quits). With `wait` it blocks until the
     /// sessions close.
     pub fn stop_all(&self, wait: bool) {
-        let running = self.take(|_| true);
-        for (hash, r) in running {
-            self.end(&hash, r, wait);
+        let running = self.take(|_| true, true);
+        if !wait {
+            for (hash, r) in running {
+                self.end(&hash, r, false);
+            }
+            return;
         }
+        // At quit the sessions close together, under one bounded wait.
+        let mut closing = tokio::task::JoinSet::new();
+        for (hash, r) in running {
+            self.server.remove(&r.key);
+            self.gate.release(&hold_id(&hash, r.token));
+            let session = r.session;
+            closing.spawn_on(async move { stop(&session).await }, self.rt.handle());
+        }
+        self.rt
+            .block_on(async { while closing.join_next().await.is_some() {} });
     }
 
-    /// Ends every start and takes out every running torrent whose tunnel `gone` matches.
-    fn take(&self, gone: impl Fn(&str) -> bool) -> Vec<(String, Running)> {
+    /// Ends the starts on a tunnel `gone` matches (every start with `all`) and takes out the
+    /// running torrents on one.
+    fn take(&self, gone: impl Fn(&str) -> bool, all: bool) -> Vec<(String, Running)> {
         let mut t = self.table();
         let mut out = vec![];
         let hashes: Vec<String> = t.slots.keys().cloned().collect();
@@ -481,7 +507,7 @@ impl Engine {
             match t.slots.get_mut(&hash) {
                 Some(Slot::Starting(s)) => {
                     // A start whose hold hasn't answered yet checks the last answer when it finishes.
-                    if s.iface.as_deref().is_some_and(&gone) {
+                    if all || s.iface.as_deref().is_some_and(&gone) {
                         s.end(DROPPED);
                     }
                 }
@@ -508,16 +534,19 @@ impl Engine {
             return self.stop_all(false);
         }
         let gone = |iface: &str| s.iface.as_deref() != Some(iface);
-        for (hash, r) in self.take(gone) {
+        for (hash, r) in self.take(gone, false) {
             self.end(&hash, r, false);
         }
     }
 }
 
-async fn stop(session: &Arc<Session>) {
-    if timeout(STOP_WAIT, session.stop()).await.is_err() {
+/// Whether the session closed within STOP_WAIT.
+async fn stop(session: &Arc<Session>) -> bool {
+    let closed = timeout(STOP_WAIT, session.stop()).await.is_ok();
+    if !closed {
         eprintln!("torrent: a session took over {:?} to stop", STOP_WAIT);
     }
+    closed
 }
 
 /// The chosen file of a running torrent, read from the playhead (librqbit fetches the pieces

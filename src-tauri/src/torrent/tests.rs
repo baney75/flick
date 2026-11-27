@@ -189,6 +189,15 @@ fn a_seeded_torrent_plays_from_the_local_url_with_ranges_and_stops() {
     assert_eq!(get(&url, Some(&format!("/{key}")), "").0, 403, "no token");
     let other = url.replace(&format!("/{hash}/0"), &format!("/{hash}/1"));
     assert_eq!(get(&other, None, "").0, 404, "another file");
+    // A file the torrent doesn't have leaves the one that plays alone.
+    let mut missing = want(&hash, &[]);
+    missing.file_idx = Some(5);
+    assert_eq!(e.play(&missing), Err("This torrent has no file 5.".into()));
+    assert_eq!(
+        get(&url, None, "Range: bytes=0-9\r\n").0,
+        206,
+        "still playing"
+    );
 
     let started = std::time::Instant::now();
     e.stop(&hash.to_ascii_uppercase());
@@ -291,6 +300,12 @@ fn a_vpn_drop_while_a_torrent_starts_stops_it() {
     assert!(e.running().is_empty());
     wait_until(|| gate.held().is_empty());
 
+    // Every torrent stopping (a quit) ends a start whose hold just passed.
+    *gate.on_hold.lock().unwrap() = Some(Box::new(|e| e.stop_all(false)));
+    assert_eq!(e.play(&want(&hash, &[])), Err(rules::DROPPED.into()));
+    assert!(e.running().is_empty());
+    wait_until(|| gate.held().is_empty());
+
     // The same tunnel again changes nothing.
     let lo = || GateState::pass(LOOPBACK.into(), "203.0.113.9".parse().unwrap());
     *gate.on_hold.lock().unwrap() = Some(Box::new(move |e| e.on_gate(&lo())));
@@ -382,6 +397,12 @@ fn at_most_three_torrents_play_at_once() {
         3,
         "the refused torrent never asked the gate"
     );
+    // Quitting closes them all together.
+    let started = std::time::Instant::now();
+    e.stop_all(true);
+    assert!(started.elapsed() < Duration::from_secs(12));
+    assert!(e.running().is_empty());
+    assert!(gate.held().is_empty());
 }
 
 #[test]
