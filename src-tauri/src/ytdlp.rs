@@ -422,7 +422,7 @@ fn kill_all(children: Vec<Child>) {
 }
 
 /// Starts `cmd` in its own process group, so `kill_tree` can stop everything it starts.
-fn own_group(cmd: &mut Command) -> &mut Command {
+pub(crate) fn own_group(cmd: &mut Command) -> &mut Command {
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(cmd, 0);
     cmd
@@ -767,7 +767,7 @@ impl Tally {
 
 /// yt-dlp's release builds run as two processes (a PyInstaller loader and the program), and it
 /// starts ffmpeg to merge: stop them all, not only the process Flick started.
-fn kill_tree(c: &mut Child) {
+pub(crate) fn kill_tree(c: &mut Child) {
     #[cfg(unix)]
     let _ = Command::new("kill")
         .args(["-KILL", "--", &format!("-{}", c.id())])

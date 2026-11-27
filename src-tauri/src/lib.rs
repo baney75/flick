@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
+mod playback;
 mod plugins;
 mod selftest;
 mod share;
@@ -1365,6 +1366,7 @@ pub fn run() {
         .manage(plugins::PluginHosts::default())
         .manage(share::Share::default())
         .manage(ytdlp::PluginTools::default())
+        .manage(playback::Probes::default())
         .register_asynchronous_uri_scheme_protocol("kodi", |ctx, req, responder| {
             let app = ctx.app_handle().clone();
             tauri::async_runtime::spawn_blocking(move || responder.respond(kodi_proxy(&app, &req)));
@@ -1413,7 +1415,8 @@ pub fn run() {
             #[cfg(desktop)]
             torrent::torrent_stop,
             #[cfg(desktop)]
-            torrent::torrent_stats
+            torrent::torrent_stats,
+            playback::probe_stream
         ])
         .setup(|app| {
             selftest::mark_setup();
