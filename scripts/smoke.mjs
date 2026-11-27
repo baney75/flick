@@ -118,8 +118,17 @@ const vid = (n) => ({ id: 'v' + n, type: 'video', name: 'Grid Video ' + n, poste
 export default {
   api: 1, id: 'org.smoke.grid', name: 'Smoke Grid', version: '1.0.0', author: 'Smoke', hosts: ['127.0.0.1'], layout: 'grid',
   catalogs: [{ id: 'foryou', name: 'For You', type: 'video' }, { id: 'topic', name: 'Topic', type: 'video' }, { id: 'find', name: 'Find', type: 'video', search: true }],
+  titleActions: [{ id: 'later', label: 'Watch later', key: 'w' }],
+  async userCatalogs(ctx) { return ((await ctx.store.get('later')) ?? []).length ? [{ id: 'saved', name: 'Saved', type: 'video' }] : [] },
+  async titleAction(ctx, { id }) {
+    const l = (await ctx.store.get('later')) ?? []
+    const on = !l.includes(id)
+    await ctx.store.set('later', on ? [id, ...l] : l.filter((x) => x !== id))
+    return { ok: true, on }
+  },
   async catalog(ctx, { id, search, skip = 0 }) {
     if (search) return { items: [{ ...vid(9), name: 'Found ' + search }] }
+    if (id === 'saved') return { items: ((await ctx.store.get('later')) ?? []).map((v) => vid(v.slice(1))) }
     if (id !== 'topic') return { items: [] }
     return { items: [1, 2, 3, 4].slice(skip, skip + 2).map(vid), more: skip + 2 < 4 }
   },
@@ -1015,6 +1024,8 @@ try {
     await cards.first().focus()
     await gp.keyboard.press('ArrowRight')
     check(await gp.evaluate(() => document.activeElement?.textContent ?? '').then((t) => /Grid Video 2/.test(t)), 'the arrow keys move between grid cards')
+    await gp.keyboard.press('w')
+    check(await gp.locator('.chips [role=tab]', { hasText: 'Saved' }).waitFor({ timeout: 5000 }).then(() => true, () => false), "W on a grid card shows the plugin's new list chip at once, with no reload")
     await gp.keyboard.press('Enter')
     await gp.locator('.streams .play-best').waitFor({ timeout: 15000 })
     check(await gp.waitForFunction(() => document.activeElement?.classList.contains('play-best'), null, { timeout: 5000 }).then(() => true, () => false), 'a title opened from a grid has Play focused')

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error a plain JS plugin with no types of its own
-import youtube, { views, age } from '../plugins/youtube/plugin.js'
-import { validateCatalog, validateMeta } from '../src/lib/plugins/validate'
+import youtube, { views, age, forYouQuery } from '../plugins/youtube/plugin.js'
+import { validateCatalog, validateManifest, validateMeta, validateTitleAction } from '../src/lib/plugins/validate'
 // What Flick's yt-dlp search tool makes of tests/fixtures/yt-search.json (src-tauri checks the two match).
 import SEARCH from './fixtures/ytdlp-search.json'
 
@@ -12,7 +12,8 @@ function fakeCtx(results: unknown[] = SEARCH) {
   return {
     searches,
     store: { get: async (k: string) => store.get(k), set: async (k: string, v: unknown) => { store.set(k, structuredClone(v)) } },
-    tools: { ytdlp: { search: async (q: string, n: number) => { searches.push(q); return structuredClone(results).slice(0, n) }, resolve: async () => 'flick-tool:ytdlp/x' } },
+    tools: { ytdlp: { search: async (q: string, n: number) => { searches.push(q); return structuredClone(results).slice(0, n) }, resolve: async (u: string) => { if (/gone/.test(u)) throw new Error('yt-dlp: ERROR: [youtube] gone: Video unavailable'); return 'flick-tool:ytdlp/x' } } },
+    fetch: async () => ({ json: async () => ({ title: 'A shared video', author_name: 'Someone', thumbnail_url: 'https://i.ytimg.com/vi/s/hq.jpg' }) }),
     settings: {},
     platform: 'desktop',
     log: () => {},
@@ -65,5 +66,67 @@ describe('card fields in the contract', () => {
     expect(m.name).toBe('A')
     expect(m.subtitle).toBeUndefined()
     expect(m.badges).toBeUndefined()
+  })
+})
+
+const FIX = (n: number) => (SEARCH as { id: string; channel?: string }[])[n]
+const FNS = ['catalog', 'meta', 'streams', 'userCatalogs', 'titleAction', 'progress']
+
+describe('YouTube lists, For You and keys', () => {
+  it('is a grid with For You, the topics, and L and W on each title', () => {
+    const { catalog, meta, streams, userCatalogs, titleAction, progress, ...m } = youtube
+    const v = validateManifest(m, FNS)
+    expect(v.layout).toBe('grid')
+    expect(v.catalogs.map((c) => c.name)).toEqual(['Search', 'For You', 'Science', 'Nature', 'Classic films', 'Concerts', 'Programming', 'AI', 'Math', 'World history', 'Lectures'])
+    expect(v.titleActions).toEqual([{ id: 'like', label: 'Like', key: 'l' }, { id: 'later', label: 'Watch later', key: 'w' }])
+    void [catalog, meta, streams, userCatalogs, titleAction, progress]
+  })
+  it('press W: the video is in Watch later, shows marked, and W again takes it out', async () => {
+    const ctx = fakeCtx()
+    await youtube.catalog(ctx, { id: 'search', type: 'video', search: 'karpathy' })
+    const id = 'https://www.youtube.com/watch?v=kArPaThY001'
+    expect(await youtube.userCatalogs(ctx)).toEqual([])
+    expect(validateTitleAction(await youtube.titleAction(ctx, { type: 'video', id, action: 'later' }))).toEqual({ ok: true, on: true, message: 'Added to Watch later' })
+    expect(await youtube.userCatalogs(ctx)).toEqual([{ id: 'my-later', name: 'Watch later', type: 'video' }])
+    const later = validateCatalog(await youtube.catalog(ctx, { id: 'my-later', type: 'video' }))
+    expect(later.items.map((m) => [m.name, m.runtime, m.subtitle])).toEqual([['A fixture lecture, one hour long', '1:02:05', 'Andrej Karpathy']])
+    expect(validateMeta(await youtube.meta(ctx, { type: 'video', id })).marks).toEqual(['later'])
+    expect((await youtube.titleAction(ctx, { type: 'video', id, action: 'later' })).on).toBe(false)
+    expect(await youtube.userCatalogs(ctx)).toEqual([])
+  })
+  it('likes a shared link it never searched, from oEmbed', async () => {
+    const ctx = fakeCtx()
+    await youtube.titleAction(ctx, { type: 'video', id: 'https://youtu.be/shared1', action: 'like' })
+    const liked = validateCatalog(await youtube.catalog(ctx, { id: 'my-liked', type: 'video' }))
+    expect(liked.items.map((m) => [m.name, m.subtitle])).toEqual([['A shared video', 'Someone']])
+  })
+  it('play two videos from one channel: For You searches that channel next', async () => {
+    const ctx = fakeCtx()
+    await youtube.catalog(ctx, { id: 'search', type: 'video', search: 'x' })
+    // Nothing watched yet: For You is the first topic, never an empty row.
+    expect((await youtube.catalog(ctx, { id: 'foryou', type: 'video' })).items.length).toBeGreaterThan(0)
+    expect(ctx.searches.at(-1)).toBe('science explained documentary')
+    // One from the search, one shared link whose oEmbed names the same channel.
+    expect(FIX(3).channel).toBe('Someone')
+    await youtube.progress(ctx, { type: 'video', id: FIX(3).id, pos: 10, dur: 100 })
+    await youtube.catalog(ctx, { id: 'foryou', type: 'video' })
+    expect(ctx.searches.at(-1)).not.toBe('Someone')
+    await youtube.progress(ctx, { type: 'video', id: 'https://youtu.be/shared2', pos: 10, dur: 100 })
+    await youtube.catalog(ctx, { id: 'foryou', type: 'video' })
+    expect(ctx.searches.at(-1)).toBe('Someone')
+  })
+  it('History is newest first, each video once', async () => {
+    const ctx = fakeCtx()
+    await youtube.catalog(ctx, { id: 'search', type: 'video', search: 'x' })
+    for (const n of [0, 1, 0, 0]) await youtube.progress(ctx, { type: 'video', id: FIX(n).id, pos: 5, dur: 9 })
+    const h = validateCatalog(await youtube.catalog(ctx, { id: 'my-history', type: 'video' }))
+    expect(h.items.map((m) => m.id)).toEqual([FIX(0).id, FIX(1).id])
+  })
+  it('For You falls back to words two titles share, and liking a watched video is not a second one', () => {
+    expect(forYouQuery([{ id: 1, channel: 'A', name: 'Rust ownership talk' }, { id: 2, channel: 'B', name: 'Rust async talk' }], [{ id: 1, channel: 'A', name: 'Rust ownership talk' }])).toBe('rust talk')
+    expect(forYouQuery([], [])).toBeNull()
+  })
+  it("a video yt-dlp cannot play says yt-dlp's reason", async () => {
+    await expect(youtube.streams(fakeCtx(), { type: 'video', id: 'https://www.youtube.com/watch?v=gone' })).rejects.toThrow('yt-dlp: ERROR: [youtube] gone: Video unavailable')
   })
 })

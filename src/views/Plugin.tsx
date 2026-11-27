@@ -159,15 +159,18 @@ function Missing({ id }: { id: string }) {
   )
 }
 
-/** A source's browsable catalogs: its manifest's plus any it lists at run time. null while loading. */
-export function useCatalogs(rec: Source | undefined): CatalogDef[] | null {
+/**
+ * A source's browsable catalogs: its manifest's plus any it lists at run time. null while loading.
+ * A new `fresh` reads its own lists again (a title action may have filled or emptied one).
+ */
+export function useCatalogs(rec: Source | undefined, fresh = 0): CatalogDef[] | null {
   const [rows, setRows] = useState<CatalogDef[] | null>(null)
   useEffect(() => {
     if (!rec) return
     const fixed = rec.manifest.catalogs.filter((c) => !c.search)
     if (!rec.manifest.has.userCatalogs) { setRows(fixed); return }
     callPlugin(rec, 'userCatalogs', []).then((l) => setRows([...fixed, ...l.filter((c) => !c.search)])).catch(() => setRows(fixed))
-  }, [rec?.sha256, JSON.stringify(rec?.settings)])
+  }, [rec?.sha256, JSON.stringify(rec?.settings), fresh])
   return rows
 }
 
@@ -179,8 +182,9 @@ export function PluginPage({ id }: { id: string }) {
   // A grid shows one list of results: each title once, though two catalogs found it.
   const flat = [...new Map((results ?? []).flatMap((f) => f.items).map((m) => [`${m.type}|${m.id}`, m])).values()]
   useEffect(() => { if (rec) loadLibrary(rec) }, [rec?.id])
-  const rows = useCatalogs(rec)
-  useTitleKeys(rec, focusedTitle)
+  const [fresh, setFresh] = useState(0)
+  const rows = useCatalogs(rec, fresh)
+  useTitleKeys(rec, focusedTitle, useCallback(() => setFresh((n) => n + 1), []))
   const input = useRef<HTMLInputElement>(null)
   useSlashSearch(input)
   if (!rec) return <Missing id={id} />

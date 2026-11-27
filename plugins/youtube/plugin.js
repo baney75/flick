@@ -6,7 +6,20 @@ const TOPICS = {
   nature: 'nature documentary full',
   films: 'public domain classic full movie',
   music: 'live concert full',
+  programming: 'programming tutorial',
+  ai: 'artificial intelligence explained',
+  math: 'mathematics lecture',
+  history: 'history documentary',
+  lectures: 'university lecture full course',
 }
+// What the user keeps, newest first, all on this device in the plugin's store.
+const LISTS = {
+  liked: { name: 'Liked', action: 'like', on: 'Liked', off: 'Removed from Liked' },
+  later: { name: 'Watch later', action: 'later', on: 'Added to Watch later', off: 'Removed from Watch later' },
+  history: { name: 'History' },
+}
+const KEEP = 500
+const STOP = new Set('the and for with from that this what your you are how why into about full video official part live new over best more than when its was will can our not but all one two'.split(' '))
 const PAGE = 20
 const MAX = 50 // the most one yt-dlp search returns
 const seen = new Map() // watch URL to the search result it came from, for meta()
@@ -53,6 +66,39 @@ async function lookup(ctx, id) {
   return seen.get(id)
 }
 
+async function list(ctx, key) { return (await ctx.store.get(key)) ?? [] }
+
+/** What a list keeps of a video: enough to draw its card with no search. */
+function slim(m, at) {
+  return { id: m.id, type: 'video', name: m.name, poster: m.poster, channel: m.channel, runtime: m.runtime, views: m.views, uploaded: m.uploaded, at }
+}
+
+/** A video's card fields from a search here, or from oEmbed for a link shared from elsewhere. */
+async function find(ctx, url) {
+  const m = await lookup(ctx, url)
+  if (m) return m
+  const o = await (await ctx.fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(url)}`)).json()
+  return { id: url, name: o.title, channel: o.author_name, poster: o.thumbnail_url, description: '' }
+}
+
+/**
+ * The For You search, built from what was watched and liked: a channel seen at least twice (the most
+ * often, then the latest), else the words at least two titles share. Null with nothing to go on.
+ */
+export function forYouQuery(history, liked) {
+  // Each video once: liking a video you watched is not a second video from that channel.
+  const all = [...new Map([...history, ...liked].map((m) => [m.id, m])).values()]
+  const count = (keys) => {
+    const n = new Map()
+    for (const k of keys) n.set(k, (n.get(k) ?? 0) + 1)
+    return [...n].filter(([, c]) => c >= 2).sort((a, b) => b[1] - a[1])
+  }
+  const chans = count(all.map((m) => m.channel).filter(Boolean))
+  if (chans.length) return chans[0][0]
+  const words = count(all.flatMap((m) => [...new Set(String(m.name ?? '').toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])].filter((w) => !STOP.has(w))))
+  return words.length ? words.slice(0, 3).map(([w]) => w).join(' ') : null
+}
+
 function watchUrl(id) {
   const u = new URL(id)
   if (!/^(www\.|m\.)?youtube\.com$|^youtu\.be$/.test(u.hostname)) throw new Error(`Not a YouTube address: ${id}`)
@@ -71,16 +117,39 @@ export default {
   hosts: ['www.youtube.com', 'youtube.com', 'm.youtube.com', 'youtu.be'],
   tools: ['ytdlp'],
   platforms: ['desktop'],
+  layout: 'grid',
   catalogs: [
     { id: 'search', name: 'Search', type: 'video', search: true },
+    { id: 'foryou', name: 'For You', type: 'video' },
     { id: 'science', name: 'Science', type: 'video' },
     { id: 'nature', name: 'Nature', type: 'video' },
     { id: 'films', name: 'Classic films', type: 'video' },
     { id: 'music', name: 'Concerts', type: 'video' },
+    { id: 'programming', name: 'Programming', type: 'video' },
+    { id: 'ai', name: 'AI', type: 'video' },
+    { id: 'math', name: 'Math', type: 'video' },
+    { id: 'history', name: 'World history', type: 'video' },
+    { id: 'lectures', name: 'Lectures', type: 'video' },
+  ],
+  titleActions: [
+    { id: 'like', label: 'Like', key: 'l' },
+    { id: 'later', label: 'Watch later', key: 'w' },
   ],
 
+  /** Liked, Watch later and History, each only once it has something in it. */
+  async userCatalogs(ctx) {
+    const out = []
+    for (const [key, l] of Object.entries(LISTS)) if ((await list(ctx, key)).length) out.push({ id: `my-${key}`, name: l.name, type: 'video' })
+    return out
+  },
+
   async catalog(ctx, { id, search, skip = 0 }) {
-    const q = search ?? TOPICS[id]
+    const mine = /^my-(liked|later|history)$/.exec(id ?? '')
+    if (mine && !search) {
+      const all = await list(ctx, mine[1])
+      return { items: all.slice(skip, skip + PAGE).map((m) => card(m)), more: skip + PAGE < all.length }
+    }
+    const q = search ?? (id === 'foryou' ? forYouQuery(await list(ctx, 'history'), await list(ctx, 'liked')) ?? TOPICS.science : TOPICS[id])
     if (!q) return { items: [], more: false }
     const want = Math.min(MAX, skip + PAGE)
     const all = await ctx.tools.ytdlp.search(q, want)
@@ -90,12 +159,9 @@ export default {
 
   async meta(ctx, { id }) {
     const url = watchUrl(id)
-    let m = await lookup(ctx, url)
-    if (!m) {
-      // Not from a search here (a shared link): oEmbed has the title, channel and thumbnail.
-      const o = await (await ctx.fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(url)}`)).json()
-      m = { id: url, name: o.title, channel: o.author_name, poster: o.thumbnail_url, description: '' }
-    }
+    const m = await find(ctx, url)
+    const marks = []
+    for (const [key, l] of Object.entries(LISTS)) if (l.action && (await list(ctx, key)).some((x) => x.id === url)) marks.push(l.action)
     const by = m.channel ? `${m.channel}. ` : ''
     return {
       id: url,
@@ -108,7 +174,31 @@ export default {
       badges: card(m).badges,
       description: `${by}${m.description ?? ''}`.trim(),
       runtime: m.runtime || undefined,
+      marks,
     }
+  },
+
+  /** Like and Watch later: toggle the video on that list. */
+  async titleAction(ctx, { id, action }) {
+    const key = Object.keys(LISTS).find((k) => LISTS[k].action === action)
+    if (!key) return { ok: false, message: `No such action: ${action}` }
+    const url = watchUrl(id)
+    const l = await list(ctx, key)
+    if (l.some((x) => x.id === url)) {
+      await ctx.store.set(key, l.filter((x) => x.id !== url))
+      return { ok: true, on: false, message: LISTS[key].off }
+    }
+    await ctx.store.set(key, [slim(await find(ctx, url), Date.now()), ...l].slice(0, KEEP))
+    return { ok: true, on: true, message: LISTS[key].on }
+  },
+
+  /** History: what played, newest first, once per video. */
+  async progress(ctx, { id }) {
+    const url = watchUrl(id)
+    const l = await list(ctx, 'history')
+    if (l[0]?.id === url) return
+    const m = l.find((x) => x.id === url) ?? (await find(ctx, url))
+    await ctx.store.set('history', [slim(m, Date.now()), ...l.filter((x) => x.id !== url)].slice(0, KEEP))
   },
 
   async streams(ctx, { id }) {
