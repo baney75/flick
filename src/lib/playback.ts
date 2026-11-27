@@ -2,8 +2,12 @@
 // (SPEC-playback rule 1). One it cannot (an MKV, DTS audio) plays through a live remux run: ffmpeg
 // writes a local HLS playlist from a start time, and the player adds that start to its own clock, so
 // the seek bar, saved progress and resume all use the source's time (rules 2 and 3).
+// SPEC-playback-2: an http(s) stream is resolved once first (redirects, up to 90 s for a debrid link),
+// and the probe, the remux and direct play all read the final URL. A probe that fails never fails the
+// play: the URL's type picks direct play or the safe-profile remux instead.
 
 import { invoke, isDesktop, isMobileApp } from './platform'
+import { OPENING, WAITING } from './stalls'
 
 export interface StreamProbe {
   duration: number
@@ -18,8 +22,25 @@ export interface StreamProbe {
   checked: boolean
 }
 
-/** The Rust side's message when the server never answered the probe. */
-export const SLOW_SERVER = 'The server did not answer within 6 seconds.'
+/** What the desktop's one GET of a stream found (rule 1). */
+export interface Resolved {
+  url: string
+  status: number
+  contentType?: string | null
+  length?: number | null
+  ranges: boolean
+  redirects: number
+  ms: number
+}
+
+/** The Rust side's limit and words when the server sends no first byte. */
+export const RESOLVE_LIMIT_S = 90
+export const NO_ANSWER = `The server did not answer within ${RESOLVE_LIMIT_S} seconds.`
+
+/** The waiting line `ms` into a resolve: the seconds count shows from 5 s on (rule 1). */
+export function serverWait(ms: number): string {
+  return ms < 5000 ? WAITING : `${WAITING} ${Math.floor(ms / 1000)} s`
+}
 
 type Call = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>
 
@@ -71,6 +92,19 @@ export function probes(url: string | undefined): url is string {
 }
 
 const seen = new Map<string, Promise<StreamProbe>>()
+const opened = new Map<string, Promise<Resolved>>()
+
+/** The resolve of `url`, once per session, so a warm-up and Play share one GET; a failure is tried again. */
+export function resolveStream(url: string, user = '', pass = '', call: Call = invoke): Promise<Resolved> {
+  const key = `${url}\n${user}`
+  let p = opened.get(key)
+  if (!p) {
+    p = call<Resolved>('resolve_stream', { url, user, pass })
+    p.catch(() => opened.delete(key))
+    opened.set(key, p)
+  }
+  return p
+}
 
 /** The probe of `url`, once per session; a failed probe is tried again next time. */
 export function probeStream(url: string, user = '', pass = '', call: Call = invoke): Promise<StreamProbe> {
@@ -84,9 +118,74 @@ export function probeStream(url: string, user = '', pass = '', call: Call = invo
   return p
 }
 
-/** Starts the probe early, so Play rarely waits. */
-export function warmProbe(url: string | undefined) {
-  if (probes(url)) probeStream(url).catch(() => {})
+/** Starts the resolve and the probe early, so Play rarely waits. */
+export function warmProbe(url: string | undefined, call: Call = invoke) {
+  if (probes(url)) resolveStream(url, '', '', call).then((r) => probeStream(r.url, '', '', call)).catch(() => {})
+}
+
+/** Types the web view opens itself, when the probe could not say (rule 2, as stremio-video does). */
+export function playsDirectly(url: string, contentType?: string | null): boolean {
+  const t = (contentType ?? '').toLowerCase()
+  if (/^video\/(mp4|quicktime|webm|x-m4v)\b/.test(t) || /mpegurl/.test(t)) return true
+  let path = url
+  try { path = new URL(url).pathname } catch { /* a bare path */ }
+  return /\.(mp4|m4v|mov|webm|m3u8)$/i.test(path)
+}
+
+/** A probe for the safe profile: video to 8-bit H.264, audio to AAC stereo, length unknown. */
+export const SAFE: StreamProbe = {
+  duration: 0, container: '', video: null, audio: null, channels: 2, direct: false, why: null,
+  convertsVideo: true, convertsAudio: true, checked: false,
+}
+
+/** What plays: the final URL as it is (with the safe remux to fall back on when the probe failed), or a remux run. */
+export type Plan =
+  | { direct: string; fallback: Live | null }
+  | { remux: Live; probe: StreamProbe; safe: boolean }
+
+const host = (u: string) => { try { return new URL(u).host } catch { return '' } }
+
+/**
+ * Rules 1 and 2: resolve `input` once (an http(s) one), then probe the final URL and decide. `wait` gets
+ * the waiting line each second while the server is silent. Null when `signal` aborts (the player closed).
+ * `remux` says the source plays only through the remux (a library file, a Kodi item).
+ */
+export async function planStream(input: Live, remux: boolean, wait: (line: string) => void, signal: AbortSignal, call: Call = invoke): Promise<Plan | null> {
+  let src = input
+  let type: string | null | undefined
+  if (/^https?:\/\//i.test(input.input)) {
+    const t0 = Date.now()
+    wait(serverWait(0))
+    const tick = setInterval(() => wait(serverWait(Date.now() - t0)), 1000)
+    const aborted = new Promise<null>((ok) => signal.addEventListener('abort', () => ok(null), { once: true }))
+    try {
+      const r = await Promise.race([resolveStream(input.input, input.user, input.pass, call), aborted])
+      if (!r || signal.aborted) return null
+      // The login goes only to the host it belongs to.
+      src = host(r.url) === host(input.input) ? { ...input, input: r.url } : { input: r.url, user: '', pass: '' }
+      type = r.contentType
+    } finally {
+      clearInterval(tick)
+    }
+    wait(OPENING)
+    if (!remux && (isHls(src.input) || /mpegurl/i.test(type ?? ''))) return { direct: src.input, fallback: null }
+  }
+  const p = await probeStream(src.input, src.user, src.pass, call).catch(() => null)
+  if (signal.aborted) return null
+  if (p) return remux || !p.direct ? { remux: src, probe: p, safe: false } : { direct: src.input, fallback: null }
+  if (!remux && playsDirectly(src.input, type)) return { direct: src.input, fallback: src }
+  return { remux: src, probe: SAFE, safe: true }
+}
+
+/** The safe remux a media error switches to: a decode or unsupported error on a direct play that has one. */
+export function onMediaError(code: number | undefined, fallback: Live | null): Live | null {
+  return fallback && (code === 3 || code === 4) ? fallback : null
+}
+
+/** The error card's buttons (rule 6): a plugin stream offers another source and never its link. */
+export function cardButtons(req: { url?: string; ref: { t: string } }, stuck: boolean): ('open' | 'back' | 'another')[] {
+  const plugin = req.ref.t === 'plugin'
+  return [...(req.url && !plugin ? ['open' as const] : []), 'back', ...(plugin || stuck ? ['another' as const] : [])]
 }
 
 /** How long the pointer rests on a stream before Flick probes it. */
@@ -112,6 +211,7 @@ export function intent(warm: () => void, now: () => number = Date.now) {
 
 /** What the player shows while a run converts, in words true to what ffmpeg does. */
 export function convertLine(p: Pick<StreamProbe, 'convertsAudio' | 'convertsVideo'>): string {
+  if (p.convertsAudio && p.convertsVideo) return 'Converting the file for this Mac…'
   if (p.convertsAudio) return 'Converting audio for this Mac…'
   if (p.convertsVideo) return 'Converting video for this Mac…'
   return 'Converting the file for this Mac…'
@@ -141,7 +241,7 @@ export class Remux {
   private n = 0
   /** This player's token: the desktop stops only its own run, so a closing player never stops the next one's. */
   readonly owner = `${Date.now().toString(36)}-${++players}`
-  constructor(readonly url: string, readonly probe: StreamProbe, private user = '', private pass = '', private call: Call = invoke) {}
+  constructor(readonly url: string, readonly probe: StreamProbe, private user = '', private pass = '', private call: Call = invoke, readonly safe = false) {}
 
   /** Starts a run at source time `at` (stopping the last). Returns its playlist URL, or null when a newer run replaced it. */
   async open(at: number): Promise<string | null> {
@@ -149,7 +249,7 @@ export class Remux {
     const max = this.probe.duration > 1 ? this.probe.duration - 1 : Infinity
     const from = Math.min(Math.max(0, at), max)
     try {
-      const r = await this.call<{ url: string; at: number }>('remux_start', { url: this.url, user: this.user, pass: this.pass, at: from, owner: this.owner })
+      const r = await this.call<{ url: string; at: number }>('remux_start', { url: this.url, user: this.user, pass: this.pass, at: from, owner: this.owner, safe: this.safe })
       if (n !== this.n) return null
       this.at = r.at
       return r.url
