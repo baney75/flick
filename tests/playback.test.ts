@@ -1,6 +1,6 @@
 // SPEC-playback cases 4, 5 and 6: where a seek goes, the remux run's clock, and the probe cache.
 import { describe, expect, it, vi } from 'vitest'
-import { cardButtons, withServerFallback, FRESH_MS, onMediaError, resolveStream, convertLine, cuesAt, messageOf, DWELL_MS, intent, NO_ANSWER, planSeek, planStream, playsDirectly, playsHere, probeStream, Remux, RESOLVE_LIMIT_S, SAFE, serverWait, warmProbe, writtenOf, type Resolved, type StreamProbe } from '../src/lib/playback'
+import { cardButtons, codecsPlayed, withServerFallback, FRESH_MS, onMediaError, resolveStream, convertLine, cuesAt, messageOf, DWELL_MS, intent, NO_ANSWER, planSeek, planStream, playsDirectly, playsHere, probeStream, Remux, RESOLVE_LIMIT_S, SAFE, serverWait, warmProbe, writtenOf, type Resolved, type StreamProbe } from '../src/lib/playback'
 
 const mkv: StreamProbe = {
   duration: 5700, container: 'matroska,webm', video: 'h264', audio: 'ac3', channels: 6,
@@ -206,6 +206,7 @@ describe('planStream (rules 1 and 2)', () => {
   it('case 2: a redirect to an MP4 plays directly from the final URL', async () => {
     const f = shell(async () => got({ url: 'https://cdn.example/f/c.mp4', contentType: 'video/mp4' }), async () => mp4)
     expect(await go('https://addon.example/resolve/2/c', f)).toEqual({ direct: 'https://cdn.example/f/c.mp4', fallback: null })
+    expect(f.calls.find((c) => c.cmd === 'probe_stream')!.args).toHaveProperty('plays')
   })
   it('case 3: a 404 after the redirect is the error, with no probe', async () => {
     const f = shell(() => Promise.reject('The server answered 404 Not Found.'), async () => mkv)
@@ -332,5 +333,14 @@ describe('the error card (rule 6, case 14)', () => {
     expect(cardButtons(pasted, false)).toEqual(['open', 'back'])
     expect(cardButtons(pasted, true)).toEqual(['open', 'back', 'another'])
     expect(cardButtons({ ref: { t: 'item' } }, false)).toEqual(['back'])
+  })
+})
+
+// SPEC-playback-2 rule 4 (P14b): the probe is told what the web view decodes.
+describe('the codecs the web view plays', () => {
+  it('names VP9 and AV1 only when canPlayType accepts them', () => {
+    expect(codecsPlayed(() => '')).toEqual([])
+    expect(codecsPlayed((t) => (t.includes('vp9') ? 'probably' : ''))).toEqual(['vp9'])
+    expect(codecsPlayed((t) => (t.includes('av01') || t.includes('vp09') ? 'maybe' : ''))).toEqual(['vp9', 'av1'])
   })
 })

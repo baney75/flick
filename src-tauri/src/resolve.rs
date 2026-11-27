@@ -168,7 +168,7 @@ mod tests {
             (format!("{}/a.mkv", s.base), 1, 206)
         );
         assert!(r.ranges && r.length.is_some_and(|n| n > 1000), "{r:?}");
-        let p = probe(&ffprobe, &r.url, None, PROBE_LIMIT).unwrap();
+        let p = probe(&ffprobe, &r.url, None, PROBE_LIMIT, &[]).unwrap();
         assert_eq!(p.why.as_deref(), Some("MKV"));
         let st = Live::default();
         let run = start(&st, &ffmpeg, &dir.join("runs"), &r.url, None, &p, 0.0).unwrap();
@@ -201,7 +201,7 @@ mod tests {
         let r = resolve(&format!("{}/addon/2", s.base), None, RESOLVE_LIMIT).unwrap();
         assert_eq!(r.url, format!("{}/c.mp4", s.base));
         assert_eq!(r.content_type.as_deref(), Some("video/mp4"));
-        let p = probe(&ffprobe, &r.url, None, PROBE_LIMIT).unwrap();
+        let p = probe(&ffprobe, &r.url, None, PROBE_LIMIT, &[]).unwrap();
         assert!(p.direct, "{p:?}");
         assert_eq!(s.hits("addon/2"), 1);
         let _ = std::fs::remove_dir_all(dir);
@@ -277,7 +277,7 @@ mod tests {
         let s = serve_routes(dir.clone(), vec![("dl/5", Route::Garbage)]);
         let r = resolve(&format!("{}/dl/5", s.base), None, RESOLVE_LIMIT).unwrap();
         assert_eq!(r.content_type.as_deref(), Some("video/mp4"));
-        assert!(probe(&ffprobe, &r.url, None, PROBE_LIMIT).is_err());
+        assert!(probe(&ffprobe, &r.url, None, PROBE_LIMIT, &[]).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -294,7 +294,7 @@ mod tests {
         let r = resolve(&format!("{}/x.mkv", s.base), None, RESOLVE_LIMIT).unwrap();
         assert!(r.ms < 2000, "{r:?}");
         let t0 = Instant::now();
-        assert!(probe(&ffprobe, &r.url, None, Duration::from_secs(2)).is_err());
+        assert!(probe(&ffprobe, &r.url, None, Duration::from_secs(2), &[]).is_err());
         assert!(t0.elapsed() < Duration::from_secs(4));
         let _ = std::fs::remove_dir_all(dir);
     }
