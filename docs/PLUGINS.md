@@ -22,6 +22,12 @@ as a single JavaScript file with no build step.
 - Installed plugin code is stored on the device (IndexedDB, with its SHA-256, checked again before each
   start). On launch Flick checks each plugin URL once a day. New code that asks for no host or tool it
   did not already have updates quietly (dropping one is fine). New permissions wait for a tap.
+- A plugin with an installed plugin's `id` but from another address (a file counts as another address),
+  of another `kind`, or that is or stops being Flick's own takes that id over instead of updating it.
+  The sheet says "This replaces <name> from <old place> with a plugin from <new place>. Its saved keys
+  and data are cleared.", and the new plugin starts with none of the old one's secret settings or saved
+  data. A plugin synced from another device takes over an id here only once the old plugin's synced
+  entry was removed; otherwise it waits to be added in Settings.
 - Plugins that ship with Flick live at `/plugins/<name>.js` (from `plugins/<name>/plugin.js` in the
   repo) and themes at `/plugins/<name>.json`. The official list, `/plugins/index.json`, is
   `{ "api": 1, "plugins": [{ "url", "name", "kind": "source" | "service" | "theme", "description" }] }`.

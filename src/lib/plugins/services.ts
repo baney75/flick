@@ -3,7 +3,7 @@
 
 import { computed } from '@preact/signals'
 import { settings, setSettings } from '../store'
-import { installed, install, officialList, prepare, remove, setPluginSettings, type Candidate } from './registry'
+import { carried, installed, install, officialList, prepare, remove, setPluginSettings, type Candidate } from './registry'
 import { findDebridKeys, type FoundKey } from './debrid-keys'
 import { callPlugin, platformName, registerHosts, stopPlugin, type Installed } from './runtime'
 import { PluginError, validateResolve, type AccountResult, type PluginManifest, type ResolveResult } from './validate'
@@ -60,12 +60,13 @@ export async function checkAndSave(from: Candidate | Service, key: string, call:
   key = key.trim()
   if (!key) return { ok: false, line: `Paste your ${name} API key.` }
   const isRec = 'installedAt' in from
-  const old = isRec ? from : from.replaces
+  // A new service that takes over another plugin's id never runs with that plugin's other keys.
+  const kept = isRec ? from.settings : carried(from)
   // The trial runs in its own sandbox under its own id, so a running copy of the service is left alone;
   // the desktop app checks its fetches against this manifest's hosts, registered when it starts.
   const trial: Installed = {
     id: `${m.id}#trial`, kind: 'service', url: from.url, code: from.code, sha256: from.sha256, manifest: m, enabled: true,
-    official: from.official, settings: { ...old?.settings, [field]: key }, installedAt: 0, checkedAt: 0,
+    official: from.official, settings: { ...kept, [field]: key }, installedAt: 0, checkedAt: 0,
   }
   let r: AccountResult
   try { r = await call(trial, 'account', []) } catch (e) { r = { ok: false, message: (e as Error).message } } finally {
