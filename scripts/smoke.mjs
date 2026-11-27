@@ -1269,6 +1269,45 @@ try {
   check(await atEnd() && nasHits.photoMedia === 0 && most < 400, `2,000 photos scroll to the end with no full-size loads (${nasHits.thumb} thumbnails, ${nasHits.photoMedia} full files, at most ${most} tiles at once)`)
   await np.context().close()
 
+  // A scroll moves the grid's window over the list. Each card then shows its own item's poster, never
+  // the poster of the item that card showed before; a track with no poster shows none.
+  const gp = await photoPage()
+  await gp.goto(`${BASE}/#/library`)
+  await gp.waitForTimeout(500)
+  await gp.evaluate(() => new Promise((res, rej) => {
+    const r = indexedDB.open('flick')
+    r.onsuccess = () => {
+      const tx = r.result.transaction(['items', 'thumbs', 'kv'], 'readwrite')
+      for (let n = 0; n < 120; n++) {
+        const id = `grid-${n}`
+        tx.objectStore('items').put({ id, title: `Grid track ${n}`, kind: 'audio', src: { t: 'url', url: `http://127.0.0.1:9/${id}.mp3` }, origin: 'local', size: 1, mtime: 0, addedAt: 1000 - n }, id)
+        if (n % 3 === 0) tx.objectStore('thumbs').put(new Blob([`<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><desc>${id}</desc></svg>`], { type: 'image/svg+xml' }), id)
+      }
+      const kv = tx.objectStore('kv')
+      const rev = kv.get('items.rev')
+      rev.onsuccess = () => kv.put((rev.result ?? 0) + 1, 'items.rev')
+      tx.oncomplete = res
+      tx.onerror = () => rej(tx.error)
+    }
+  }))
+  await gp.reload()
+  await gp.locator('.vgrid .card').first().waitFor({ timeout: 10000 })
+  const wrongArt = []
+  const gridAtEnd = () => gp.evaluate(() => { const m = document.querySelector('.main'); return m.scrollTop + m.clientHeight >= m.scrollHeight - 4 })
+  for (let y = 0; y < 40 && !(await gridAtEnd()); y++) {
+    await gp.evaluate(() => { const m = document.querySelector('.main'); m.style.scrollBehavior = 'auto'; m.scrollTop += m.clientHeight / 2 })
+    await gp.waitForTimeout(250)
+    wrongArt.push(...await gp.evaluate(() => Promise.all([...document.querySelectorAll('.vgrid .card')].map(async (c) => {
+      const n = Number(c.getAttribute('title').replace('Grid track ', ''))
+      const img = c.querySelector('.art img')
+      const shown = img ? (await (await fetch(img.src)).text()).match(/<desc>(.*)<\/desc>/)?.[1] : null
+      const want = n % 3 === 0 ? `grid-${n}` : null
+      return shown === want ? null : `track ${n} shows ${shown ?? 'no poster'}`
+    })).then((l) => l.filter(Boolean))))
+  }
+  check(await gridAtEnd() && wrongArt.length === 0, `each grid card keeps its own poster as the grid scrolls (${[...new Set(wrongArt)].slice(0, 4).join('; ') || 'all match'})`)
+  await gp.context().close()
+
   // Home and Library list the same things to continue: no item the library no longer has, and no show
   // whose newest episode is finished. Remove from library takes the item's place with it.
   const cp = await photoPage()

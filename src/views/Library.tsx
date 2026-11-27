@@ -218,7 +218,7 @@ export function Library({ start }: { start?: Tab } = {}) {
           : !shelfList.length ? <p class="dim center">Nothing matches “{q}”.</p>
           : shelf.layout === 'list' ? <VirtualList class="shelf-list" list={shelfList.filter((x) => recs.has(x.p))} keyOf={(x) => `${x.p}\n${x.m.type}\n${x.m.id}`} render={(x) => <ShelfRow rec={recs.get(x.p)!} m={x.m} />} />
           : <VirtualGrid list={shelfList} min={shelf.layout === 'landscape' ? 230 : 160} ratio={shelf.layout === 'landscape' ? 9 / 16 : shelf.layout === 'square' ? 1 : 1.5}
-              render={(x) => recs.get(x.p) && <MetaCard rec={recs.get(x.p)!} m={x.m} shape={shelf.layout as 'poster' | 'square' | 'landscape'} />} />
+              keyOf={(x) => `${x.p}\n${x.m.type}\n${x.m.id}`} render={(x) => recs.get(x.p) && <MetaCard rec={recs.get(x.p)!} m={x.m} shape={shelf.layout as 'poster' | 'square' | 'landscape'} />} />
       ) : counts.all === 0 && !photos.length ? (
         <div class="empty">
           <Icon name="library" size={40} />
@@ -234,7 +234,7 @@ export function Library({ start }: { start?: Tab } = {}) {
       ) : list.length === 0 ? (
         <p class="dim center">Nothing matches “{q}”.</p>
       ) : (
-        <VirtualGrid list={list} min={posterMode ? 160 : 230} ratio={posterMode ? 1.5 : 9 / 16}
+        <VirtualGrid list={list} min={posterMode ? 160 : 230} ratio={posterMode ? 1.5 : 9 / 16} keyOf={(x) => (isTitle(x) ? `t\n${x.key}` : `i\n${x.id}`)}
           render={(x) => isTitle(x)
             ? <TitleCard t={x} onMore={(it, e) => setMenu({ it, x: e.clientX, y: e.clientY })} />
             : <ItemCard it={x} onClick={() => playItem(x)} onMore={(e) => setMenu({ it: x, x: e.clientX, y: e.clientY })} />} />
