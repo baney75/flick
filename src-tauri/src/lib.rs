@@ -1327,7 +1327,7 @@ fn queue_open(app: &tauri::AppHandle, paths: Vec<String>) {
         return;
     }
     // A self-test run never comes forward.
-    if !selftest::requested() {
+    if !selftest::active(app) {
         if let Some(w) = app.get_webview_window("main") {
             let _ = w.set_focus();
         }
@@ -1404,7 +1404,7 @@ pub fn run() {
             vpn::watch::vpn_gate_release
         ])
         .setup(|app| {
-            if selftest::requested() {
+            if selftest::active(app) {
                 selftest::stay_hidden(app);
             }
             // Files passed on the command line: `Flick movie.mkv`.
@@ -1437,7 +1437,7 @@ pub fn run() {
         }
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen { .. } = &event {
-            if selftest::requested() {
+            if selftest::active(handle) {
                 selftest::stay_hidden(handle);
                 return;
             }

@@ -12,6 +12,12 @@ pub fn requested() -> bool {
     std::env::var_os("FLICK_SELFTEST").is_some()
 }
 
+/// True only in the self-test build started for a self-test: the hide and no-focus rules key on this, so
+/// another build started with FLICK_SELFTEST set behaves as usual.
+pub fn active<M: Manager<tauri::Wry>>(app: &M) -> bool {
+    requested() && app.config().identifier == IDENTIFIER
+}
+
 /// A self-test run shows no window and no Dock icon, whatever the config says.
 pub fn stay_hidden<M: Manager<tauri::Wry>>(app: &M) {
     #[cfg(target_os = "macos")]
