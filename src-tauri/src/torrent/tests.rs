@@ -706,7 +706,8 @@ fn audit_a_replay_from_a_partial_cache_with_no_peers_plays() {
     let url = e
         .play(&want(&hash, &[]))
         .expect("the cached start plays with no peers");
-    assert!(started.elapsed() < Duration::from_secs(10));
+    // Well inside the 10 s wait: the cached start answers, not the deadline.
+    assert!(started.elapsed() < Duration::from_secs(4));
     assert_eq!(
         get(&url, None, "Range: bytes=0-1023\r\n"),
         (206, movie[..1024].to_vec())

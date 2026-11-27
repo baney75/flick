@@ -507,6 +507,8 @@ impl Engine {
             overwrite: true,
             initial_peers: Some(peers),
             peer_limit: Some(MAX_PEERS),
+            // Saved metadata carries no trackers, so a replay announces to the stream's own.
+            trackers: Some(trackers.to_vec()),
             ..Default::default()
         };
         let added = session.add_torrent(AddTorrent::from_bytes(bytes), Some(add));
