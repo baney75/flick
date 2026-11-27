@@ -27,6 +27,10 @@ in a sandboxed iframe and talks to it through `ctx`. The full contract is `docs/
 6. Settings and sign-in: declare `settings` and `actions` fields. Mark tokens and passwords
    `secret: true` (or `type: 'password'`). Save a sign-in token with `ctx.store.set`, never in a setting.
 7. Never add sources the user did not choose: no hidden addon lists, no scraping of pirated content.
+8. A source that hosts addons of its own (like Stremio's) may export all five of `extensions`,
+   `extensionCatalog`, `inspectExtension`, `addExtension` and `removeExtension` ("Addons" in
+   `docs/PLUGINS.md`). Accept only `https://` and `stremio://` addresses, never save in
+   `inspectExtension`, and return `settings` to change a list setting instead of writing it yourself.
 
 ## A service plugin (debrid)
 

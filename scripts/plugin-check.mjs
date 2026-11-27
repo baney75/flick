@@ -128,7 +128,7 @@ async function call(fn, args, validate, what) {
   try {
     const raw = plain(await withTimeout(Promise.resolve(plugin[fn](ctx, ...args)), `${fn}()`))
     const out = validate(raw)
-    const rawItems = fn === 'catalog' ? (Array.isArray(raw) ? raw : raw?.items) : fn === 'streams' || fn === 'library' || fn === 'userCatalogs' ? raw : null
+    const rawItems = fn === 'catalog' ? (Array.isArray(raw) ? raw : raw?.items) : ['streams', 'library', 'userCatalogs', 'extensions', 'extensionCatalog'].includes(fn) ? raw : null
     const kept = fn === 'catalog' ? out.items : out
     if (Array.isArray(rawItems) && rawItems.length > kept.length) {
       check(false, `${what}: Flick dropped ${rawItems.length - kept.length} of ${rawItems.length} entries that do not match the shapes`)
@@ -191,6 +191,13 @@ if (meta) {
     const subs = await call('subtitles', [args], V.validateSubs, `subtitles for ${args.videoId}`)
     if (subs) check(true, `subtitles for ${args.videoId}: ${subs.length}`)
   }
+}
+if (m.has.extensions) {
+  // Only the read-only calls: plugin:check never adds or removes an addon.
+  const ext = await call('extensions', [], (x) => V.validateExtensions(x), 'extensions()')
+  if (ext) check(true, `extensions(): ${ext.length} addons, ${ext.filter((e) => e.removable).length} removable`)
+  const cat = await call('extensionCatalog', [{}], (x) => V.validateExtensions(x, true), 'extensionCatalog()')
+  if (cat) check(true, `extensionCatalog(): ${cat.length} addons to add`)
 }
 if (m.has.library) {
   const lib = await call('library', [], V.validateLibrary, 'library')

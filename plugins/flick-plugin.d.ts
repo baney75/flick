@@ -82,8 +82,20 @@ export interface Plugin {
   /** The user's addon URLs, for Flick to offer debrid keys found in them. Only the bundled Stremio plugin is asked. */
   addonUrls?(ctx: Ctx): Promise<string[]>
   action?(ctx: Ctx, id: string, values: Record<string, any>): Promise<{ ok: boolean; message?: string }>
+  /** Addons inside this source (Stremio's addons). All five or none; Flick calls each only on a tap. */
+  extensions?(ctx: Ctx): Promise<Extension[]>
+  extensionCatalog?(ctx: Ctx, args: { search?: string }): Promise<(Extension & { installed: boolean })[]>
+  /** Read the addon at an address so the user can confirm it. Must not save anything. */
+  inspectExtension?(ctx: Ctx, args: { url: string }): Promise<Extension & { installed: boolean }>
+  addExtension?(ctx: Ctx, args: { url: string }): Promise<ExtensionResult>
+  removeExtension?(ctx: Ctx, args: { id: string }): Promise<ExtensionResult>
   progress?(ctx: Ctx, args: { type: MetaType; id: string; videoId: string; pos: number; dur: number }): Promise<void>
 }
+
+/** One addon. `url` is https:// or stremio://; `removable: false` hides Remove (a protected addon). */
+export interface Extension { id: string; name: string; description?: string; logo?: string; url: string; types?: string[]; removable: boolean }
+/** `settings` sets this plugin's own declared, non-secret settings (like a list of addon URLs) when ok. */
+export interface ExtensionResult { ok: boolean; message?: string; settings?: Record<string, string | boolean | string[]> }
 
 /** A torrent as Flick hands it to a service: nothing else about the title or the user. */
 export interface Torrent { infoHash: string; fileIdx?: number; name?: string }
