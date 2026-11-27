@@ -12,7 +12,7 @@ import { barFor, oneRetry, openToolStream } from '../lib/plugins/runtime'
 import { Icon } from './icons'
 import { Readout } from './Readout'
 import { Delayed, KEEPS_STALLING, kindOf, OPENING, WAITING, waitLine, Watchdog } from '../lib/stalls'
-import { convertLine, DESKTOP_ONLY, isHls, playsHere, planSeek, probeStream, probes, Remux, SLOW_SERVER, writtenOf, type Live, type StreamProbe } from '../lib/playback'
+import { convertLine, DESKTOP_ONLY, isHls, playsHere, planSeek, probeStream, probes, Remux, SLOW_SERVER, writtenOf, type Live, type StreamProbe, cuesAt, messageOf } from '../lib/playback'
 
 const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
 
@@ -127,7 +127,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
           // unless it can only play through the remux.
           const slow = setTimeout(() => !cancelled && setStatus(WAITING), 3000)
           const p = await probeStream(input.input, input.user, input.pass).catch((e) => {
-            if (live || String((e as Error)?.message ?? e) === SLOW_SERVER) throw e
+            if (live || messageOf(e) === SLOW_SERVER) throw new Error(messageOf(e))
             return null
           }).finally(() => clearTimeout(slow))
           if (cancelled) return
@@ -151,7 +151,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         }
         if (preview.current && req.kind === 'video' && !isHls(url) && !req.peers) preview.current.src = url
       } catch (e) {
-        if (!cancelled) { setStatus(null); setError((e as Error).message) }
+        if (!cancelled) { setStatus(null); setError(messageOf(e)) }
       }
     })()
     return () => {
@@ -230,9 +230,13 @@ function PlayerInner({ req }: { req: PlayRequest }) {
       setStatus(OPENING)
       ;(async () => {
         const input = src.t === 'kodi' ? await kodiLive(src) : await urlLive(src.url)
-        const url = await openLive(input, await probeStream(input.input, input.user, input.pass), at)
-        if (url && video.current === v) await attach(v, url, 0)
-      })().catch((e) => { setStatus(null); setError((e as Error).message || msg) })
+        const p = await probeStream(input.input, input.user, input.pass)
+        // A player closed meanwhile starts no run; one closed while the run starts stops it.
+        if (video.current !== v) return
+        const url = await openLive(input, p, at)
+        if (video.current !== v) { remux.current?.stop(); return }
+        if (url) await attach(v, url, 0)
+      })().catch((e) => { setStatus(null); setError(messageOf(e) || msg) })
       return
     }
     if (req.fallbackUrl && !triedFallback.current) {
@@ -284,20 +288,24 @@ function PlayerInner({ req }: { req: PlayRequest }) {
       tracks[i].mode = i === subOn ? 'hidden' : 'disabled'
       if (i === subOn) on = tracks[i]
     }
+    let shown = ''
     const draw = () => {
-      const lines: Node[] = []
-      const cues = on?.activeCues
-      for (let i = 0; cues && i < cues.length; i++) {
+      // A remux run's element clock starts at 0, so its lines are picked by the source's clock.
+      const cues = (remux.current ? cuesAt(on?.cues, clock()) : Array.from(on?.activeCues ?? [])) as VTTCue[]
+      const key = cues.map((c) => `${c.startTime}\n${c.text}`).join('\n\n')
+      if (key === shown) return
+      shown = key
+      box.replaceChildren(...cues.map((c) => {
         const line = document.createElement('span')
         line.className = 'cue'
-        line.append((cues[i] as VTTCue).getCueAsHTML())
-        lines.push(line)
-      }
-      box.replaceChildren(...lines)
+        line.append(c.getCueAsHTML())
+        return line
+      }))
     }
     draw()
     on?.addEventListener('cuechange', draw)
-    return () => { on?.removeEventListener('cuechange', draw); box.replaceChildren() }
+    v.addEventListener('timeupdate', draw)
+    return () => { on?.removeEventListener('cuechange', draw); v.removeEventListener('timeupdate', draw); box.replaceChildren() }
   }, [subOn, subs.length])
 
   // ---- the source's clock: a remux run starts at r.at, so its clock is offset by that ----

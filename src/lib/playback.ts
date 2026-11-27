@@ -27,6 +27,21 @@ export function isHls(url: string) {
   return /\.m3u8(\?|$)/i.test(url) || /\/hlsv2\//.test(url)
 }
 
+/** The words of a failure: the shell rejects with a plain string, the web side with an Error. */
+export function messageOf(e: unknown): string {
+  return String((e as Error)?.message ?? e)
+}
+
+/**
+ * The subtitle lines showing at source time `t`. A remux run's element clock starts at 0 while its
+ * cues keep the file's own times, so the player picks them by the run's clock, not activeCues.
+ */
+export function cuesAt<T extends { startTime: number; endTime: number }>(cues: ArrayLike<T> | null | undefined, t: number): T[] {
+  const out: T[] = []
+  for (let i = 0; cues && i < cues.length; i++) if (cues[i].startTime <= t && t < cues[i].endTime) out.push(cues[i])
+  return out
+}
+
 /** A source the live remux reads (rule 5): a URL or a file path, with the server's login. */
 export interface Live { input: string; user: string; pass: string }
 

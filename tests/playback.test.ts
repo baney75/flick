@@ -1,6 +1,6 @@
 // SPEC-playback cases 4, 5 and 6: where a seek goes, the remux run's clock, and the probe cache.
 import { describe, expect, it, vi } from 'vitest'
-import { convertLine, DWELL_MS, intent, planSeek, playsHere, probeStream, Remux, SLOW_SERVER, writtenOf, type StreamProbe } from '../src/lib/playback'
+import { convertLine, cuesAt, messageOf, DWELL_MS, intent, planSeek, playsHere, probeStream, Remux, SLOW_SERVER, writtenOf, type StreamProbe } from '../src/lib/playback'
 
 const mkv: StreamProbe = {
   duration: 5700, container: 'matroska,webm', video: 'h264', audio: 'ac3', channels: 6,
@@ -141,5 +141,24 @@ describe('playsHere (rule 8, case 12)', () => {
     expect(playsHere('https://x/a.mp4', safari)).toBe(true)
     expect(playsHere('https://x/resolve/abc/123', safari)).toBe(true)
     expect(playsHere('https://x/a.mkv', () => 'maybe')).toBe(true)
+  })
+})
+
+describe('a remux run of a library file (rule 5)', () => {
+  it('shows the subtitle line for the source time, not the element clock', async () => {
+    const f = fake()
+    const r = new Remux('/Movies/Big.mkv', mkv, '', '', f.call)
+    const opened = r.open(300)
+    f.answer(0)
+    await opened
+    const cues = [{ startTime: 0, endTime: 2, text: 'first line' }, { startTime: 300, endTime: 302, text: 'line at 5:00' }]
+    expect(cuesAt(cues, r.time(0.5)).map((c) => c.text)).toEqual(['line at 5:00'])
+    expect(cuesAt(cues, 0.5).map((c) => c.text)).toEqual(['first line'])
+    expect(cuesAt(cues, 302)).toEqual([])
+    expect(cuesAt(null, 1)).toEqual([])
+  })
+  it('a failure from the shell (a plain string) still has words', () => {
+    expect(messageOf('ffprobe could not read /Movies/Big.mkv')).toBe('ffprobe could not read /Movies/Big.mkv')
+    expect(messageOf(new Error(SLOW_SERVER))).toBe(SLOW_SERVER)
   })
 })
