@@ -7,12 +7,12 @@ import { resolve, storeFile, type Resolved } from '../lib/library'
 import { formatTime } from '../lib/parse'
 import { vttUrl, toVtt } from '../lib/subs'
 import { isDesktop, isMobileApp, hasOpfs, invoke } from '../lib/platform'
-import { kodiConvert, convertUrl } from '../lib/servers'
+import { kodiLive, urlLive } from '../lib/servers'
 import { barFor, oneRetry, openToolStream } from '../lib/plugins/runtime'
 import { Icon } from './icons'
 import { Readout } from './Readout'
 import { Delayed, KEEPS_STALLING, kindOf, OPENING, WAITING, waitLine, Watchdog } from '../lib/stalls'
-import { convertLine, DESKTOP_ONLY, isHls, playsHere, planSeek, probeStream, probes, Remux, SLOW_SERVER, writtenOf } from '../lib/playback'
+import { convertLine, DESKTOP_ONLY, isHls, playsHere, planSeek, probeStream, probes, Remux, SLOW_SERVER, writtenOf, type Live, type StreamProbe, cuesAt, messageOf } from '../lib/playback'
 
 const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
 
@@ -89,11 +89,13 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     ;(async () => {
       try {
         let url = req.url
+        let liveIn: Live | undefined
         if (!url && req.src) {
           const r = await resolve(req.src, (s) => !cancelled && setStatus(s), req.ref.t === 'item' && !req.stream ? req.ref.id : undefined)
           if (cancelled) { r.revoke?.(); return }
           resolved.current = r
           url = r.url
+          liveIn = r.live
           if (r.file) setFile(r.file)
           if (r.sidecarSubs?.length) {
             setSubs((s) => [...s, ...r.sidecarSubs!.map((x) => ({ label: x.name, url: vttUrl(x.name, x.text) }))])
@@ -118,20 +120,19 @@ function PlayerInner({ req }: { req: PlayRequest }) {
           setError(DESKTOP_ONLY)
           return
         }
-        if (probes(url)) {
-          // Only a server that never answers stops here; any other probe failure plays the link as it is.
+        // A link the desktop probes, or a source resolve() says needs the remux (a library MKV, a Kodi AVI).
+        const input: Live | null = liveIn ?? (probes(url) ? { input: url, user: '', pass: '' } : null)
+        if (input) {
+          // Only a server that never answers stops here; any other probe failure plays the link as it is,
+          // unless it can only play through the remux.
           const slow = setTimeout(() => !cancelled && setStatus(WAITING), 3000)
-          const p = await probeStream(url).catch((e) => {
-            if (String((e as Error)?.message ?? e) === SLOW_SERVER) throw new Error(SLOW_SERVER)
+          const p = await probeStream(input.input, input.user, input.pass).catch((e) => {
+            if (liveIn || messageOf(e) === SLOW_SERVER) throw new Error(messageOf(e))
             return null
           }).finally(() => clearTimeout(slow))
           if (cancelled) return
-          if (p && !p.direct) {
-            const r = new Remux(url, p)
-            remux.current = r
-            setDur(p.duration)
-            setStatus(convertLine(p))
-            const local = await r.open(req.startAt ?? 0)
+          if (p && (liveIn || !p.direct)) {
+            const local = await openLive(input, p, req.startAt ?? 0)
             if (cancelled || !local) return
             url = local
             startAt = 0
@@ -150,7 +151,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         }
         if (preview.current && req.kind === 'video' && !isHls(url) && !req.peers) preview.current.src = url
       } catch (e) {
-        if (!cancelled) { setStatus(null); setError((e as Error).message) }
+        if (!cancelled) { setStatus(null); setError(messageOf(e)) }
       }
     })()
     return () => {
@@ -194,6 +195,18 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     v.play().catch(() => setPlaying(false))
   }
 
+  /** Starts the live remux of `input` at source time `at`; its playlist URL, or null when replaced. */
+  function openLive(input: Live, p: StreamProbe, at: number) {
+    // A retry that switches to the remux is watched as a remux from here (the next attach builds it).
+    dog.current?.stop()
+    dog.current = null
+    const r = new Remux(input.input, p, input.user, input.pass)
+    remux.current = r
+    setDur(p.duration)
+    setStatus(convertLine(p))
+    return r.open(at)
+  }
+
   function onFail(msg: string, unsupported = false) {
     const v = video.current!
     // A run being replaced loses its folder; the new run plays instead.
@@ -213,13 +226,20 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     // A URL with a server-side fallback stream (Jellyfin, Plex) uses that instead.
     const convertible = src?.t === 'kodi' || (src?.t === 'url' && !src.fallback)
     if (unsupported && convertible && isDesktop && !isMobileApp && !triedConvert.current) {
-      // The web view cannot decode this file (an MKV, or AC-3 or DTS audio in an MP4): convert it and pick up where it stopped.
+      // The web view cannot decode this file (an MKV, or AC-3 or DTS audio in an MP4): stream it through
+      // the live remux and pick up where it stopped.
       triedConvert.current = true
-      const at = v.currentTime
-      setStatus('Converting for playback')
-      ;(src.t === 'kodi' ? kodiConvert(src, setStatus) : convertUrl(src.url, setStatus))
-        .then((url) => { req.startAt = at || req.startAt; return attach(v, url) })
-        .catch((e) => { setStatus(null); setError((e as Error).message || msg) })
+      const at = v.currentTime || req.startAt || 0
+      setStatus(OPENING)
+      ;(async () => {
+        const input = src.t === 'kodi' ? await kodiLive(src) : await urlLive(src.url)
+        const p = await probeStream(input.input, input.user, input.pass)
+        // A player closed meanwhile starts no run; one closed while the run starts stops it.
+        if (video.current !== v) return
+        const url = await openLive(input, p, at)
+        if (video.current !== v) { remux.current?.stop(); return }
+        if (url) await attach(v, url, 0)
+      })().catch((e) => { setStatus(null); setError(messageOf(e) || msg) })
       return
     }
     if (req.fallbackUrl && !triedFallback.current) {
@@ -271,20 +291,24 @@ function PlayerInner({ req }: { req: PlayRequest }) {
       tracks[i].mode = i === subOn ? 'hidden' : 'disabled'
       if (i === subOn) on = tracks[i]
     }
+    let shown = ''
     const draw = () => {
-      const lines: Node[] = []
-      const cues = on?.activeCues
-      for (let i = 0; cues && i < cues.length; i++) {
+      // A remux run's element clock starts at 0, so its lines are picked by the source's clock.
+      const cues = (remux.current ? cuesAt(on?.cues, clock()) : Array.from(on?.activeCues ?? [])) as VTTCue[]
+      const key = cues.map((c) => `${c.startTime}\n${c.text}`).join('\n\n')
+      if (key === shown) return
+      shown = key
+      box.replaceChildren(...cues.map((c) => {
         const line = document.createElement('span')
         line.className = 'cue'
-        line.append((cues[i] as VTTCue).getCueAsHTML())
-        lines.push(line)
-      }
-      box.replaceChildren(...lines)
+        line.append(c.getCueAsHTML())
+        return line
+      }))
     }
     draw()
     on?.addEventListener('cuechange', draw)
-    return () => { on?.removeEventListener('cuechange', draw); box.replaceChildren() }
+    v.addEventListener('timeupdate', draw)
+    return () => { on?.removeEventListener('cuechange', draw); v.removeEventListener('timeupdate', draw); box.replaceChildren() }
   }, [subOn, subs.length])
 
   // ---- the source's clock: a remux run starts at r.at, so its clock is offset by that ----

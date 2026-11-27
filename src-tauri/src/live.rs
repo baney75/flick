@@ -45,7 +45,9 @@ pub fn run_args(
         a.extend(["-ss".into(), format!("{at:.3}")]);
     }
     a.extend(input_args(input, auth));
-    a.extend(["-map", "0:v:0?", "-map", "0:a:0?"].map(String::from));
+    // Capital V: real video only, never an album's cover picture, which would hold every segment
+    // to its one keyframe and leave an audio file with nothing to play until it ends.
+    a.extend(["-map", "0:V:0?", "-map", "0:a:0?"].map(String::from));
     a.extend(video_args(p.video.as_deref()));
     match p.audio.as_deref() {
         Some(c) if COPY_AUDIO.contains(&c) => a.extend(["-c:a", "copy"].map(String::from)),
@@ -465,7 +467,7 @@ mod tests {
         );
         let s = a.join(" ");
         assert!(s.starts_with("-nostdin -loglevel error -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss 5400.000 -headers"), "{s}");
-        assert!(s.contains("-i https://x/a.mkv -map 0:v:0? -map 0:a:0? -c:v copy -tag:v hvc1 -c:a aac -b:a 384k -ac 6"), "{s}");
+        assert!(s.contains("-i https://x/a.mkv -map 0:V:0? -map 0:a:0? -c:v copy -tag:v hvc1 -c:a aac -b:a 384k -ac 6"), "{s}");
         assert!(s.ends_with("-sn -f hls -hls_segment_type fmp4 -hls_time 4 -hls_playlist_type event -hls_flags independent_segments -hls_fmp4_init_filename init.mp4 /c/r/index.m3u8"), "{s}");
         let p = StreamProbe {
             video: Some("h264".into()),
@@ -652,6 +654,113 @@ mod tests {
             "ffmpeg still running 1 s after stop"
         );
         assert!(!back.playlist.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // Rule 5: a library file the web view cannot play streams from its path, not a whole-file convert.
+    #[test]
+    fn a_library_file_streams_from_its_path_and_seeks() {
+        let Some((ffmpeg, ffprobe)) = tools() else {
+            return eprintln!("skipped: needs ffmpeg");
+        };
+        let dir = scratch("library");
+        let file = dir.join("Movie (2024).mkv");
+        fixture(
+            &ffmpeg,
+            &file,
+            600,
+            1,
+            &[
+                "-c:v",
+                "libx264",
+                "-g",
+                "4",
+                "-preset",
+                "ultrafast",
+                "-c:a",
+                "ac3",
+                "-b:a",
+                "64k",
+                "-ac",
+                "1",
+            ],
+        );
+        let path = file.to_string_lossy().into_owned();
+        let p = probe(&ffprobe, &path, None, LIMIT).unwrap();
+        assert!(!p.direct && (p.duration - 600.0).abs() < 2.0, "{p:?}");
+        assert!(!run_args(&path, None, &p, 0.0, &dir).contains(&"-reconnect".to_string()));
+        let st = Live::default();
+        let t0 = Instant::now();
+        let s = start(&st, &ffmpeg, &dir.join("runs"), &path, None, &p, 300.0).unwrap();
+        assert!(
+            t0.elapsed() < Duration::from_secs(3),
+            "took {:?}",
+            t0.elapsed()
+        );
+        assert_eq!(s.at, 300.0);
+        assert!(ready_to_play(
+            &std::fs::read_to_string(&s.playlist).unwrap()
+        ));
+        stop(&st);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // A Kodi or library FLAC with cover art: only the audio is remuxed (review r2 S1 of #154).
+    #[test]
+    fn an_audio_file_with_cover_art_remuxes_its_audio_only() {
+        let Some((ffmpeg, ffprobe)) = tools() else {
+            return eprintln!("skipped: needs ffmpeg");
+        };
+        let dir = scratch("cover");
+        let file = dir.join("Track.flac");
+        let ok = std::process::Command::new(&ffmpeg)
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:sample_rate=48000:duration=600",
+            ])
+            .args(["-f", "lavfi", "-i", "color=c=red:s=64x64:d=1"])
+            .args([
+                "-map",
+                "0:a",
+                "-map",
+                "1:v",
+                "-frames:v",
+                "1",
+                "-c:a",
+                "flac",
+                "-c:v",
+                "png",
+            ])
+            .args(["-disposition:v:0", "attached_pic"])
+            .arg(&file)
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let path = file.to_string_lossy().into_owned();
+        let p = probe(&ffprobe, &path, None, LIMIT).unwrap();
+        let st = Live::default();
+        let s = start(&st, &ffmpeg, &dir.join("runs"), &path, None, &p, 0.0).unwrap();
+        let init = s.playlist.with_file_name("init.mp4");
+        let out = std::process::Command::new(&ffprobe)
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(&init)
+            .output()
+            .unwrap();
+        stop(&st);
+        let kinds = String::from_utf8_lossy(&out.stdout).to_string();
+        assert_eq!(kinds.trim(), "audio", "streams in the run: {kinds:?}");
         let _ = std::fs::remove_dir_all(dir);
     }
 
