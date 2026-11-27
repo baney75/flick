@@ -2,7 +2,10 @@
 // Self-contained on purpose: the app and scripts/plugin-check.mjs (Node) load this same file.
 
 export const API = 1
+/** Flick's own types. A plugin may also name a kind of its own ("podcast", "recipe"): see KIND_RE. */
 export const TYPES = ['movie', 'series', 'video', 'channel', 'audio', 'audiobook', 'book'] as const
+/** A plugin's own kind: opaque to Flick, never merged with another source's titles, passed back unchanged. */
+export const KIND_RE = /^[a-z][a-z0-9-]{1,31}$/
 export const TOOLS = ['ytdlp'] as const
 /** `source` plugins add titles and streams; `service` plugins (debrid) turn a torrent into an https link. */
 export const KINDS = ['source', 'service'] as const
@@ -13,7 +16,9 @@ export const PLATFORMS = ['web', 'desktop', 'mobile'] as const
 export const CALL_TIMEOUT_MS = 20_000
 export const STORE_LIMIT = 1024 * 1024
 
-export type MetaType = (typeof TYPES)[number]
+export type BuiltinType = (typeof TYPES)[number]
+export type MetaType = BuiltinType | (string & {})
+export const isBuiltinType = (t: string): t is BuiltinType => (TYPES as readonly string[]).includes(t)
 export type Platform = (typeof PLATFORMS)[number]
 
 export interface Field { key: string; label: string; type: 'text' | 'password' | 'select' | 'toggle' | 'list'; options?: string[]; default?: unknown; secret?: boolean; help?: string }
@@ -60,7 +65,19 @@ export interface Meta {
   badges?: string[]
   videos?: Video[]
   progress?: { pos: number; dur: number; at: number; videoId?: string }
+  /** Ids of the library shelves this item sits on (library() only). */
+  shelves?: string[]
+  /** When it was added, in milliseconds since epoch. */
+  added?: number
+  /** Up to 8 labeled facts for the title page: Servings 4, Platform Switch. */
+  facts?: Fact[]
 }
+export interface Fact { label: string; value: string }
+/** A named group in a plugin's library ("Liked", "Subscribed"); a chip in Library. */
+export interface Shelf { id: string; name: string; layout?: 'poster' | 'square' | 'landscape' | 'list'; order?: 'plugin' | 'added' | 'name' | 'year' }
+export interface Library { shelves: Shelf[]; items: Meta[] }
+/** A validator's note about what it dropped, for the plugin's log. */
+export type Note = (text: string) => void
 export interface Sub { url: string; lang: string; label?: string }
 export interface Stream { url: string; title?: string; quality?: string; kind?: 'video' | 'audio' | 'book'; subs?: Sub[]; needsDesktop?: boolean; external?: boolean; group?: string }
 export interface CatalogResult { items: Meta[]; more: boolean }
@@ -81,6 +98,18 @@ const fail = (msg: string): never => { throw new PluginError(msg) }
 const MAX_STR = 2000
 const MAX_LIST = 500
 const MAX_ITEMS = 200
+export const MAX_LIBRARY = 1000
+export const MAX_SHELVES = 20
+const MAX_ITEM_SHELVES = 8
+const MAX_FACTS = 8
+const SHELF_RE = /^[a-z0-9][a-z0-9_-]{0,39}$/
+const LAYOUTS = ['poster', 'square', 'landscape', 'list'] as const
+const ORDERS = ['plugin', 'added', 'name', 'year'] as const
+const kindWords = `one of ${TYPES.join(', ')} or a kind of your own (2 to 32 lowercase letters, digits and -, like "podcast")`
+const metaType = (x: unknown, what: string): MetaType => (typeof x === 'string' && KIND_RE.test(x) ? x : fail(`${what} "${String(x)}" is not ${kindWords}.`))
+/** Display text that never throws: a string (trimmed) or a number, else undefined. */
+const shortText = (x: unknown, max: number): string | undefined =>
+  typeof x === 'string' ? x.trim().slice(0, max) || undefined : typeof x === 'number' && Number.isFinite(x) ? String(x) : undefined
 const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x)
 const ID_RE = /^[a-z0-9]+(\.[a-z0-9-]+)+$/
 export const HASH_RE = /^[0-9a-f]{40}$/
@@ -209,8 +238,7 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
 export function validateCatalogDefs(x: unknown): CatalogDef[] {
   return list(x, 'catalogs', 50).map((c): CatalogDef => {
     if (!isObj(c)) return fail('Each catalog must be an object.')
-    const type = c.type as MetaType
-    if (!TYPES.includes(type)) fail(`Catalog type "${String(c.type)}" is not one of ${TYPES.join(', ')}.`)
+    const type = metaType(c.type, 'Catalog type')
     const out: CatalogDef = { id: str(c.id, 'A catalog id', true, 1000), name: str(c.name, 'A catalog name', true, 200), type }
     if (c.search === true) out.search = true
     return out
@@ -250,8 +278,7 @@ function video(x: unknown): Video | null {
 
 export function validateMeta(x: unknown): Meta {
   if (!isObj(x)) return fail('A meta must be an object.')
-  const type = x.type as MetaType
-  if (!TYPES.includes(type)) fail(`Meta type "${String(x.type)}" is not one of ${TYPES.join(', ')}.`)
+  const type = metaType(x.type, 'Meta type')
   const m: Meta = { id: str(x.id, 'Meta id', true, 512), type, name: str(x.name, 'Meta name', true) }
   const poster = imgUrl(x.poster), background = imgUrl(x.background)
   if (poster) m.poster = poster
@@ -275,25 +302,83 @@ export function validateMeta(x: unknown): Meta {
     const vid = str(p.videoId, 'videoId', false, 512)
     if (vid) m.progress.videoId = vid
   }
+  // Shelf ids are checked against the declared shelves in validateLibrary.
+  const shelves = [...new Set((Array.isArray(x.shelves) ? x.shelves.slice(0, 50) : []).map((s) => shortText(s, 40)).filter((s): s is string => !!s))]
+  if (shelves.length) m.shelves = shelves.slice(0, MAX_ITEM_SHELVES)
+  const added = num(x.added)
+  if (added !== undefined && added > 0) m.added = added < 1e11 ? added * 1000 : added
+  const facts = (Array.isArray(x.facts) ? x.facts.slice(0, 50) : []).flatMap((f): Fact[] => {
+    if (!isObj(f)) return []
+    const label = shortText(f.label, 30), value = shortText(f.value, 120)
+    return label && value ? [{ label, value }] : []
+  })
+  if (facts.length) m.facts = facts.slice(0, MAX_FACTS)
   return m
 }
 
-/** A list of metas; one bad entry is skipped, not the whole list. */
-function metas(x: unknown, max: number): Meta[] {
+/** A list of metas; one bad entry is skipped, not the whole list, with one note for the call. */
+function metas(x: unknown, max: number, note: Note): Meta[] {
+  if (Array.isArray(x) && x.length > max) note(`Kept the first ${max} of ${x.length} items.`)
   const out: Meta[] = []
-  for (const m of list(x, 'items', max)) { try { out.push(validateMeta(m)) } catch { /* skip one bad meta */ } }
+  let skipped = 0, why = ''
+  for (const m of list(x, 'items', max)) {
+    try { out.push(validateMeta(m)) } catch (e) { skipped++; why ||= (e as Error).message }
+  }
+  if (skipped) note(`Skipped ${skipped} item${skipped > 1 ? 's' : ''}: ${why}`)
   return out
 }
 
-export function validateCatalog(x: unknown): CatalogResult {
-  if (Array.isArray(x)) return { items: metas(x, MAX_ITEMS), more: false }
+const quiet: Note = () => {}
+
+export function validateCatalog(x: unknown, note: Note = quiet): CatalogResult {
+  if (Array.isArray(x)) return { items: metas(x, MAX_ITEMS, note), more: false }
   if (!isObj(x)) return fail('catalog() must return { items, more }.')
-  return { items: metas(x.items, MAX_ITEMS), more: x.more === true }
+  return { items: metas(x.items, MAX_ITEMS, note), more: x.more === true }
 }
 
-export function validateLibrary(x: unknown): Meta[] {
-  if (!Array.isArray(x)) return fail('library() must return a list of metas.')
-  return metas(x, MAX_LIST)
+function shelf(x: unknown): Shelf | string {
+  if (!isObj(x)) return 'a shelf is not an object'
+  const id = typeof x.id === 'string' ? x.id.trim() : ''
+  if (!SHELF_RE.test(id)) return `shelf id "${String(x.id)}" must be 1 to 40 lowercase letters, digits, _ and -`
+  const name = shortText(x.name, 40)
+  if (!name) return `shelf "${id}" has no name`
+  const s: Shelf = { id, name }
+  if ((LAYOUTS as readonly unknown[]).includes(x.layout)) s.layout = x.layout as Shelf['layout']
+  if ((ORDERS as readonly unknown[]).includes(x.order)) s.order = x.order as Shelf['order']
+  return s
+}
+
+/**
+ * library(): a list of metas, or { shelves, items }. Either way Flick gets { shelves, items }.
+ * A bad shelf or item is dropped with a note; only a result of neither shape is refused as a whole.
+ */
+export function validateLibrary(x: unknown, note: Note = quiet): Library {
+  const shaped = isObj(x)
+  if (!Array.isArray(x) && !(shaped && Array.isArray(x.items) && (x.shelves === undefined || Array.isArray(x.shelves)))) {
+    return fail('library() must return a list of metas or { shelves, items }.')
+  }
+  const shelves: Shelf[] = []
+  const bad: string[] = []
+  for (const raw of shaped ? ((x.shelves as unknown[] | undefined) ?? []).slice(0, MAX_LIST) : []) {
+    const s = shelf(raw)
+    if (typeof s === 'string') bad.push(s)
+    else if (shelves.some((o) => o.id === s.id)) bad.push(`shelf "${s.id}" is listed twice; the first is kept`)
+    else shelves.push(s)
+  }
+  if (bad.length) note(`Dropped ${bad.length} shelf entr${bad.length > 1 ? 'ies' : 'y'}: ${bad[0]}.`)
+  if (shelves.length > MAX_SHELVES) note(`Kept the first ${MAX_SHELVES} of ${shelves.length} shelves.`)
+  shelves.splice(MAX_SHELVES)
+  const items = metas(shaped ? x.items : x, MAX_LIBRARY, note)
+  const ids = new Set(shelves.map((s) => s.id))
+  const unknown = new Set<string>()
+  for (const m of items) {
+    if (!m.shelves) continue
+    for (const s of m.shelves) if (!ids.has(s)) unknown.add(s)
+    m.shelves = m.shelves.filter((s) => ids.has(s))
+    if (!m.shelves.length) delete m.shelves
+  }
+  if (unknown.size) note(`Items name shelves this library does not declare, so Flick left them off those shelves: ${[...unknown].slice(0, 5).join(', ')}.`)
+  return { shelves, items }
 }
 
 const PLAY_SCHEMES = /^(https?:|flick-tool:)/i

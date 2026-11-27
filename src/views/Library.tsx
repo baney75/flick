@@ -62,7 +62,7 @@ export function Library({ start }: { start?: Tab } = {}) {
   const photos = useMemo(() => photoSet(items.value), [items.value])
   const dl = downloads.value
   const libs = useMemo(() => sources.value.filter((r) => r.manifest.has.library)
-    .map((r) => ({ p: r.id, pname: r.manifest.name, list: libraries.value[r.id] ?? [] })), [sources.value, libraries.value])
+    .map((r) => ({ p: r.id, pname: r.manifest.name, list: libraries.value[r.id]?.items ?? [] })), [sources.value, libraries.value])
   const titles = useMemo(() => buildTitles(all.filter((i) => i.kind === 'video' && !i.show), shows.value, libs, (id) => isSaved(dl.get(id))),
     [all, shows.value, libs, dl])
   const list = useMemo(() => {

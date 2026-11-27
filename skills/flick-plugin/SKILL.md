@@ -31,6 +31,12 @@ in a sandboxed iframe and talks to it through `ctx`. The full contract is `docs/
    `extensionCatalog`, `inspectExtension`, `addExtension` and `removeExtension` ("Addons" in
    `docs/PLUGINS.md`). Accept only `https://` and `stremio://` addresses, never save in
    `inspectExtension`, and return `settings` to change a list setting instead of writing it yourself.
+9. Anything can be a library. A source with things the user keeps (subscriptions, saved recipes, a
+   course list) exports `library(ctx)` returning `{ shelves, items }` ("Library" in
+   `docs/PLUGINS.md`). Use a built-in `type` when one fits (`audio`, `book`, `video`); otherwise name
+   your own kind (`podcast`, `recipe`). Each shelf becomes a chip in Flick's Library; each item lists
+   its shelf ids in `shelves`. Set `added` when you know it, and put labeled details in `facts`.
+   `plugin:check` prints each shelf with its item count.
 
 ## A service plugin (debrid)
 

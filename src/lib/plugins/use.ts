@@ -4,7 +4,7 @@ import { computed, signal } from '@preact/signals'
 import { go } from '../store'
 import { installed, loadPlugins } from './registry'
 import { callPlugin, platformName, type Installed } from './runtime'
-import type { CatalogDef, Meta, PluginManifest, ThemeManifest } from './validate'
+import { PluginError, type CatalogDef, type Library, type Meta, type PluginManifest, type ThemeManifest } from './validate'
 
 export type Source = Installed & { manifest: PluginManifest }
 
@@ -31,16 +31,20 @@ export async function startPlugins() {
 }
 
 // library() results, kept a few minutes so Home and the plugin page share one call.
-export const libraries = signal<Record<string, Meta[]>>({})
+export const libraries = signal<Record<string, Library>>({})
 const libraryAt = new Map<string, number>()
 export async function loadLibrary(rec: Source, force = false) {
   if (!rec.manifest.has.library) return
   if (!force && Date.now() - (libraryAt.get(rec.id) ?? 0) < 5 * 60_000) return
   libraryAt.set(rec.id, Date.now())
   try {
-    const list = await callPlugin(rec, 'library', [])
-    libraries.value = { ...libraries.value, [rec.id]: list }
-  } catch { libraryAt.delete(rec.id) }
+    const lib = await callPlugin(rec, 'library', [])
+    libraries.value = { ...libraries.value, [rec.id]: lib }
+  } catch (e) {
+    libraryAt.delete(rec.id)
+    // A result of neither shape empties that plugin's library; a failed call keeps what it had.
+    if (e instanceof PluginError) libraries.value = { ...libraries.value, [rec.id]: { shelves: [], items: [] } }
+  }
 }
 /** Library items with a saved position, newest first. */
 export const continueOf = (list: Meta[]) => list.filter((m) => (m.progress?.pos ?? 0) > 0).sort((a, b) => (b.progress!.at ?? 0) - (a.progress!.at ?? 0))

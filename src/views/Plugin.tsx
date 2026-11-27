@@ -12,7 +12,7 @@ import { saveStream, playSaved, badgeFor } from '../lib/offline'
 import { callPlugin } from '../lib/plugins/runtime'
 import { installed } from '../lib/plugins/registry'
 import { sources, sourceById, searchAll, titlePath, progressKey, libraries, loadLibrary, continueOf, type Source, type Found } from '../lib/plugins/use'
-import type { CatalogDef, Meta, Stream, Video } from '../lib/plugins/validate'
+import { isBuiltinType, type CatalogDef, type Meta, type Stream, type Video } from '../lib/plugins/validate'
 import { sections, qualityOf, hdrOf, sizeOf, downloadable } from '../lib/plugins/streams'
 import { rank, pickLine, subLangFor, needsGate, type Ranked } from '../lib/pick'
 import { streamCandidates } from '../lib/candidates'
@@ -99,7 +99,7 @@ export function PluginPage({ id }: { id: string }) {
     setSearching(false)
   }
 
-  const lib = libraries.value[rec.id] ?? []
+  const lib = libraries.value[rec.id]?.items ?? []
   const cont = continueOf(lib)
   return (
     <div class="page">
@@ -191,6 +191,7 @@ export function PluginTitle({ p, type, id, videoId }: { p: string; type: string;
           <h1>{meta.name}</h1>
           <div class="facts">{[meta.year, meta.runtime, ...(meta.badges ?? []), ...(meta.genres ?? []).slice(0, 3)].filter(Boolean).map((f) => <span>{f}</span>)}</div>
           {meta.description && <p class="desc">{meta.description}</p>}
+          {meta.facts && <div class="facts-list title-facts">{meta.facts.map((f) => <div><span class="dim">{f.label}</span> {f.value}</div>)}</div>}
           <p class="small dim"><PluginIcon rec={rec} size={14} /> {rec.manifest.name}</p>
         </div>
       </div>
@@ -347,6 +348,8 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     )
   }
 
+  // A plugin's own kind with nothing to play (a recipe) is its title page: facts and description only.
+  if (list?.length === 0 && !err && !isBuiltinType(meta.type)) return null
   return (
     <section class="streams">
       <div class="row-head">

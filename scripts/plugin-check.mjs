@@ -127,9 +127,9 @@ async function stubTool(name, op, a) {
 async function call(fn, args, validate, what) {
   try {
     const raw = plain(await withTimeout(Promise.resolve(plugin[fn](ctx, ...args)), `${fn}()`))
-    const out = validate(raw)
-    const rawItems = fn === 'catalog' ? (Array.isArray(raw) ? raw : raw?.items) : ['streams', 'library', 'userCatalogs', 'extensions', 'extensionCatalog'].includes(fn) ? raw : null
-    const kept = fn === 'catalog' ? out.items : out
+    const out = validate(raw, (t) => console.log(`     note: ${t}`))
+    const rawItems = fn === 'catalog' || fn === 'library' ? (Array.isArray(raw) ? raw : raw?.items) : ['streams', 'userCatalogs', 'extensions', 'extensionCatalog'].includes(fn) ? raw : null
+    const kept = fn === 'catalog' || fn === 'library' ? out.items : out
     if (Array.isArray(rawItems) && rawItems.length > kept.length) {
       check(false, `${what}: Flick dropped ${rawItems.length - kept.length} of ${rawItems.length} entries that do not match the shapes`)
     }
@@ -200,7 +200,13 @@ if (m.has.extensions) {
   if (cat) check(true, `extensionCatalog(): ${cat.length} addons to add`)
 }
 if (m.has.library) {
-  const lib = await call('library', [], V.validateLibrary, 'library')
-  if (lib) check(true, `library: ${lib.length} items`)
+  let raw = null
+  const lib = await call('library', [], (x, note) => { raw = x; return V.validateLibrary(x, note) }, 'library')
+  if (lib) {
+    check(true, `library: ${lib.items.length} items, ${lib.shelves.length} shelves`)
+    for (const s of lib.shelves) console.log(`     shelf "${s.name}" (${s.id}): ${lib.items.filter((m) => m.shelves?.includes(s.id)).length} items`)
+    const declared = Array.isArray(raw?.shelves) ? raw.shelves.length : 0
+    if (declared > V.MAX_SHELVES) check(false, `library: ${declared} shelves; at most ${V.MAX_SHELVES} are allowed`)
+  }
 }
 done()
