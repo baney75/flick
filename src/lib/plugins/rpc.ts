@@ -13,6 +13,7 @@ export interface Rpc {
 /** `onTimeout` runs after a call passes its limit: the other side may be stuck, so the caller can end it. */
 export function connect(port: MessagePort, handle: Handler, timeoutMs = CALL_TIMEOUT_MS, onTimeout?: () => void): Rpc {
   let seq = 0
+  let closed = false
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>()
 
   port.onmessage = async (e: MessageEvent) => {
@@ -38,6 +39,8 @@ export function connect(port: MessagePort, handle: Handler, timeoutMs = CALL_TIM
 
   return {
     call<T>(method: string, args: unknown[] = [], ms = timeoutMs): Promise<T> {
+      // A closed port would swallow the ask, and the call would wait out its whole time limit.
+      if (closed) return Promise.reject(new Error('The plugin stopped.'))
       return new Promise<T>((resolve, reject) => {
         const id = ++seq
         const timer = setTimeout(() => {
@@ -50,6 +53,7 @@ export function connect(port: MessagePort, handle: Handler, timeoutMs = CALL_TIM
       })
     },
     close() {
+      closed = true
       for (const p of pending.values()) { clearTimeout(p.timer); p.reject(new Error('The plugin stopped.')) }
       pending.clear()
       port.onmessage = null

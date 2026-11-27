@@ -3,13 +3,14 @@
 // so the next call starts a fresh one. A plugin that still answers keeps its frame and its other calls.
 import 'fake-indexeddb/auto'
 import { describe, it, expect } from 'vitest'
-import { PING_MS, callPlugin, openFrame, sha256, stopPlugin, type Installed } from '../src/lib/plugins/runtime'
+import { PING_MS, callPlugin, logs, openFrame, sha256, stopPlugin, type Installed } from '../src/lib/plugins/runtime'
 
 /**
  * A stand-in for public/plugin-host.js: answers load, catalog and ping, never answers `hang`. A `stuck`
- * host stands for a plugin in a loop: after load it answers nothing, not even a ping.
+ * host stands for a plugin in a loop: after load it answers nothing, not even a ping. A `bad load` host
+ * refuses load, as a plugin with no default export or a sandbox with no Worker does.
  */
-function fakeHost(stuck = false) {
+function fakeHost(mode: 'ok' | 'stuck' | 'bad load' = 'ok') {
   const frames: { removed: boolean; load: () => void }[] = []
   const doc = {
     createElement: () => {
@@ -25,7 +26,8 @@ function fakeHost(stuck = false) {
             port.onmessage = (e) => {
               const { id, m, a } = e.data
               if (m === 'call' && a[0] === 'hang') return
-              if (stuck && m !== 'load') return
+              if (mode === 'stuck' && m !== 'load') return
+              if (mode === 'bad load' && m === 'load') { port.postMessage({ re: id, ok: false, e: 'The plugin must export a default object.' }); return }
               const v = m === 'load' ? { manifest: {}, fns: [] } : m === 'call' ? { items: [], more: false } : null
               port.postMessage({ re: id, ok: true, v })
             }
@@ -58,7 +60,7 @@ describe('a plugin frame that stops answering', () => {
   })
 
   it('a call past its time limit ends the frame when the plugin does not answer a ping', async () => {
-    const { doc, frames } = fakeHost(true)
+    const { doc, frames } = fakeHost('stuck')
     let dead = 0
     const fr = await openFrame(async () => null, doc, () => dead++)
     const other = fr.rpc.call('call', ['hang'], 20_000)
@@ -68,6 +70,10 @@ describe('a plugin frame that stops answering', () => {
     await expect(other).rejects.toThrow('The plugin stopped.')
     expect(Date.now() - t0).toBeLessThan(PING_MS + 1000)
     expect([dead, frames[0].removed]).toEqual([1, true])
+    // A caller still holding the ended frame gets an answer now, not after the time limit.
+    const t1 = Date.now()
+    await expect(fr.rpc.call('call', ['catalog'])).rejects.toThrow('The plugin stopped.')
+    expect(Date.now() - t1).toBeLessThan(100)
   })
 
   it('a frame that loads again (it navigated away) is ended at once', async () => {
@@ -101,6 +107,28 @@ describe('a plugin frame that stops answering', () => {
       expect(Date.now() - t0).toBeLessThan(1000)
       expect(frames).toHaveLength(2)
       expect([frames[0].removed, frames[1].removed]).toEqual([true, false])
+      expect(logs.value[rec.id].at(-1)).toMatch(/its page loaded again/)
+    } finally {
+      stopPlugin(rec.id)
+      delete g.document
+    }
+  })
+
+  it('a plugin that fails to load loses its frame', async () => {
+    const { doc, frames } = fakeHost('bad load')
+    const g = globalThis as { document?: Document }
+    g.document = doc
+    const code = 'export const x = 1'
+    const rec: Installed = {
+      id: 'org.example.badload', kind: 'source', url: null, code, sha256: await sha256(code), enabled: true, official: false,
+      settings: {}, installedAt: 0, checkedAt: 0,
+      manifest: { api: 1, id: 'org.example.badload', name: 'Bad load', version: '1', hosts: [], tools: [], platforms: ['web'], settings: [], actions: [], titleActions: [], catalogs: [] } as never,
+    }
+    try {
+      await expect(callPlugin(rec, 'catalog', [{ id: 'top' }])).rejects.toThrow(/default object/)
+      await expect(callPlugin(rec, 'catalog', [{ id: 'top' }])).rejects.toThrow(/default object/)
+      // Each try made a frame, and neither is left behind.
+      expect(frames.map((f) => f.removed)).toEqual([true, true])
     } finally {
       stopPlugin(rec.id)
       delete g.document
