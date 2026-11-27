@@ -5,7 +5,11 @@ import { fileURLToPath } from 'node:url'
 import { freePort } from '../scripts/free-port.mjs'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { createRequire } from 'node:module'
+
+// The wrangler pinned in package.json, never whatever npx would fetch.
+const WRANGLER = join(dirname(createRequire(import.meta.url).resolve('wrangler/package.json')), 'bin', 'wrangler.js')
 
 // Free ports, so a run in another worktree is never the one answering (see scripts/free-port.mjs).
 const PORT = await freePort(), INSPECTOR = await freePort()
@@ -13,7 +17,7 @@ let base = process.env.RELAY_URL
 let dev
 if (!base) {
   base = `http://127.0.0.1:${PORT}`
-  dev = spawn('npx', ['wrangler', 'dev', '--port', String(PORT), '--inspector-port', String(INSPECTOR), '--persist-to', mkdtempSync(join(tmpdir(), 'flick-relay-')), '--ip', '127.0.0.1', '--var', 'IDLE_MS:2000'], { cwd: fileURLToPath(new URL('.', import.meta.url)), stdio: ['ignore', 'pipe', 'pipe'] })
+  dev = spawn(process.execPath, [WRANGLER, 'dev', '--port', String(PORT), '--inspector-port', String(INSPECTOR), '--persist-to', mkdtempSync(join(tmpdir(), 'flick-relay-')), '--ip', '127.0.0.1', '--var', 'IDLE_MS:2000'], { cwd: fileURLToPath(new URL('.', import.meta.url)), stdio: ['ignore', 'pipe', 'pipe'] })
   await new Promise((ok, bad) => {
     const t = setTimeout(() => bad(new Error('wrangler dev did not start')), 60_000)
     const on = (b) => { if (/Ready on/.test(String(b))) { clearTimeout(t); ok() } }
