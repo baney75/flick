@@ -634,6 +634,8 @@ impl Probe for Arc<Live> {
         if bind.is_none() {
             std::thread::sleep(*self.delay.lock().unwrap());
             let fail = |n: usize| n.checked_sub(1);
+            // Rust 1.99 renamed fetch_update to try_update; older toolchains have only fetch_update.
+            #[allow(deprecated)]
             if self
                 .flaky
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, fail)

@@ -1429,6 +1429,7 @@ pub fn run() {
             ytdlp::plugin_tools,
             ytdlp::plugin_tool,
             ytdlp::tool_open,
+            ytdlp::tool_stop,
             ytdlp::tool_prefetch,
             ytdlp::tool_download,
             ytdlp::tool_download_clean,
@@ -1529,7 +1530,7 @@ mod tests {
         std::fs::write(&meta, ";FFMETADATA1\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=2000\ntitle=Opening\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=2000\nEND=5000\ntitle=Ending\n").unwrap();
         let book = dir.join("book.m4b");
         let ok = Command::new(ffmpeg)
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=d=5", "-i"])
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "anullsrc=d=5", "-i"])
             .arg(&meta)
             .args(["-map_chapters", "1", "-c:a", "aac"])
             .arg(&book)

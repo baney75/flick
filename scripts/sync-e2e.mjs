@@ -24,7 +24,7 @@ try {
     procs[1].stdout.on('data', on); procs[1].stderr.on('data', on)
   })
   await until(async () => { try { return (await fetch(BASE)).ok } catch { return false } })
-  const browser = await chromium.launch({ channel: process.env.SMOKE_CHANNEL ?? 'chrome' })
+  const browser = await chromium.launch({ channel: process.env.SMOKE_CHANNEL ?? 'chrome', args: ['--mute-audio'] })
   const open = async () => {
     const ctx = await browser.newContext({ permissions: ['clipboard-read', 'clipboard-write'] })
     // Init scripts run in every frame; the plugin sandbox has no storage, as intended.
@@ -68,6 +68,30 @@ try {
   await a.getByLabel('Skip buttons jump').selectOption('15')
   const caught = await until(async () => (await b.getByLabel('Skip buttons jump').inputValue()) === '15')
   check(caught, 'a reloaded device catches up')
+  await until(() => a.getByText('Online now').isVisible())
+
+  // A long watch history still syncs. 4,000 progress rows are far more than one relay message holds
+  // (256 KiB); they must arrive in parts, and sync must keep working after.
+  const HISTORY = 4000
+  await a.evaluate((n) => new Promise((ok, bad) => {
+    const r = indexedDB.open('flick')
+    r.onsuccess = () => {
+      const tx = r.result.transaction('progress', 'readwrite')
+      for (let i = 0; i < n; i++) tx.objectStore('progress').put({ pos: 60 + i, dur: 2400, at: 1764000000000 + i, title: `History episode ${i}`, ref: { t: 'url', url: `https://example.test/video/${i}` } }, `url:https://example.test/video/${i}`)
+      tx.oncomplete = () => ok()
+      tx.onerror = () => bad(tx.error)
+    }
+  }), HISTORY)
+  await a.reload()
+  await a.goto(a.url().replace(/#.*$/, '#/settings'))
+  const history = (page) => page.evaluate(() => new Promise((ok) => {
+    const r = indexedDB.open('flick')
+    r.onsuccess = () => { const g = r.result.transaction('kv').objectStore('kv').get('sync.doc'); g.onsuccess = () => ok((g.result?.rows ?? []).filter(([k]) => k.startsWith('p:k:url:https://example.test/video/')).length) }
+  }))
+  check(await until(async () => (await history(b)) === HISTORY, 45000), `a watch history of ${HISTORY} entries reaches the other device`)
+  check(await until(() => b.getByText('Online now').isVisible()), 'and both devices stay connected')
+  await a.getByLabel('Skip buttons jump').selectOption('10')
+  check(await until(async () => (await b.getByLabel('Skip buttons jump').inputValue()) === '10'), 'and a change made after it still syncs')
   await until(() => a.getByText('Online now').isVisible())
   await b.close({ runBeforeUnload: true })
   check(await until(async () => !(await a.getByText('Online now').isVisible())), 'a device that closes its page shows offline on the other')
