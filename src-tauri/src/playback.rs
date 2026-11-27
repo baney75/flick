@@ -436,12 +436,12 @@ pub mod fixtures {
         d
     }
 
-    /// Makes a fixture with ffmpeg: a test pattern and a tone, `secs` long.
+    /// Makes a fixture with ffmpeg: a test pattern and silent audio, `secs` long.
     pub fn fixture(ffmpeg: &Path, out: &Path, secs: u32, fps: u32, codecs: &[&str]) {
         let ok = Command::new(ffmpeg)
             .args(["-v", "error", "-y", "-f", "lavfi", "-i"])
             .arg(format!("testsrc=size=320x180:rate={fps}"))
-            .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000"])
+            .args(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"])
             .args(["-t", &secs.to_string(), "-pix_fmt", "yuv420p"])
             .args(codecs)
             .arg(out)
