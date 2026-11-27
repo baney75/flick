@@ -16,6 +16,8 @@ import { isBuiltinType, type CatalogDef, type Meta, type Stream, type Video } fr
 import { sections, qualityOf, hdrOf, sizeOf, downloadable } from '../lib/plugins/streams'
 import { rank, pickLine, subLangFor, needsGate, type Ranked } from '../lib/pick'
 import { streamCandidates } from '../lib/candidates'
+import { serviceTag } from '../lib/debrid-play'
+import { useCached } from './Debrid'
 import { ctxNow, current, debridNow, deviceFor, holdGate, NO_ENGINE_YET, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
@@ -264,7 +266,8 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   const resumeAt = unfinished(last) ? last.pos : 0
   // Rank this video's streams by the user's languages, quality and this device (SPEC-best-stream).
   const ctx = ctxNow()
-  const cands = streamCandidates(key, shown, { audiobook: meta.type === 'audiobook', episode: meta.type === 'series', debrid: debridNow() })
+  const cached = useCached(list)
+  const cands = streamCandidates(key, shown, { audiobook: meta.type === 'audiobook', episode: meta.type === 'series', debrid: debridNow(cached) })
   // Only a title with a stream behind the VPN gate asks the gate anything.
   const gated = (r?: Ranked) => !!r && needsGate(r.c, ctx.vpnForDebrid)
   const anyGated = cands.some((c) => needsGate(c, ctx.vpnForDebrid))
@@ -334,6 +337,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     const canSave = free && how !== null && !gated(rowOf.get(s))
     const shut = shutBy(rowOf.get(s))
     const why = shut ?? rowOf.get(s)?.blocked
+    const tag = why ? undefined : serviceTag(s, rowOf.get(s)?.c, serviceName)
     return (
       <div class={`stream-item${why ? ' blocked' : ''}`}>
         <button class="stream" aria-disabled={shut ? 'true' : undefined} onClick={() => start(s)}>
@@ -345,6 +349,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
             {size && <span>{size}</span>}
             {s.kind === 'book' && <span>Book</span>}
             {s.external && !shut && <span>Opens in your browser</span>}
+            {tag && <span class={rowOf.get(s)?.c.via === 'debrid-cached' ? 'ok' : undefined}>{tag}</span>}
             {why && (shut || !s.external) && <span class="warn">{why}</span>}
             </div>
           <Icon name={s.external ? 'external' : 'play'} size={18} class="stream-go" />

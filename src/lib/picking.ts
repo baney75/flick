@@ -8,7 +8,9 @@ import { progressKey } from './plugins/use'
 import type { Src } from './titles'
 import { installed } from './plugins/registry'
 import type { PluginManifest } from './plugins/validate'
-import type { Debrid } from './candidates'
+import type { Debrid, ServiceInfo } from './candidates'
+import { services as playable } from './plugins/services'
+import { mayAsk, resolveOrder, type CachedMap } from './debrid-play'
 import { invoke, isDesktop, isMobileApp, onDesktopEvent } from './platform'
 import { DESKTOP_ONLY, type Gate } from '../views/Vpn'
 
@@ -164,23 +166,30 @@ export function ctxNow(): Omit<PickCtx, 'picked'> {
   return c
 }
 
-const services = () => installed.value.filter((p) => p.kind === 'service')
+const known = () => installed.value.filter((p) => p.kind === 'service')
+const infoOf = (p: { id: string; manifest: object }): ServiceInfo => {
+  const m = p.manifest as PluginManifest
+  return { id: p.id, vpnOptional: m.vpnOptional === true, debridHosts: (m.debridHosts ?? []).map((h) => h.toLowerCase().replace(/^\.+|\.+$/g, '')) }
+}
 
 /**
  * The debrid services the ranker knows. Every installed one marks its download hosts (SPEC-debrid
- * rule 6), enabled or not. Resolving torrents through them is SPEC-debrid's playback, so until
- * that lands no service is set up to resolve one here and a torrent stream ranks as peer to peer.
+ * rule 6), enabled or not. A torrent goes to the services set up to play (on, with a key, in the
+ * desktop app) that Flick may ask now (`resolveOrder`); with none set up it stays peer to peer.
+ * `cached` holds the title page's lookups.
  */
-export function debridNow(): Debrid {
-  const known = services().map((p) => {
-    const m = p.manifest as PluginManifest
-    return { id: p.id, vpnOptional: m.vpnOptional === true, debridHosts: (m.debridHosts ?? []).map((h) => h.toLowerCase().replace(/^\.+|\.+$/g, '')) }
-  })
-  return { known, order: [] }
+export function debridNow(cached: CachedMap = {}): Debrid {
+  const order = resolveOrder(playable.value.map(infoOf), gate.value?.ok === true, debridNeedsVpn())
+  return { known: known().map(infoOf), order, cached: (svc, hash) => cached[svc]?.includes(hash) === true }
 }
 
+/** Whether Flick may ask this service anything now (SPEC-debrid Amendment 1), read live. */
+export const mayAskNow = (s: { id: string; manifest: object }) => mayAsk(infoOf(s), gate.value?.ok === true, debridNeedsVpn())
+/** The services set up to play that Flick may ask now, in the user's order. */
+export const askable = () => playable.value.filter(mayAskNow)
+
 /** A service's name for the pick line ("TorBox instant"). */
-export const serviceName = (id: string) => services().find((p) => p.id === id)?.manifest.name ?? id
+export const serviceName = (id: string) => known().find((p) => p.id === id)?.manifest.name ?? id
 
 const srcProgress = (s: Src): number | undefined => {
   const p = progress.value
