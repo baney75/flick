@@ -14,7 +14,7 @@ export interface PerfReport {
   origin: string
   userAgent: string
   visibility?: string
-  rafFires?: boolean
+  rafFires?: boolean | null
   /** True in the hidden app: frames came from a 16 ms timer, so tap frame times are left out. */
   rafEmulated?: boolean
   /** How late timers ran here: a hidden window may slow them, which slows any work queued on a timer. */
@@ -90,15 +90,17 @@ function find(selector: string, text: string): HTMLElement {
   return el
 }
 
+/** The app's own invokes that started in [from, to]; the self-test's progress notes are not the app's. */
+const appInvokes = (from: number, to: number) => invokeLog.filter((r) => r.start >= from && r.start <= to && !r.cmd.startsWith('selftest_')).length
+
 async function tap(label: string, el: HTMLElement): Promise<Tap> {
-  const i0 = invokeLog.length
   const t0 = now()
   const frame = frames()
   el.click()
   const f = hook()?.rafEmulated ? null : await frame
   const s = await settle(t0, 100, 5000)
   note(`${label} ${round(s.last - t0)} ms`)
-  return { label, settledMs: round(s.last - t0), frameMs: f === null ? null : round(f - t0), capped: s.capped, invokes: invokeLog.length - i0 }
+  return { label, settledMs: round(s.last - t0), frameMs: f === null ? null : round(f - t0), capped: s.capped, invokes: appInvokes(t0, now()) }
 }
 
 export async function runPerf(launchedAt: number, setupAt?: number): Promise<PerfReport> {
@@ -133,7 +135,8 @@ export async function runPerf(launchedAt: number, setupAt?: number): Promise<Per
     .map((e) => ({ name: e.name.replace(location.origin, ''), ms: round(e.duration), kb: round((e.encodedBodySize || e.decodedBodySize) / 1024) }))
     .sort((a, b) => b.ms - a.ms)
   note(`home interactive ${start.homeInteractiveMs} ms after the page started`)
-  const rafFires = (await frames(1, 500)) !== null
+  // With emulated frames the probe would always pass, so it says nothing there.
+  const rafFires = hook()?.rafEmulated ? null : (await frames(1, 500)) !== null
   const timers = await timerProbe()
   const fetched = await scriptFetch()
   note(`timers: setTimeout(0) ${timers.zeroMs} ms, setTimeout(20) ${timers.twentyMs} ms, task ${timers.taskMs} ms`)

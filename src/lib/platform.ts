@@ -18,21 +18,22 @@ async function core() {
   return import('@tauri-apps/api/core')
 }
 
+/** One invoke; `end` is -1 until it answers. */
 export interface InvokeRow { cmd: string; start: number; end: number; ok: boolean }
-/** Every invoke in a self-test run (window.__FLICK_SELFTEST__, set only by the self-test build or harness). */
+/** Every invoke in a self-test run (window.__FLICK_SELFTEST__, set only by the self-test build or harness), logged as it starts. */
 export const invokeLog: InvokeRow[] = []
 const logInvokes = typeof window !== 'undefined' && '__FLICK_SELFTEST__' in window
 
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (!logInvokes) return (await core()).invoke<T>(cmd, args)
-  const start = performance.now()
-  let ok = false
+  const row: InvokeRow = { cmd, start: performance.now(), end: -1, ok: false }
+  if (invokeLog.length < 5000) invokeLog.push(row)
   try {
     const v = await (await core()).invoke<T>(cmd, args)
-    ok = true
+    row.ok = true
     return v
   } finally {
-    if (invokeLog.length < 5000) invokeLog.push({ cmd, start, end: performance.now(), ok })
+    row.end = performance.now()
   }
 }
 
