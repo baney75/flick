@@ -455,6 +455,9 @@ html.tv .hrow { grid-auto-columns: 300px; padding: 10px 6px 14px; }
 .epub-toc button { text-align: left; padding: 10px 12px; border-radius: 8px; }
 .epub-toc button:hover { background: var(--line); }
 @media (max-width: 600px) { .reader.epub .reader-bar { gap: 4px; padding-left: 8px; padding-right: 8px; } .reader.epub .reader-page { display: none; } }
+/* On a phone the controls leave the title a few letters, so the title shares the first row with Back only
+   and the controls wrap to a second row. */
+@media (max-width: 600px) { .reader.epub .reader-bar { flex-wrap: wrap; row-gap: 2px; } .reader.epub .reader-title { flex-basis: calc(100% - 48px); } }
 
 /* Sync pairing */
 .pair { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
