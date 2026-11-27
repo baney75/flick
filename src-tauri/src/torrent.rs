@@ -143,6 +143,12 @@ impl Engine {
         self.table.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The gate's last answer through `on_gate`.
+    #[cfg(test)]
+    pub fn last_gate(&self) -> Option<GateState> {
+        self.table().last.clone()
+    }
+
     /// Info hashes of the torrents running now.
     #[cfg(test)]
     pub fn running(&self) -> Vec<String> {
@@ -587,10 +593,15 @@ fn engine(app: &tauri::AppHandle) -> Result<Arc<Engine>, String> {
     };
     let gate: Arc<dyn Gate> = Arc::clone(watch) as Arc<dyn Gate>;
     let started = Arc::new(Engine::new(cfg, gate).map_err(|e| e.to_string())?);
-    let hooked = Arc::clone(&started);
-    watch.subscribe(Box::new(move |s| hooked.on_gate(s)));
+    listen(watch, &started);
     *e = Some(Arc::clone(&started));
     Ok(started)
+}
+
+/// The engine hears every gate answer the app hears, so a drop stops its torrents.
+pub fn listen(watch: &crate::vpn::watch::Watch, engine: &Arc<Engine>) {
+    let hooked = Arc::clone(engine);
+    watch.subscribe(Box::new(move |s| hooked.on_gate(s)));
 }
 
 /// Plays a torrent stream: `{ infoHash, fileIdx?, trackers? }` to the URL the player opens.
@@ -599,12 +610,13 @@ pub async fn torrent_play(app: tauri::AppHandle, torrent: Want) -> Result<String
     if cfg!(windows) {
         return Err(rules::WINDOWS_OFF.into());
     }
-    let e = engine(&app)?;
-    let run = tauri::async_runtime::spawn_blocking(move || e.play(&torrent));
+    // The engine starts here too: building or dropping its runtime must not run in an async task.
+    let run = tauri::async_runtime::spawn_blocking(move || engine(&app)?.play(&torrent));
     run.await.map_err(|e| e.to_string())?
 }
 
-/// The player stopped the stream of `info_hash`.
+/// The player stopped the stream of `info_hash`. The player sends it only after `torrent_play`
+/// answered; a stop that ends a start still in progress is `Engine::stop`'s.
 #[tauri::command]
 pub async fn torrent_stop(info_hash: String) -> Result<(), String> {
     let e = ENGINE.lock().unwrap_or_else(|e| e.into_inner()).clone();
