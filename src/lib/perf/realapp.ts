@@ -7,7 +7,7 @@ import { invokeLog, isDesktop, type InvokeRow } from '../platform'
 import { hook, note } from '../selftest'
 import { COUNTS, seed, seeded } from './seed'
 
-export interface Tap { label: string; settledMs: number; frameMs: number | null; capped: boolean; invokes: number }
+export interface Tap { label: string; settledMs: number; frameMs: number | null; capped: boolean; invokes: number; slowestInvokeMs: number | null; from: number; to: number }
 export interface PerfReport {
   phase: 'seeded' | 'measured'
   where: 'app' | 'browser'
@@ -21,7 +21,7 @@ export interface PerfReport {
   timers?: { zeroMs: number; twentyMs: number; taskMs: number }
   /** The main script fetched again: size and mean time, so transport is measured apart from parsing. */
   scriptFetch?: { kb: number; ms: number } | null
-  start?: { launchToSetupMs: number | null; responseEndMs: number; domInteractiveMs: number; setupToPageMs: number | null; launchToPageMs: number | null; domContentLoadedMs: number; firstPaintMs: number | null; homeSettledMs: number; homeInteractiveMs: number; launchToHomeInteractiveMs: number | null; capped: boolean }
+  start?: { launchToSetupMs: number | null; responseEndMs: number; domInteractiveMs: number; setupToPageMs: number | null; launchToPageMs: number | null; domContentLoadedMs: number; firstPaintMs: number | null; homeSettledMs: number; homeInteractiveMs: number; launchToHomeInteractiveMs: number | null; homeRowsMs: number | null; capped: boolean }
   taps?: Tap[]
   invokes?: InvokeRow[]
   /** Every file the page loaded before Home was interactive, slowest first. */
@@ -91,7 +91,9 @@ function find(selector: string, text: string): HTMLElement {
 }
 
 /** The app's own invokes that started in [from, to]; the self-test's progress notes are not the app's. */
-const appInvokes = (from: number, to: number) => invokeLog.filter((r) => r.start >= from && r.start <= to && !r.cmd.startsWith('selftest_')).length
+const appRows = (from: number, to: number) => invokeLog.filter((r) => r.start >= from && r.start <= to && !r.cmd.startsWith('selftest_'))
+/** The slowest of them, or null while one has not answered. */
+const slowest = (rows: InvokeRow[]) => (rows.some((r) => r.end < 0) ? null : rows.reduce((m, r) => Math.max(m, round(r.end - r.start)), 0))
 
 async function tap(label: string, el: HTMLElement): Promise<Tap> {
   const t0 = now()
@@ -100,7 +102,7 @@ async function tap(label: string, el: HTMLElement): Promise<Tap> {
   const f = hook()?.rafEmulated ? null : await frame
   const s = await settle(t0, 100, 5000)
   note(`${label} ${round(s.last - t0)} ms`)
-  return { label, settledMs: round(s.last - t0), frameMs: f === null ? null : round(f - t0), capped: s.capped, invokes: appInvokes(t0, now()) }
+  return { label, settledMs: round(s.last - t0), frameMs: f === null ? null : round(f - t0), capped: s.capped, invokes: 0, slowestInvokeMs: null, from: t0, to: now() }
 }
 
 export async function runPerf(launchedAt: number, setupAt?: number): Promise<PerfReport> {
@@ -128,6 +130,7 @@ export async function runPerf(launchedAt: number, setupAt?: number): Promise<Per
     homeSettledMs: round(s.last),
     homeInteractiveMs: round(homeInteractiveMs),
     launchToHomeInteractiveMs: launchToPageMs === null ? null : round(launchToPageMs + homeInteractiveMs),
+    homeRowsMs: null as number | null,
     capped: s.capped,
   }
   const resources = (performance.getEntriesByType('resource') as PerformanceResourceTiming[])
@@ -146,5 +149,12 @@ export async function runPerf(launchedAt: number, setupAt?: number): Promise<Per
   taps.push(await tap('Settings to Home', find('.nav-item', 'Home')))
   taps.push(await tap('Home to Library again', find('.nav-item', 'Library')))
   taps.push(await tap('Library chip All to Movies', find('.chips .chip', 'Movies')))
+  // Invokes still running (a plugin's yt-dlp search, say): wait up to 15 s so their times are in the report.
+  const pendingSince = now()
+  while (invokeLog.some((r) => r.end < 0 && !r.cmd.startsWith('selftest_')) && now() - pendingSince < 15_000) await sleep(100)
+  for (const t of taps) { const rows = appRows(t.from, t.to); t.invokes = rows.length; t.slowestInvokeMs = slowest(rows) }
+  // When everything Home asked for before the first tap had answered: its plugin rows, say. Null if one never did.
+  const startRows = appRows(0, taps[0].from)
+  start.homeRowsMs = startRows.some((r) => r.end < 0) ? null : round(Math.max(homeInteractiveMs, ...startRows.map((r) => r.end)))
   return { ...base, phase: 'measured', visibility: document.visibilityState, rafFires, rafEmulated: !!hook()?.rafEmulated, timers, scriptFetch: fetched, start, resources, taps, invokes: invokeLog.map((r) => ({ ...r, start: round(r.start), end: round(r.end) })) }
 }

@@ -1,12 +1,18 @@
 // A small seeded library for the real-app perf check (src/lib/perf/realapp.ts), written the way the app
 // stores its own: items, and a JPEG thumbnail per video and photo. Swap for tests/fixtures/perf-seed.ts
-// (SPEC-perf rule 2) once it lands. No file it names exists, so nothing plays; nothing reaches a host.
+// (SPEC-perf rule 2) once it lands. No file it names exists, so nothing plays. On the desktop it also
+// installs Flick's own YouTube plugin, whose Home rows search YouTube through yt-dlp as they do for a user.
 
 import * as db from '../db'
 import type { Item } from '../library'
+import { isDesktop } from '../platform'
+import { install, installed, prepare } from '../plugins/registry'
 
 export const SEED_KEY = 'perf.seed'
-export const SEED_VERSION = 1
+export const SEED_VERSION = 2
+/** The desktop seed also installs Flick's own YouTube plugin, whose Home rows run yt-dlp in the app. */
+export const SEED_PLUGIN = { id: 'com.youtube', url: '/plugins/youtube.js' }
+const pluginOk = () => !isDesktop || installed.value.some((p) => p.id === SEED_PLUGIN.id)
 export const COUNTS = { episodes: 120, shows: 8, movies: 280, songs: 150, books: 30, photos: 200 }
 
 function thumb(i: number): Promise<Blob> {
@@ -38,12 +44,14 @@ export function seedItems(now = Date.UTC(2026, 10, 1)): Item[] {
   return out
 }
 
-/** True when this profile already holds the current seed. */
+/** True when this profile already holds the current seed (another self-test may have removed the plugin). */
 export async function seeded(): Promise<boolean> {
-  return (await db.get<number>('kv', SEED_KEY)) === SEED_VERSION
+  return (await db.get<number>('kv', SEED_KEY)) === SEED_VERSION && pluginOk()
 }
 
 export async function seed() {
+  if (!pluginOk()) await install(await prepare({ url: SEED_PLUGIN.url }))
+  if ((await db.get<number>('kv', SEED_KEY)) === SEED_VERSION) return
   const items = seedItems()
   await db.putMany('items', items.map((i) => [i.id, i]))
   const withThumb = items.filter((i) => i.kind === 'video' || i.kind === 'photo')
