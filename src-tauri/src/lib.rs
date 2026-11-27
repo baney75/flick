@@ -2126,14 +2126,21 @@ mod tests {
         }
     }
 
+    // Its own folder, so whatever test-media holds (the smoke run leaves one with no .mkv) can't
+    // decide the result.
     #[test]
     fn scan_finds_media_only() {
-        let dir = media("");
-        if !Path::new(&dir).exists() {
-            return;
+        let dir = std::env::temp_dir().join(format!("flick-scan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for f in ["Show/S01E01.mkv", "clip.webm", "clip.srt", "notes.txt", ".hidden/old.mkv"] {
+            let path = dir.join(f);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"x").unwrap();
         }
-        let found = tauri::async_runtime::block_on(scan_folder(dir)).unwrap();
-        assert!(found.iter().any(|e| e.name.ends_with(".mkv")));
-        assert!(found.iter().all(|e| !e.name.ends_with(".srt")));
+        let found = tauri::async_runtime::block_on(scan_folder(dir.to_string_lossy().into()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut names: Vec<String> = found.unwrap().into_iter().map(|e| e.name).collect();
+        names.sort();
+        assert_eq!(names, ["S01E01.mkv", "clip.webm"]);
     }
 }
