@@ -5,13 +5,17 @@ import { spawn } from 'node:child_process'
 import { freePort } from './free-port.mjs'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { createRequire } from 'node:module'
+
+// The wrangler pinned in package.json, never whatever npx would fetch.
+const WRANGLER = join(dirname(createRequire(import.meta.url).resolve('wrangler/package.json')), 'bin', 'wrangler.js')
 
 const PORT = await freePort(), RELAY_PORT = await freePort(), INSPECTOR = await freePort()
 const BASE = `http://localhost:${PORT}`
 const procs = [
   spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore', detached: true }),
-  spawn('npx', ['wrangler', 'dev', '--port', String(RELAY_PORT), '--inspector-port', String(INSPECTOR), '--persist-to', mkdtempSync(join(tmpdir(), 'flick-relay-')), '--ip', '127.0.0.1'], { cwd: 'relay', stdio: ['ignore', 'pipe', 'pipe'], detached: true }),
+  spawn(process.execPath, [WRANGLER, 'dev', '--port', String(RELAY_PORT), '--inspector-port', String(INSPECTOR), '--persist-to', mkdtempSync(join(tmpdir(), 'flick-relay-')), '--ip', '127.0.0.1'], { cwd: 'relay', stdio: ['ignore', 'pipe', 'pipe'], detached: true }),
 ]
 const fails = []
 const check = (ok, what) => { console.log(`${ok ? 'PASS' : 'FAIL'} ${what}`); if (!ok) fails.push(what) }
