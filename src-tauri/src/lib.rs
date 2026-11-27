@@ -712,7 +712,7 @@ struct NoRanges {
     used: std::time::Instant,
 }
 
-/// At most a few open at once, one per file; one left unused for a minute closes.
+/// At most a few open at once, one per file; one left unused for a minute closes (prune_no_ranges).
 static NO_RANGES: Mutex<Vec<NoRanges>> = Mutex::new(Vec::new());
 const NO_RANGES_MAX: usize = 4;
 const NO_RANGES_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
@@ -730,6 +730,15 @@ fn keep_no_ranges(o: NoRanges) {
     if o.pos >= o.total {
         return;
     }
+    // One thread closes bodies left idle after the player stops asking.
+    static REAPER: std::sync::Once = std::sync::Once::new();
+    REAPER.call_once(|| {
+        std::thread::spawn(|| loop {
+            std::thread::sleep(NO_RANGES_IDLE / 4);
+            let idle = |o: &NoRanges| o.used.elapsed() >= NO_RANGES_IDLE;
+            NO_RANGES.lock().unwrap().retain(|o| !idle(o));
+        });
+    });
     let mut open = NO_RANGES.lock().unwrap();
     open.retain(|k| k.key != o.key);
     if open.len() >= NO_RANGES_MAX {
@@ -738,14 +747,15 @@ fn keep_no_ranges(o: NoRanges) {
     open.push(o);
 }
 
-/// Answers bytes a..=b from an open body at or before a: skips to a and reads on.
-fn read_on(mut o: NoRanges, a: u64, b: u64) -> Answer {
+/// Answers bytes a..=b from an open body at or before a: skips to a and reads on. None when the
+/// body broke (Kodi closed it during a pause, say): the caller asks again from the start.
+fn read_on(mut o: NoRanges, a: u64, b: u64) -> Option<Answer> {
     use std::io::Read;
     let mut buf = vec![];
     let skipped = std::io::copy(&mut (&mut o.body).take(a - o.pos), &mut std::io::sink());
     let read = (&mut o.body).take(b - a + 1).read_to_end(&mut buf);
     if skipped.ok() != Some(a - o.pos) || read.ok() != Some((b - a + 1) as usize) {
-        return plain(502, "Kodi closed the connection early");
+        return None;
     }
     let (total, mime) = (o.total, o.mime.clone());
     o.pos = b + 1;
@@ -758,7 +768,7 @@ fn read_on(mut o: NoRanges, a: u64, b: u64) -> Answer {
         .header("Content-Range", format!("bytes {a}-{b}/{total}"))
         .header("Content-Length", buf.len())
         .body(buf)
-        .unwrap()
+        .ok()
 }
 
 fn plain(status: u16, msg: &str) -> Answer {
@@ -777,7 +787,11 @@ fn proxy_fetch(base: &str, auth: Option<&str>, path: &str, range: Option<&str>) 
     let key = format!("{auth:?} {base}/{path}");
     if let Some(open) = take_no_ranges(&key) {
         match answer_span(&want, open.total) {
-            Some((a, b)) if a >= open.pos => return read_on(open, a, b),
+            Some((a, b)) if a >= open.pos => {
+                if let Some(answer) = read_on(open, a, b) {
+                    return answer;
+                }
+            }
             // Behind the open body: it closes here, before the new request.
             _ => drop(open),
         }
@@ -1881,6 +1895,28 @@ mod tests {
         let r = proxy_fetch(&base, auth.as_deref(), path, Some("bytes=0-1023"));
         assert_eq!(r.body()[..], data[..1024]);
         assert_eq!(log.lock().unwrap().len(), 2, "a seek back starts over");
+    }
+
+    /// Review r1 first-F1 of #192: Kodi closes the kept body (a long pause), and the next span
+    /// asks again from the start instead of failing.
+    #[test]
+    fn a_kept_kodi_body_that_closed_starts_over() {
+        let data: Vec<u8> = (0..(3 * CHUNK as usize + 5000))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let f = Fake::new(data.clone(), false);
+        *f.short_once.lock().unwrap() = Some(CHUNK as usize + 1000);
+        let log = Arc::clone(&f.log);
+        let base = f.serve();
+        let auth = basic("kodi", "pw");
+        let path = "vfs/%2Fm%2FA.mp4";
+        let r = proxy_fetch(&base, auth.as_deref(), path, None);
+        assert_eq!(r.body()[..], data[..CHUNK as usize]);
+        let far = 2 * CHUNK as usize;
+        let r = proxy_fetch(&base, auth.as_deref(), path, Some(&format!("bytes={far}-")));
+        assert_eq!(r.status(), 206);
+        assert_eq!(r.body()[..], data[far..far + CHUNK as usize]);
+        assert_eq!(log.lock().unwrap().len(), 2, "one more GET, from the start");
     }
 
     #[test]
