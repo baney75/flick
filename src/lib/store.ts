@@ -172,6 +172,8 @@ export interface PlayRequest {
   onSave?: (pos: number, dur: number) => void
   /** Stream from the source even when a downloaded copy exists (the user chose the server). */
   stream?: boolean
+  /** A debrid stream: the player shows the service, its speed and the VPN state. */
+  via?: import('./readout').Via
 }
 
 export const nowPlaying = signal<PlayRequest | null>(null)

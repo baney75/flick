@@ -10,6 +10,7 @@ import { isDesktop, isMobileApp, hasOpfs, invoke } from '../lib/platform'
 import { kodiConvert, convertUrl } from '../lib/servers'
 import { openToolStream } from '../lib/plugins/runtime'
 import { Icon } from './icons'
+import { Readout } from './Readout'
 
 const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
 
@@ -504,6 +505,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         <div class="titles">
           <div class="t1">{req.title}</div>
           {req.subtitle && <div class="t2">{req.subtitle}</div>}
+          {req.via && <Readout video={video} via={req.via} />}
         </div>
         {file && hasOpfs && req.src?.t === 'session' && (
           <button class="btn ghost" onClick={store} disabled={storing !== null}>
