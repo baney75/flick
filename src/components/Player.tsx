@@ -154,7 +154,9 @@ function PlayerInner({ req }: { req: PlayRequest }) {
       hls.current = h
     } else {
       v.src = url
-      if (local && !startAt) v.addEventListener('loadedmetadata', () => { v.currentTime = 0 }, { once: true })
+      // A growing playlist opens near its live edge, and WebKit overrides a seek made at loadedmetadata;
+      // one made at the first canplay holds (measured in WebKit: 48 s in, then 0).
+      if (local && !startAt) v.addEventListener('canplay', () => { if (v.currentTime > 1) v.currentTime = 0 }, { once: true })
     }
     v.playbackRate = speed
     v.volume = volume
