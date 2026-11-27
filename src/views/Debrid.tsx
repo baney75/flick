@@ -4,28 +4,24 @@
 
 import { useEffect, useState } from 'preact/hooks'
 import { askable, gate, mayAskNow } from '../lib/picking'
-import { cancelFetch, fetching, lookupCached, torrentHashes, torrentUrl, type CachedMap } from '../lib/debrid-play'
+import { CachedLookups, cancelFetch, fetching, torrentHashes, torrentUrl, type CachedMap } from '../lib/debrid-play'
 import { services as playable } from '../lib/plugins/services'
 import type { Stream } from '../lib/plugins/validate'
 import type { Ranked } from '../lib/pick'
 
 /**
- * Which services have these streams' torrents ready; asks again when the list or the askable
- * services change. Null while that lookup is on its way, so no row claims what it does not know.
+ * Which services have these streams' torrents ready. Null while an askable service's answer is
+ * still to come, so no row claims what Flick does not know yet. Leaving the page stops the rest.
  */
 export function useCached(list: Stream[] | null): CachedMap | null {
-  const [got, setGot] = useState<{ key: string; map: CachedMap } | null>(null)
+  const [, bump] = useState(0)
+  const [lookups] = useState(() => new CachedLookups(() => bump((n) => n + 1), mayAskNow))
+  useEffect(() => () => lookups.dispose(), [])
   const hashes = torrentHashes(list ?? [])
   const open = hashes.length ? askable() : []
-  const key = `${hashes.join(',')}|${open.map((s) => s.id).join(',')}`
-  useEffect(() => {
-    if (!hashes.length || !open.length) { setGot({ key, map: {} }); return }
-    let live = true
-    // Leaving the page stops the batches still to go.
-    lookupCached(open, hashes, (s) => live && mayAskNow(s)).then((map) => { if (live) setGot({ key, map }) })
-    return () => { live = false }
-  }, [key])
-  return got?.key === key ? got.map : null
+  // Every render: it asks only what is missing, and asks again after a lookup the VPN cut short.
+  useEffect(() => { lookups.fill(hashes, open) })
+  return lookups.view(hashes, open)
 }
 
 /** "TorBox is fetching: 40%" with Cancel, while a service fetches this title's torrent. Leaving the page cancels it. */

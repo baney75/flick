@@ -28,7 +28,7 @@ export type CachedMap = Record<string, string[]>
 /**
  * Ask each service, in order, which of these torrents it has ready, HASHES_PER_CALL at a time. Only
  * the hashes go out (rule 8). `may` is read again before every call, so a VPN that drops mid-lookup
- * stops it. A failed call counts as none cached.
+ * stops it, and a service cut short is left out of the answer. A failed call counts as none cached.
  */
 export async function lookupCached(list: Service[], hashes: string[], may: (s: Service) => boolean, call: typeof callPlugin = callPlugin): Promise<CachedMap> {
   const want = [...new Set(hashes.map((h) => h.toLowerCase()))]
@@ -36,14 +36,57 @@ export async function lookupCached(list: Service[], hashes: string[], may: (s: S
   if (!want.length) return out
   for (const s of list) {
     const have: string[] = []
+    let whole = true
     // callPlugin's validator lowercases the answer and drops hashes it was not asked about.
     for (let i = 0; i < want.length; i += HASHES_PER_CALL) {
-      if (!may(s)) break
+      if (!may(s)) { whole = false; break }
       try { have.push(...(await call(s, 'cached', [want.slice(i, i + HASHES_PER_CALL)]))) } catch { /* none cached */ }
     }
-    out[s.id] = have
+    if (whole) out[s.id] = have
   }
   return out
+}
+
+/**
+ * A title page's lookups. `view` is what rows may claim now: null while any askable service's
+ * answer for these hashes is still to come. `fill` asks only the services that lack one, so a
+ * service that becomes askable does not make the others asked again. After `dispose` nothing more
+ * goes out and nothing calls back.
+ */
+export class CachedLookups {
+  private got = new Map<string, { hk: string; have: string[] }>()
+  private asking = new Set<string>()
+  private live = true
+  constructor(private onChange: () => void, private may: (s: Service) => boolean, private call: typeof callPlugin = callPlugin) {}
+
+  view(hashes: string[], open: Service[]): CachedMap | null {
+    const hk = hashes.join(',')
+    const out: CachedMap = {}
+    for (const s of open) {
+      const g = this.got.get(s.id)
+      if (g?.hk !== hk) return null
+      out[s.id] = g.have
+    }
+    return out
+  }
+
+  fill(hashes: string[], open: Service[]) {
+    const hk = hashes.join(',')
+    for (const s of open) {
+      const k = `${s.id}|${hk}`
+      if (!this.live || this.got.get(s.id)?.hk === hk || this.asking.has(k)) continue
+      this.asking.add(k)
+      lookupCached([s], hashes, (x) => this.live && this.may(x), this.call).then((m) => {
+        this.asking.delete(k)
+        // Cut short (the VPN dropped, the page left): no answer, so the next fill asks again.
+        if (!this.live || !(s.id in m)) return
+        this.got.set(s.id, { hk, have: m[s.id] })
+        this.onChange()
+      })
+    }
+  }
+
+  dispose() { this.live = false }
 }
 
 /**
