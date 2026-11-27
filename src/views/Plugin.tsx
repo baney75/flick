@@ -444,14 +444,15 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
 
   const start = async (s: Stream, startAt?: number) => {
     const t = tap()
+    // Any newer tap ends a service's wait for an older one.
+    cancelFetch()
     // A stream behind the VPN gate never opens on a tap while the gate fails, nor outside its hold.
     const r = rowOf.get(s)
     const shut = shutBy(r)
     if (shut) { notify(shut); return }
     // A torrent has no url to open: a debrid service gives it one, else it waits for the engine.
     let url = s.url
-    if (url) cancelFetch()
-    else if (r && canStart(r, s)) {
+    if (!url && r && canStart(r, s)) {
       try { url = (await playTorrent(key, s, r)) ?? undefined } catch (e) { if (current(t)) notify((e as Error).message); return }
       if (!url || !current(t)) return
     }

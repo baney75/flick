@@ -122,7 +122,7 @@ export function waitLine(name: string, w: { pct?: number; message: string }): st
 }
 
 /** The title page's wait while a service fetches a torrent, with its Cancel. */
-export interface Fetching { key: string; service: string; line: string; cancel: () => void }
+export interface Fetching { key: string; line: string; cancel: () => void }
 export const fetching = signal<Fetching | null>(null)
 /** Stops the wait for `key`, or any wait. */
 export function cancelFetch(key?: string) {
@@ -158,7 +158,7 @@ export async function torrentUrl(key: string, s: Stream, r: Ranked, o: TorrentPl
   let dropped = false
   const drop = () => { if (!o.may(svc)) { dropped = true; ctl.abort() } }
   const unwatch = o.watch(drop)
-  const mine: Fetching = { key, service: svc.id, line: `Asking ${name}`, cancel: () => ctl.abort() }
+  const mine: Fetching = { key, line: `Asking ${name}`, cancel: () => ctl.abort() }
   fetching.value = mine
   const own = () => fetching.value?.cancel === mine.cancel
   const call = o.call ?? callPlugin
@@ -172,6 +172,8 @@ export async function torrentUrl(key: string, s: Stream, r: Ranked, o: TorrentPl
       ...(o.now ? { now: o.now } : {}),
     })
   } catch (e) {
+    // resolveTorrent checks the abort after every call too, so a link that comes back after
+    // Cancel, a newer tap or leaving the page lands here and plays nothing.
     if (dropped) throw new Error(vpnStopped(name))
     if (ctl.signal.aborted) return null
     throw e

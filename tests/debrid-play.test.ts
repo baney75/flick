@@ -88,6 +88,8 @@ describe('the cached lookups', () => {
   })
   it('gate failing, no service, torrent stream: blocked (the built-in engine needs the VPN)', async () => {
     setup({ list: [], gate: false })
+    // Today, with no engine: the engine's reason.
+    expect((await page([torrent('a')])).rows[0].blocked).toBe(NO_ENGINE_YET)
     // With the engine there (P6's player), the row still needs the VPN.
     const { call, rows } = await page([torrent('a')], undefined, { noEngine: undefined })
     expect(call).not.toHaveBeenCalled()
@@ -282,6 +284,17 @@ describe('Play on a torrent row (rules 5b, 8)', () => {
     expect(await torrentUrl('k', tor, row('app.torbox'), opts(call))).toBeNull()
     expect(call).toHaveBeenCalledTimes(2)
     expect(fetching.value).toBeNull()
+  })
+  it('Cancel while the last call is on its way: the link it brings plays nothing', async () => {
+    setup({ list: [TORBOX], gate: true })
+    const call = vi.fn(async () => { cancelFetch('k'); return { url: 'https://api.app.torbox/f' } })
+    expect(await torrentUrl('k', tor, row('app.torbox'), opts(call))).toBeNull()
+    expect(fetching.value).toBeNull()
+  })
+  it('the VPN dropping while the last call is on its way: stopped, not played', async () => {
+    setup({ list: [OTHER], gate: true })
+    const call = vi.fn(async () => { gate.value = { ok: false, message: 'x' } as never; return { url: 'https://api.org.other/f' } })
+    await expect(torrentUrl('k', tor, row('org.other'), opts(call))).rejects.toThrow(vpnStopped('Other'))
   })
   it('a newer wait cancels the older one', async () => {
     setup({ list: [TORBOX], gate: true })
