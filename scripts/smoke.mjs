@@ -613,6 +613,12 @@ try {
   await page.setViewportSize({ width: 390, height: 844 })
   const left = await page.evaluate(() => { const e = document.querySelector('.chapter-left'); const r = e?.getBoundingClientRect(); return e ? { text: e.textContent, fits: r.height > 0 && r.right <= innerWidth && r.bottom <= innerHeight && [r.left + 2, r.right - 2].every((x) => document.elementFromPoint(x, r.top + r.height / 2)?.closest('.chapter-left') === e) } : null })
   check(!!left?.fits && /left in this chapter|Last page/.test(left.text), `pages left in the chapter show whole on a phone (${left?.text})`)
+  const readerBar = await page.evaluate(() => {
+    const t = [...document.querySelectorAll('.reader-title .t1, .reader-title .t2')]
+    const b = document.querySelector('.reader-bar')
+    return { cut: t.filter((e) => e.scrollWidth > e.clientWidth).map((e) => e.textContent), wide: b.scrollWidth > b.clientWidth || document.documentElement.scrollWidth > innerWidth }
+  })
+  check(!readerBar.cut.length && !readerBar.wide, `the book's title and chapter show whole in the reader bar on a phone (cut: ${readerBar.cut.join(', ') || 'none'})`)
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.emulateMedia({ colorScheme: 'light' })
   await page.getByRole('radio', { name: 'Night', exact: true }).click()
@@ -1391,14 +1397,6 @@ try {
   }))
   await gp.reload()
   await gp.locator('.vgrid .card').first().waitFor({ timeout: 10000 })
-  // A poster that loads on screen fades in; one that loads in a row drawn ahead of the scroll shows at once.
-  await gp.waitForTimeout(800)
-  const fades = await gp.evaluate(() => [...document.querySelectorAll('.vgrid .card .art img.in')].map((img) => {
-    const r = img.getBoundingClientRect()
-    return { on: r.bottom > 0 && r.top < innerHeight, now: img.classList.contains('now') }
-  }))
-  const onScreen = fades.filter((f) => f.on), ahead = fades.filter((f) => !f.on)
-  check(onScreen.length > 0 && ahead.length > 0 && onScreen.every((f) => !f.now) && ahead.every((f) => f.now), `posters on screen fade in and posters loaded below the fold do not (${onScreen.filter((f) => !f.now).length}/${onScreen.length} on screen fade, ${ahead.filter((f) => f.now).length}/${ahead.length} below show at once)`)
   const wrongArt = []
   const gridAtEnd = () => gp.evaluate(() => { const m = document.querySelector('.main'); return m.scrollTop + m.clientHeight >= m.scrollHeight - 4 })
   for (let y = 0; y < 40 && !(await gridAtEnd()); y++) {
@@ -1448,11 +1446,32 @@ try {
     await ep.keyboard.press('Escape')
     await ep.waitForTimeout(300)
     check(await addSheet.count() === 0 && ep.url().endsWith('#/settings/plugins'), `Escape closes the Add sheet and stays on the page (${ep.url().split('#')[1]})`)
+    // Tab and Shift+Tab stay inside the sheet, past either end.
+    const tabsOut = async (dialog) => {
+      const ends = (last) => dialog.evaluate((d, last) => {
+        const f = [...d.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select, textarea')].filter((x) => x.getClientRects().length)
+        f.at(last ? -1 : 0).focus()
+      }, last)
+      const inside = () => dialog.evaluate((d) => d.contains(document.activeElement))
+      let out = 0
+      await ends(true)
+      await ep.keyboard.press('Tab')
+      if (!(await inside())) out++
+      await ends(false)
+      await ep.keyboard.press('Shift+Tab')
+      if (!(await inside())) out++
+      return out
+    }
     await addBtn.click()
+    await addSheet.waitFor()
+    const addOut = await tabsOut(addSheet)
+    check(addOut === 0, `Tab stays inside the Add sheet (${addOut} of 2 ends let focus out)`)
     await addSheet.getByLabel('Plugin address').fill(`${FLICK_URL}/grid-plugin.js`)
     await addSheet.getByRole('button', { name: 'Add', exact: true }).click()
     const review = ep.getByRole('dialog', { name: /^Install / })
     await review.waitFor({ timeout: 15000 })
+    const reviewOut = await tabsOut(review)
+    check(reviewOut === 0, `Tab stays inside the install review (${reviewOut} of 2 ends let focus out)`)
     await ep.keyboard.press('Escape')
     await ep.waitForTimeout(300)
     check(await review.count() === 0 && await addSheet.count() === 1 && ep.url().endsWith('#/settings/plugins'), `Escape closes the install review and goes back to the Add sheet (${ep.url().split('#')[1]})`)
@@ -1463,6 +1482,18 @@ try {
     await ep.waitForTimeout(400)
     check(ep.url().endsWith('#/library'), `Escape with nothing open goes back one page (${ep.url().split('#')[1]})`)
     await ep.context().close()
+  }
+
+  // A window opened straight on a page has no page before it: Back goes Home instead of doing nothing.
+  {
+    const bp = await photoPage()
+    await bp.goto(`${BASE}/#/settings/plugins`)
+    await bp.locator('#plugins').waitFor()
+    await bp.evaluate(() => document.activeElement?.blur())
+    await bp.keyboard.press('Escape')
+    const home = await bp.waitForURL(/#\/$/, { timeout: 3000 }).then(() => true, () => false)
+    check(home, `Back with no page before it goes Home (at ${bp.url().split('#')[1]})`)
+    await bp.context().close()
   }
 
   // Home and Library list the same things to continue: no item the library no longer has, and no show

@@ -177,6 +177,37 @@ describe('the one update check', () => {
     expect(r.install).not.toHaveBeenCalled()
   })
 
+  it('a newer release after an earlier download: the earlier one is closed, the newer one installs', async () => {
+    const { up } = await fresh()
+    const first = release('0.2.0')
+    fake.check.mockResolvedValue(first)
+    await up.runCheck()
+    const next = release('0.3.0')
+    fake.check.mockResolvedValue(next)
+    await up.runCheck()
+    expect(first.close).toHaveBeenCalledTimes(1)
+    expect(next.close).not.toHaveBeenCalled()
+    expect(up.updates.value.ready).toBe('0.3.0')
+    await up.restartToUpdate()
+    expect(next.install).toHaveBeenCalledTimes(1)
+    expect(first.install).not.toHaveBeenCalled()
+  })
+
+  it('a newer release that fails to download is closed; the earlier download still installs', async () => {
+    const { up } = await fresh()
+    const first = release('0.2.0')
+    fake.check.mockResolvedValue(first)
+    await up.runCheck()
+    const bad = release('0.3.0', { download: vi.fn(async () => { throw new Error('signature verification failed') }) })
+    fake.check.mockResolvedValue(bad)
+    await up.runCheck()
+    expect(bad.close).toHaveBeenCalledTimes(1)
+    expect(first.close).not.toHaveBeenCalled()
+    expect(up.updates.value.ready).toBe('0.2.0')
+    await up.restartToUpdate()
+    expect(first.install).toHaveBeenCalledTimes(1)
+  })
+
   it('a new app version forces the plugin check once; Check now always does', async () => {
     const { up } = await fresh()
     fake.check.mockResolvedValue(null)

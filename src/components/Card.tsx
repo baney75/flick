@@ -44,15 +44,12 @@ export function Card(props: {
   onMore?: (e: MouseEvent) => void
 }) {
   const { image, title, sub, shape = 'wide', pct, icon = 'film', badge, time, info, wrap, target, onClick, onMore } = props
-  // 0 loading, 1 fading in, 2 shown at once. An image that loads off screen (a row the grid drew ahead of
-  // the scroll) has no fade anyone could see, and WebKit drops frames running one on every card a fast
-  // scroll brings in.
-  const [loaded, setLoaded] = useState(0)
+  const [loaded, setLoaded] = useState(false)
   const hold = useLongPress(onMore)
   return (
     <button class={`card ${shape}`} data-target={target} onClick={(e) => { if (hold.fired()) e.stopPropagation(); else onClick() }} onContextMenu={onMore ? (e) => { e.preventDefault(); onMore(e) } : undefined} title={title} {...hold.events}>
       <div class="art">
-        {image ? <img src={image} alt="" loading="lazy" decoding="async" class={loaded === 2 ? 'in now' : loaded ? 'in' : ''} onLoad={(e) => { const r = e.currentTarget.getBoundingClientRect(); setLoaded((l) => l || (r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth ? 1 : 2)) }} /> : <div class="art-ph"><Icon name={icon} size={30} /></div>}
+        {image ? <img src={image} alt="" loading="lazy" decoding="async" class={loaded ? 'in' : ''} onLoad={() => setLoaded(true)} /> : <div class="art-ph"><Icon name={icon} size={30} /></div>}
         {badge && <span class="badge">{badge}</span>}
         {time && <span class="card-time">{time}</span>}
         <span class="play-hint"><Icon name="play" size={22} /></span>
@@ -202,8 +199,11 @@ export function VirtualGrid<T>({ list, min = 220, ratio = 9 / 16, extra = 54, ke
 
   useLayoutEffect(() => {
     const el = box.current!
+    // The grid's width follows the pane it scrolls in. Observing the grid itself would also hear its height,
+    // which changes as the row height below is measured, inside that observer's own callback: WebKit then
+    // drops the notification and reports a ResizeObserver loop.
     const ro = new ResizeObserver(() => setW(el.clientWidth))
-    ro.observe(el)
+    ro.observe(el.closest('.main') ?? el)
     setW(el.clientWidth)
     return () => ro.disconnect()
   }, [])
