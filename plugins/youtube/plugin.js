@@ -128,7 +128,7 @@ export default {
     { id: 'programming', name: 'Programming', type: 'video' },
     { id: 'ai', name: 'AI', type: 'video' },
     { id: 'math', name: 'Math', type: 'video' },
-    { id: 'history', name: 'History', type: 'video' },
+    { id: 'history', name: 'World history', type: 'video' },
     { id: 'lectures', name: 'Lectures', type: 'video' },
   ],
   titleActions: [
@@ -149,7 +149,7 @@ export default {
       const all = await list(ctx, mine[1])
       return { items: all.slice(skip, skip + PAGE).map((m) => card(m)), more: skip + PAGE < all.length }
     }
-    const q = search ?? (id === 'foryou' ? forYouQuery(await list(ctx, 'history'), await list(ctx, 'liked')) : TOPICS[id])
+    const q = search ?? (id === 'foryou' ? forYouQuery(await list(ctx, 'history'), await list(ctx, 'liked')) ?? TOPICS.science : TOPICS[id])
     if (!q) return { items: [], more: false }
     const want = Math.min(MAX, skip + PAGE)
     const all = await ctx.tools.ytdlp.search(q, want)

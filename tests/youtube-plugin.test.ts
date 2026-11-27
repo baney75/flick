@@ -77,7 +77,7 @@ describe('YouTube lists, For You and keys', () => {
     const { catalog, meta, streams, userCatalogs, titleAction, progress, ...m } = youtube
     const v = validateManifest(m, FNS)
     expect(v.layout).toBe('grid')
-    expect(v.catalogs.map((c) => c.name)).toEqual(['Search', 'For You', 'Science', 'Nature', 'Classic films', 'Concerts', 'Programming', 'AI', 'Math', 'History', 'Lectures'])
+    expect(v.catalogs.map((c) => c.name)).toEqual(['Search', 'For You', 'Science', 'Nature', 'Classic films', 'Concerts', 'Programming', 'AI', 'Math', 'World history', 'Lectures'])
     expect(v.titleActions).toEqual([{ id: 'like', label: 'Like', key: 'l' }, { id: 'later', label: 'Watch later', key: 'w' }])
     void [catalog, meta, streams, userCatalogs, titleAction, progress]
   })
@@ -103,7 +103,9 @@ describe('YouTube lists, For You and keys', () => {
   it('play two videos from one channel: For You searches that channel next', async () => {
     const ctx = fakeCtx()
     await youtube.catalog(ctx, { id: 'search', type: 'video', search: 'x' })
-    expect((await youtube.catalog(ctx, { id: 'foryou', type: 'video' })).items).toEqual([])
+    // Nothing watched yet: For You is the first topic, never an empty row.
+    expect((await youtube.catalog(ctx, { id: 'foryou', type: 'video' })).items.length).toBeGreaterThan(0)
+    expect(ctx.searches.at(-1)).toBe('science explained documentary')
     // One from the search, one shared link whose oEmbed names the same channel.
     expect(FIX(3).channel).toBe('Someone')
     await youtube.progress(ctx, { type: 'video', id: FIX(3).id, pos: 10, dur: 100 })
