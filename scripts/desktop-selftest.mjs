@@ -284,10 +284,10 @@ export function webkitPath(webkit, cache = join(homedir(), 'Library/Caches/ms-pl
   return join(cache, pick, 'pw_run.sh')
 }
 
-/** The same perf run in Playwright WebKit against the build the app was made from. */
 /** Launches a perf run may spend seeding before it gives up; src/lib/perf/seed.ts resumes across them. */
 const SEED_LAUNCHES = 6
 
+/** The same perf run in Playwright WebKit against the build the app was made from. */
 async function browserPerf(runs) {
   const { webkit } = await import('playwright')
   const { freePort } = await import('./free-port.mjs')
@@ -318,7 +318,11 @@ async function browserPerf(runs) {
       } finally { await ctx.close() }
     }
     const out = []
-    for (let i = 0; out.length < runs && i < runs + SEED_LAUNCHES; i++) { const r = await run(); if (r.phase === 'measured') out.push(r) }
+    for (let seeds = 0; out.length < runs;) {
+      const r = await run()
+      if (r.phase === 'measured') out.push(r)
+      else if (++seeds > SEED_LAUNCHES) throw new Error(`still seeding after ${SEED_LAUNCHES} launches`)
+    }
     return out
   } finally {
     server.kill()
@@ -401,12 +405,13 @@ async function perfMain(outPath) {
   const apps = []
   // The first launches in a fresh profile seed the library (a busy Mac may need several, each under
   // the 30 s limit); every later one is a measured cold start.
-  for (let i = 0; apps.length < runs && i < runs + SEED_LAUNCHES; i++) {
+  for (let seeds = 0; apps.length < runs;) {
     const r = await launch('perf').catch((e) => { console.error(`FAIL: ${e.message}`); process.exit(1) })
     if (r.progress) console.log(r.progress.trim())
     if (!r.report) { console.error(`FAIL: ${r.why} The app was stopped.`); process.exit(1) }
     if (r.report.error) { console.error(`FAIL: ${r.report.error}`); process.exit(1) }
     if (r.report.phase === 'measured') apps.push(r.report)
+    else if (++seeds > SEED_LAUNCHES) { console.error(`FAIL: still seeding after ${SEED_LAUNCHES} launches.`); process.exit(1) }
   }
   if (!apps.length) { console.error('FAIL: the app never reached a measured run.'); process.exit(1) }
   // A browser failure keeps the app numbers: the browser column then reads n/a.

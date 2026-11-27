@@ -5,9 +5,9 @@
 
 import { invokeLog, isDesktop, type InvokeRow } from '../platform'
 import { hook, note } from '../selftest'
-import { COUNTS, seed, seeded } from './seed'
+import { COUNTS, seed, seeded, thumbIds } from './seed'
 import { effect } from '@preact/signals'
-import { items, loaded } from '../store'
+import { loaded } from '../store'
 import * as db from '../db'
 import { libraries } from '../plugins/use'
 import { installed } from '../plugins/registry'
@@ -34,9 +34,9 @@ export interface PerfReport {
   /** Every file the page loaded before Home was interactive, slowest first. */
   resources?: { name: string; ms: number; kb: number }[]
   /** When the library and each plugin's library() result reached the page, from page start. */
-  landed?: { itemsMs: number | null; libraries: Record<string, number> }
+  landed?: { itemsMs: number | null; libraries: Record<string, number | null> }
   /** Reads again once Home is up: the plugin host and one stored thumbnail, apart from rendering. */
-  probes?: { libraryCallMs: number | null; thumbReadMs: number }
+  probes?: { libraryCallMs: number | null; thumbReadMs: number | null }
   seed: typeof COUNTS
 }
 
@@ -119,15 +119,22 @@ async function tap(label: string, el: HTMLElement): Promise<Tap> {
 export async function runPerf(launchedAt: number, setupAt?: number): Promise<PerfReport> {
   const where = isDesktop ? 'app' : 'browser'
   const base = { where, origin: location.origin, userAgent: navigator.userAgent, seed: COUNTS } as const
+  // When the items and each plugin's library reached the page. Anything already there when this
+  // starts is null: its time is not known.
+  const landed = { itemsMs: null as number | null, libraries: {} as Record<string, number | null> }
+  let first = true
+  let itemsSeen = false
+  const stop = effect(() => {
+    const at = first ? null : round(now())
+    if (loaded.value && !itemsSeen) { itemsSeen = true; landed.itemsMs = at }
+    for (const id of Object.keys(libraries.value)) if (!(id in landed.libraries)) landed.libraries[id] = at
+    first = false
+  })
   if (!(await seeded())) {
+    stop()
     note(await seed() ? 'seeded; start again to measure' : 'seeding; start again to go on')
     return { ...base, phase: 'seeded' }
   }
-  const landed = { itemsMs: null as number | null, libraries: {} as Record<string, number> }
-  const stop = effect(() => {
-    if (loaded.value && landed.itemsMs === null) landed.itemsMs = round(now())
-    for (const id of Object.keys(libraries.value)) landed.libraries[id] ??= round(now())
-  })
   // Start-up: the DOM settles once Home has its rows.
   const s = await settle(0, 300, 10_000)
   const homeInteractiveMs = s.last + (await taskDelay())
@@ -157,15 +164,15 @@ export async function runPerf(launchedAt: number, setupAt?: number): Promise<Per
   const rafFires = hook()?.rafEmulated ? null : (await frames(1, 500)) !== null
   const timers = await timerProbe()
   const fetched = await scriptFetch()
-  stop()
   const rec = installed.value.find((p) => p.id === PLUGIN_ID) as Installed | undefined
   let t = now()
   const libraryCallMs = rec ? await callPlugin(rec, 'library', []).then(() => round(now() - t), () => null) : null
   // One stored thumbnail read back, as hasThumb() and every poster on Home do: mean of 20.
-  const ids = items.value.filter((i) => i.kind === 'video').slice(0, 20).map((i) => i.id)
+  const ids = thumbIds(20)
   t = now()
-  for (const id of ids) await db.get<Blob>('thumbs', id)
-  const thumbReadMs = Math.round(((now() - t) / Math.max(1, ids.length)) * 10) / 10
+  let got = 0
+  for (const id of ids) if (await db.get<Blob>('thumbs', id)) got++
+  const thumbReadMs = got ? Math.round(((now() - t) / got) * 10) / 10 : null
   const probes = { libraryCallMs, thumbReadMs }
   note(`items landed ${landed.itemsMs} ms; library() again ${libraryCallMs} ms; one thumb ${thumbReadMs} ms`)
   note(`timers: setTimeout(0) ${timers.zeroMs} ms, setTimeout(20) ${timers.twentyMs} ms, task ${timers.taskMs} ms`)
@@ -182,5 +189,6 @@ export async function runPerf(launchedAt: number, setupAt?: number): Promise<Per
   // When everything Home asked for before the first tap had answered: its plugin rows, say. Null if one never did.
   const startRows = appRows(0, taps[0].from)
   start.homeRowsMs = startRows.some((r) => r.end < 0) ? null : round(Math.max(homeInteractiveMs, ...startRows.map((r) => r.end)))
+  stop()
   return { ...base, phase: 'measured', visibility: document.visibilityState, rafFires, rafEmulated: !!hook()?.rafEmulated, timers, scriptFetch: fetched, landed, probes, start, resources, taps, invokes: invokeLog.map((r) => ({ ...r, start: round(r.start), end: round(r.end) })) }
 }

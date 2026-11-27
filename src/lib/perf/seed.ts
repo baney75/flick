@@ -21,7 +21,7 @@ const pluginsOk = () => seedPlugins().every((id) => installed.value.some((p) => 
 /** How many distinct images each kind uses, as in scripts/perf.mjs. */
 export const IMAGES = { thumbs: 48, posters: 16, rowArt: 8 }
 const ROWS = 500
-/** How long one launch spends seeding before it stops and lets the next launch go on. */
+/** Page time (ms from page start) after which a launch stops seeding and leaves the rest to the next. */
 export const BUDGET_MS = 15_000
 const ITEMS_KEY = 'perf.seed.items'
 const THUMBS_KEY = 'perf.seed.thumbs'
@@ -52,7 +52,22 @@ function image(w: number, h: number, variant: number): HTMLCanvasElement {
   return c
 }
 const blob = (c: HTMLCanvasElement) => new Promise<Blob>((r) => c.toBlob((b) => r(b!), 'image/jpeg', 0.8))
-const dataUrl = (c: HTMLCanvasElement) => c.toDataURL('image/jpeg', 0.8)
+
+/** What seed() draws with and times by; tests pass their own. */
+export interface SeedDeps {
+  thumb(variant: number): Promise<Blob>
+  poster(w: number, h: number, variant: number): string
+  /** Ms since the page started. */
+  now(): number
+}
+const page: SeedDeps = {
+  thumb: (v) => blob(image(320, 180, v)),
+  poster: (w, h, v) => image(w, h, v).toDataURL('image/jpeg', 0.8),
+  now: () => performance.now(),
+}
+
+/** The first n ids the seed stores a thumbnail for. */
+export const thumbIds = (n: number) => buildSeed().thumbs.slice(0, n).map(([id]) => id)
 
 /** True when this profile already holds the current seed and its plugins. */
 export async function seeded(): Promise<boolean> {
@@ -60,13 +75,14 @@ export async function seeded(): Promise<boolean> {
 }
 
 /**
- * Seeds the profile, as much as fits in BUDGET_MS, and says whether it finished. WebKit stores each
+ * Seeds the profile until `deadline` (page time) and says whether it finished. WebKit stores each
  * thumbnail Blob as a file, and 8,700 of them can outlast one self-test launch (30 s) on a busy Mac,
- * so the thumbnails resume where the last launch stopped.
+ * so a launch past its deadline stops between steps and the next launch goes on from there.
  */
-export async function seed(budgetMs = BUDGET_MS): Promise<boolean> {
-  const t0 = performance.now()
-  const step = (what: string) => note(`seed: ${what} at ${Math.round(performance.now() - t0)} ms`)
+export async function seed(deadline = BUDGET_MS, deps: SeedDeps = page): Promise<boolean> {
+  const t0 = deps.now()
+  const step = (what: string) => note(`seed: ${what} at ${Math.round(deps.now() - t0)} ms`)
+  const late = () => deps.now() >= deadline
   const s = buildSeed()
   if ((await db.get<number>('kv', ITEMS_KEY)) !== SEED_VERSION) {
     await db.putMany('items', s.items.map((i) => [i.id, i]))
@@ -79,8 +95,9 @@ export async function seed(budgetMs = BUDGET_MS): Promise<boolean> {
   }
   let next = (await db.get<number>('kv', THUMBS_KEY)) ?? 0
   if (next < s.thumbs.length) {
-    const thumbs = await Promise.all(Array.from({ length: IMAGES.thumbs }, (_, i) => blob(image(320, 180, i))))
-    while (next < s.thumbs.length && performance.now() - t0 < budgetMs) {
+    if (late()) return false
+    const thumbs = await Promise.all(Array.from({ length: IMAGES.thumbs }, (_, i) => deps.thumb(i)))
+    while (next < s.thumbs.length && !late()) {
       await db.putMany('thumbs', s.thumbs.slice(next, next + ROWS).map(([id, v]) => [id, thumbs[v]]))
       next = Math.min(next + ROWS, s.thumbs.length)
       await db.put('kv', THUMBS_KEY, next)
@@ -88,9 +105,10 @@ export async function seed(budgetMs = BUDGET_MS): Promise<boolean> {
     step(`${next} of ${s.thumbs.length} thumbnails`)
     if (next < s.thumbs.length) return false
   }
+  if (late()) return false
   // Posters are data URLs: there is no server here, and an http one would leave this machine.
-  const posters = Array.from({ length: IMAGES.posters }, (_, i) => dataUrl(image(120, 180, i + 100)))
-  const rowArt = Array.from({ length: IMAGES.rowArt }, (_, i) => dataUrl(image(320, 180, i + 200)))
+  const posters = Array.from({ length: IMAGES.posters }, (_, i) => deps.poster(120, 180, i + 100))
+  const rowArt = Array.from({ length: IMAGES.rowArt }, (_, i) => deps.poster(320, 180, i + 200))
   const has = (id: string) => installed.value.some((p) => p.id === id)
   if (!has(PLUGIN_ID)) await install(await prepare({ text: pluginCode(s.library, posters) }))
   if (!has(SHELF_PLUGIN_ID)) await install(await prepare({ text: shelvesPluginCode(rowArt) }))
