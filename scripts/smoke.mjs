@@ -613,6 +613,12 @@ try {
   await page.setViewportSize({ width: 390, height: 844 })
   const left = await page.evaluate(() => { const e = document.querySelector('.chapter-left'); const r = e?.getBoundingClientRect(); return e ? { text: e.textContent, fits: r.height > 0 && r.right <= innerWidth && r.bottom <= innerHeight && [r.left + 2, r.right - 2].every((x) => document.elementFromPoint(x, r.top + r.height / 2)?.closest('.chapter-left') === e) } : null })
   check(!!left?.fits && /left in this chapter|Last page/.test(left.text), `pages left in the chapter show whole on a phone (${left?.text})`)
+  const readerBar = await page.evaluate(() => {
+    const t = [...document.querySelectorAll('.reader-title .t1, .reader-title .t2')]
+    const b = document.querySelector('.reader-bar')
+    return { cut: t.filter((e) => e.scrollWidth > e.clientWidth).map((e) => e.textContent), wide: b.scrollWidth > b.clientWidth || document.documentElement.scrollWidth > innerWidth }
+  })
+  check(!readerBar.cut.length && !readerBar.wide, `the book's title and chapter show whole in the reader bar on a phone (cut: ${readerBar.cut.join(', ') || 'none'})`)
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.emulateMedia({ colorScheme: 'light' })
   await page.getByRole('radio', { name: 'Night', exact: true }).click()
