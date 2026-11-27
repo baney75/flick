@@ -352,17 +352,20 @@ mod tests {
     use std::net::TcpStream;
     use std::time::Instant;
 
-    fn server(tag: &str, limits: Limits) -> Handle {
+    /// A server on a fresh folder; `big` adds a 256 MB file to stream. Returns the folder to remove.
+    fn server(tag: &str, limits: Limits, big: bool) -> (Handle, std::path::PathBuf) {
         let base =
             std::env::temp_dir().join(format!("flick-server-limits-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let media = base.join("Movies");
         std::fs::create_dir_all(&media).unwrap();
-        // Sparse, so it costs no disk.
-        std::fs::File::create(media.join("big.mp4"))
-            .unwrap()
-            .set_len(256 << 20)
-            .unwrap();
+        if big {
+            // Sparse where the filesystem allows, so it costs no disk.
+            std::fs::File::create(media.join("big.mp4"))
+                .unwrap()
+                .set_len(256 << 20)
+                .unwrap();
+        }
         let cfg = Config {
             media: vec![media],
             port: 0,
@@ -371,7 +374,7 @@ mod tests {
             config_dir: base.join("cfg"),
             web: None,
         };
-        start_with(cfg, limits).unwrap()
+        (start_with(cfg, limits).unwrap(), base)
     }
 
     /// Reads until the server closes the connection, or fails after `wait`.
@@ -389,24 +392,32 @@ mod tests {
     }
 
     #[test]
-    fn a_client_that_never_finishes_its_headers_is_dropped() {
+    fn a_client_that_sends_no_request_in_time_is_dropped() {
         let limits = Limits {
             header_read: Duration::from_millis(300),
             ..LIMITS
         };
-        let h = server("headers", limits);
-        let mut s = TcpStream::connect(("127.0.0.1", h.port())).unwrap();
-        s.write_all(b"GET /api/info HTTP/1.1\r\nHost: x\r\n")
-            .unwrap();
+        let (h, base) = server("headers", limits, false);
+        let port = h.port();
         let t = Instant::now();
-        let got = read_until_closed(&mut s, Duration::from_secs(5));
-        assert!(!got.starts_with(b"HTTP/1.1 200"));
+        // Half a request, nothing at all, and an idle keep-alive connection after one answer.
+        let mut half = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        half.write_all(b"GET /api/info HTTP/1.1\r\nHost: x\r\n")
+            .unwrap();
+        let mut silent = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let mut kept = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        kept.write_all(b"GET /api/info HTTP/1.1\r\nHost: x\r\n\r\n")
+            .unwrap();
+        assert!(!read_until_closed(&mut half, Duration::from_secs(5)).starts_with(b"HTTP/1.1 200"));
+        assert!(read_until_closed(&mut silent, Duration::from_secs(5)).is_empty());
+        assert!(read_until_closed(&mut kept, Duration::from_secs(5)).starts_with(b"HTTP/1.1 200"));
         assert!(
             t.elapsed() < Duration::from_secs(3),
             "took {:?}",
             t.elapsed()
         );
         h.stop();
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
@@ -415,7 +426,7 @@ mod tests {
             write_stall: Duration::from_millis(300),
             ..LIMITS
         };
-        let h = server("stall", limits);
+        let (h, base) = server("stall", limits, true);
         let id = crate::index::item_id("Movies", "big.mp4");
         let mut s = TcpStream::connect(("127.0.0.1", h.port())).unwrap();
         write!(
@@ -432,11 +443,12 @@ mod tests {
         let got = read_until_closed(&mut s, Duration::from_secs(20));
         assert!(got.len() < (64 << 20), "{} bytes arrived", got.len());
         h.stop();
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
     fn many_idle_connections_do_not_keep_a_request_from_being_answered() {
-        let h = server("idle", LIMITS);
+        let (h, base) = server("idle", LIMITS, false);
         let port = h.port();
         let _idle: Vec<_> = (0..200)
             .map(|_| TcpStream::connect(("127.0.0.1", port)).unwrap())
@@ -446,6 +458,7 @@ mod tests {
             .unwrap();
         assert!(read_until_closed(&mut s, Duration::from_secs(5)).starts_with(b"HTTP/1.1 200"));
         h.stop();
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
@@ -454,7 +467,7 @@ mod tests {
             connections: 2,
             ..LIMITS
         };
-        let h = server("cap", limits);
+        let (h, base) = server("cap", limits, false);
         let port = h.port();
         let first = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let _second = TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -474,5 +487,6 @@ mod tests {
         let mut fourth = TcpStream::connect(("127.0.0.1", port)).unwrap();
         assert!(info(&mut fourth).starts_with(b"HTTP/1.1 200"));
         h.stop();
+        std::fs::remove_dir_all(base).unwrap();
     }
 }
