@@ -1,10 +1,11 @@
 // Plugin pieces the hub and plugin pages share: the review sheet before any install, the theme
 // picker, settings and action forms, and the prompt for making your own.
 
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { notify, settings, setSettings } from '../lib/store'
 import { Icon } from '../components/icons'
 import { useEscape } from '../lib/escape'
+import { useFocusTrap } from '../lib/trap'
 import { isDesktop } from '../lib/platform'
 import { PluginIcon } from './Plugin'
 import { installed, prepare, install, remove, setEnabled, setPluginSettings, acceptUpdate, officialList, absolute, replaceLine, type Candidate, type OfficialEntry } from '../lib/plugins/registry'
@@ -32,6 +33,8 @@ export function ReviewSheet({ c, extra, onDone }: { c: Candidate; extra?: string
   const swap = replaceLine(c)
   const verb = swap ? 'Replace' : old ? 'Update' : 'Install'
   useEscape(true, () => { if (!busy) onDone(false) })
+  const box = useRef<HTMLDivElement>(null)
+  useFocusTrap(box)
   const go = async () => {
     setBusy(true)
     try {
@@ -45,7 +48,7 @@ export function ReviewSheet({ c, extra, onDone }: { c: Candidate; extra?: string
   }
   return (
     <div class="sheet-back" role="dialog" aria-modal="true" aria-label={`${verb} ${swap ? old!.manifest.name : m.name}`}>
-      <div class="sheet panel">
+      <div class="sheet panel" ref={box}>
         <h3>{verb} {swap ? old!.manifest.name : m.name}?</h3>
         {swap && <p class="warn-box replaces">{swap}</p>}
         {!c.official && <p class="warn-box"><Icon name="external" size={16} /> Not from Flick. Install it only if you trust {m.author}.</p>}
