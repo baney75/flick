@@ -1,7 +1,8 @@
 import { useState } from 'preact/hooks'
 import { installed, acceptUpdate } from '../lib/plugins/registry'
 import { updates, version, appUpdates, playing, runCheck, restartToUpdate } from '../lib/updater'
-import { isMobileApp } from '../lib/platform'
+import { isDesktop, isMobileApp } from '../lib/platform'
+import { logTail } from '../lib/playlog'
 import { notify } from '../lib/store'
 import { showBanner, bannerText } from '../lib/updates'
 
@@ -17,6 +18,12 @@ export function UpdatesPanel() {
   const how = appUpdates
     ? 'New versions download in the background from Flick\'s releases on GitHub and install when you restart.'
     : isMobileApp ? 'This app updates through your device\'s app store.' : 'The website updates itself when you reload the page.'
+  // SPEC-playback-2 rule 8: the playback log's last 200 lines, for Donovan to paste. Nothing is sent.
+  const copyLog = async () => {
+    const t = await logTail()
+    if (!t) return notify('The playback log is empty.')
+    navigator.clipboard.writeText(t).then(() => notify('Playback log copied.'), () => prompt('Copy the playback log', t))
+  }
   return (
     <section class="panel" id="updates">
       <h3>Updates</h3>
@@ -25,6 +32,7 @@ export function UpdatesPanel() {
       <div class="row">
         <button class="btn" disabled={busy} onClick={checkNow}>{busy ? 'Checking…' : 'Check now'}</button>
         {appUpdates && s.ready && <button class="btn primary" onClick={restartToUpdate}>Restart to update</button>}
+        {isDesktop && <button class="btn" onClick={copyLog}>Copy playback log</button>}
       </div>
       {waiting.map((p) => (
         <div class="list-row update-plugin">

@@ -12,6 +12,7 @@ import { barFor, oneRetry, openToolStream } from '../lib/plugins/runtime'
 import { Icon } from './icons'
 import { Readout } from './Readout'
 import { Delayed, KEEPS_STALLING, kindOf, OPENING, waitLine, Watchdog } from '../lib/stalls'
+import { note, sourceOf } from '../lib/playlog'
 import { cardButtons, convertLine, onMediaError, withServerFallback, DESKTOP_ONLY, isHls, planStream, playsHere, planSeek, probeStream, probes, Remux, SAFE, writtenOf, type Live, type StreamProbe, cuesAt, messageOf } from '../lib/playback'
 
 const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
@@ -54,6 +55,11 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   if (!delayed.current) delayed.current = new Delayed(setWords)
   useEffect(() => { delayed.current!.set(status) }, [status])
   const [error, setError] = useState<string | null>(null)
+  // The playback log's clock and state (SPEC-playback-2 rule 7).
+  const began = useRef(0)
+  const firstFrame = useRef(false)
+  const stallFrom = useRef<{ t: number; ahead: number; seeking: boolean } | null>(null)
+  useEffect(() => { if (error) note('outcome', { result: 'error', message: error, stuck }) }, [error])
   const [playing, setPlaying] = useState(false)
   const [time, setTime] = useState(0)
   const [dur, setDur] = useState(0)
@@ -106,6 +112,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
           }
         }
         if (!url) throw new Error('Nothing to play.')
+        began.current = Date.now()
+        note('play_start', { kind: req.src?.t ?? (req.via ? 'debrid' : req.peers ? 'torrent' : 'url'), ref: req.ref.t, service: req.via?.service ?? null, ...sourceOf(url) })
         if (url.startsWith('flick-tool:')) {
           setStatus('Starting the stream')
           const got = await openToolStream(url)
@@ -159,6 +167,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     })()
     return () => {
       cancelled = true
+      note('close', { played: began.current > 0 && firstFrame.current, at: Math.round(clock()) })
       closed.abort()
       remux.current?.stop()
       dog.current?.stop()
@@ -208,13 +217,21 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     remux.current = r
     setDur(p.duration)
     setStatus(convertLine(p))
+    const t = Date.now()
+    const opened = r.open(at).then((u) => {
+      if (u) note('run_start', { ms: Date.now() - t, at: Math.round(at), safe, convertsVideo: p.convertsVideo, convertsAudio: p.convertsAudio })
+      return u
+    }, (e) => {
+      note('run_start', { ms: Date.now() - t, safe, error: messageOf(e) })
+      throw e
+    })
     // A safe run asks the warmed server once more for the length, for the seek bar and saved progress.
     if (!r.known) {
       probeStream(input.input, input.user, input.pass).then((q) => {
         if (remux.current === r && q.duration > 0) { r.length = q.duration; setDur(q.duration) }
       }).catch(() => {})
     }
-    return r.open(at)
+    return opened
   }
 
   function onFail(msg: string, unsupported = false, code?: number) {
@@ -228,6 +245,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     const fb = onMediaError(code, fallback.current)
     if (fb) {
       fallback.current = null
+      note('fallback', { to: 'safe profile', code: code ?? null })
       const at = v.currentTime || req.startAt || 0
       ;(async () => {
         const url = await openLive(fb, SAFE, at, true)
@@ -404,11 +422,21 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     if (!v || restarting.current) return
     setStatus(waitLine(dog.current?.kind ?? 'plugin'))
     const [from, to] = bufferedAt(v)
+    if (firstFrame.current && !stallFrom.current) stallFrom.current = { t: Date.now(), ahead: to - v.currentTime, seeking: v.seeking }
     dog.current?.waiting(from, to, v.seeking)
     setStallLine(dog.current?.summary() ?? null)
   }
   const onPlayingNow = () => {
     setStatus(null)
+    if (!firstFrame.current) {
+      firstFrame.current = true
+      note('first_frame', { ms: Date.now() - began.current })
+    }
+    const st = stallFrom.current
+    if (st) {
+      stallFrom.current = null
+      note('stall', { ms: Date.now() - st.t, ahead: Math.round(st.ahead * 10) / 10, seeking: st.seeking })
+    }
     dog.current?.playing()
     setStallLine(dog.current?.summary() ?? null)
   }
@@ -684,6 +712,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         onEnded={onEnded}
         onError={() => {
           const err = video.current?.error
+          note('media_error', { code: err?.code ?? null, message: err?.message || null })
           const hint = isDesktop ? '' : ' Formats like MKV with AC3 or HEVC play best in the Flick desktop app.'
           onFail(err?.code === 4 ? `This file's format is not supported here.${hint}` : `Playback failed (${err?.message || 'unknown error'}).`, err?.code === 4, err?.code)
         }}

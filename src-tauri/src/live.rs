@@ -95,14 +95,29 @@ pub fn segments(playlist: &Path) -> usize {
         .unwrap_or(0)
 }
 
-fn last_line(p: &Path) -> String {
+/// The last `n` lines ffmpeg wrote, oldest first.
+fn last_lines(p: &Path, n: usize) -> Vec<String> {
     let t = std::fs::read_to_string(p).unwrap_or_default();
-    t.lines()
+    let mut v: Vec<String> = t
+        .lines()
         .rev()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
-        .trim()
-        .to_string()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .take(n)
+        .map(String::from)
+        .collect();
+    v.reverse();
+    v
+}
+
+/// A failed run leaves ffmpeg's last 3 lines in the playback log (SPEC-playback-2 rule 7), then its last line.
+fn failed(log: &Path, why: &str) -> String {
+    let lines = last_lines(log, 3);
+    let mut f = serde_json::Map::new();
+    f.insert("why".into(), why.into());
+    f.insert("ffmpeg".into(), lines.clone().into());
+    crate::playlog::note("run_failed", f);
+    lines.last().cloned().unwrap_or_default()
 }
 
 #[derive(Default)]
@@ -279,7 +294,7 @@ pub fn run(
             return Ok(Started { id, at, playlist });
         }
         if ended {
-            let why = last_line(&dir.join("ffmpeg.log"));
+            let why = failed(&dir.join("ffmpeg.log"), "ended");
             stop_if(st, id);
             return Err(format!("ffmpeg could not convert this stream: {why}"));
         }
@@ -289,6 +304,7 @@ pub fn run(
     if segments(&playlist) > 0 {
         return Ok(Started { id, at, playlist });
     }
+    failed(&dir.join("ffmpeg.log"), "nothing in 30 s");
     stop_if(st, id);
     Err("The stream sent nothing to convert within 30 seconds.".into())
 }
@@ -763,6 +779,8 @@ mod tests {
             return eprintln!("skipped: needs ffmpeg");
         };
         let dir = scratch("bad");
+        let logs = dir.join("logs");
+        crate::playlog::init(logs.clone());
         let st = Live::default();
         let p = StreamProbe {
             video: Some("h264".into()),
@@ -783,6 +801,11 @@ mod tests {
             "{e}"
         );
         assert!(alive(&st).is_none());
+        // Rule 7: ffmpeg's last lines reach the playback log with the folder cut to the file type.
+        let log = crate::playlog::tail_of(&logs, crate::playlog::TAIL);
+        let line = log.lines().rfind(|l| l.contains("run_failed")).expect(&log);
+        assert!(line.contains("\"ffmpeg\":[") && line.contains(".mkv"), "{line}");
+        assert!(!line.contains("flick-") && !line.contains("missing"), "{line}");
         let _ = std::fs::remove_dir_all(dir);
     }
 
