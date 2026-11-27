@@ -201,6 +201,26 @@ export default {
     await ctx.store.set('history', [slim(m, Date.now()), ...l.filter((x) => x.id !== url)].slice(0, KEEP))
   },
 
+  /**
+   * Liked, Watch later and History as Library shelves. Each video is one item, on every list it is on,
+   * so All shows it once. History leads, newest first; then what was only liked or saved, newest first.
+   * `added` is when it last played, else when it joined a list.
+   */
+  async library(ctx) {
+    const lists = {}
+    for (const key of Object.keys(LISTS)) lists[key] = await list(ctx, key)
+    const rest = [...lists.liked, ...lists.later].sort((a, b) => (b.at ?? 0) - (a.at ?? 0))
+    const items = new Map()
+    for (const m of [...lists.history, ...rest]) {
+      if (!items.has(m.id)) items.set(m.id, { ...card(m), type: 'video', posterShape: 'landscape', added: m.at, shelves: [] })
+    }
+    for (const [key, l] of Object.entries(lists)) for (const m of l) items.get(m.id).shelves.push(key)
+    return {
+      shelves: Object.entries(LISTS).map(([id, l]) => ({ id, name: l.name, layout: 'landscape' })),
+      items: [...items.values()],
+    }
+  },
+
   async streams(ctx, { id }) {
     return [{ url: await ctx.tools.ytdlp.resolve(watchUrl(id)), title: 'YouTube', kind: 'video' }]
   },

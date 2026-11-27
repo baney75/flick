@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error a plain JS plugin with no types of its own
 import youtube, { views, age, forYouQuery } from '../plugins/youtube/plugin.js'
-import { validateCatalog, validateManifest, validateMeta, validateTitleAction } from '../src/lib/plugins/validate'
+import { validateCatalog, validateLibrary, validateManifest, validateMeta, validateTitleAction } from '../src/lib/plugins/validate'
 // What Flick's yt-dlp search tool makes of tests/fixtures/yt-search.json (src-tauri checks the two match).
 import SEARCH from './fixtures/ytdlp-search.json'
 
@@ -70,16 +70,16 @@ describe('card fields in the contract', () => {
 })
 
 const FIX = (n: number) => (SEARCH as { id: string; channel?: string }[])[n]
-const FNS = ['catalog', 'meta', 'streams', 'userCatalogs', 'titleAction', 'progress']
+const FNS = ['catalog', 'meta', 'streams', 'userCatalogs', 'titleAction', 'progress', 'library']
 
 describe('YouTube lists, For You and keys', () => {
   it('is a grid with For You, the topics, and L and W on each title', () => {
-    const { catalog, meta, streams, userCatalogs, titleAction, progress, ...m } = youtube
+    const { catalog, meta, streams, userCatalogs, titleAction, progress, library, ...m } = youtube
     const v = validateManifest(m, FNS)
     expect(v.layout).toBe('grid')
     expect(v.catalogs.map((c) => c.name)).toEqual(['Search', 'For You', 'Science', 'Nature', 'Classic films', 'Concerts', 'Programming', 'AI', 'Math', 'World history', 'Lectures'])
     expect(v.titleActions).toEqual([{ id: 'like', label: 'Like', key: 'l' }, { id: 'later', label: 'Watch later', key: 'w' }])
-    void [catalog, meta, streams, userCatalogs, titleAction, progress]
+    void [catalog, meta, streams, userCatalogs, titleAction, progress, library]
   })
   it('press W: the video is in Watch later, shows marked, and W again takes it out', async () => {
     const ctx = fakeCtx()
@@ -128,5 +128,50 @@ describe('YouTube lists, For You and keys', () => {
   })
   it("a video yt-dlp cannot play says yt-dlp's reason", async () => {
     await expect(youtube.streams(fakeCtx(), { type: 'video', id: 'https://www.youtube.com/watch?v=gone' })).rejects.toThrow('yt-dlp: ERROR: [youtube] gone: Video unavailable')
+  })
+})
+
+// SPEC-library-format P10c: the lists are Library shelves through the shaped library().
+describe('YouTube library', () => {
+  const ids = (SEARCH as { id: string }[]).map((x) => x.id)
+  const at = (n: number) => ids[n - 1]
+  it('has three shelves and no items before anything is kept', async () => {
+    const lib = validateLibrary(await youtube.library(fakeCtx()))
+    expect(lib.shelves.map((s) => [s.id, s.name, s.layout])).toEqual([['liked', 'Liked', 'landscape'], ['later', 'Watch later', 'landscape'], ['history', 'History', 'landscape']])
+    expect(lib.items).toEqual([])
+  })
+  it('puts each video once on every list it is on, History newest first, with added and type video', async () => {
+    const ctx = fakeCtx()
+    await youtube.catalog(ctx, { id: 'search', type: 'video', search: 'karpathy' })
+    let t = 1_795_000_000_000
+    const clock = Date.now
+    Date.now = () => (t += 1000)
+    try {
+      await youtube.progress(ctx, { type: 'video', id: at(1), pos: 5 })
+      await youtube.titleAction(ctx, { type: 'video', id: at(2), action: 'later' })
+      await youtube.progress(ctx, { type: 'video', id: at(3), pos: 5 })
+      await youtube.titleAction(ctx, { type: 'video', id: at(1), action: 'like' })
+      await youtube.titleAction(ctx, { type: 'video', id: at(4), action: 'like' })
+    } finally { Date.now = clock }
+    const lib = validateLibrary(await youtube.library(ctx))
+    const row = (m: (typeof lib.items)[number]) => [String(ids.indexOf(m.id) + 1), m.shelves, m.added, m.type]
+    expect(lib.items.map(row)).toEqual([
+      ['3', ['history'], 1_795_000_003_000, 'video'],
+      ['1', ['liked', 'history'], 1_795_000_001_000, 'video'],
+      ['4', ['liked'], 1_795_000_005_000, 'video'],
+      ['2', ['later'], 1_795_000_002_000, 'video'],
+    ])
+    const history = lib.items.filter((m) => m.shelves?.includes('history'))
+    expect(history.map((m) => m.id)).toEqual([at(3), at(1)])
+    expect(history.every((m, i, l) => i === 0 || (l[i - 1].added ?? 0) >= (m.added ?? 0))).toBe(true)
+    expect(lib.items[0].name).toBe(SEARCH.find((x: { id: string }) => x.id === at(3))?.name)
+    expect(lib.items[0].subtitle).toBeTruthy()
+  })
+  it('a Like shows on the Liked shelf, and a second Like takes it off', async () => {
+    const ctx = fakeCtx()
+    await youtube.titleAction(ctx, { type: 'video', id: 'https://youtu.be/shared1', action: 'like' })
+    expect(validateLibrary(await youtube.library(ctx)).items.map((m) => [m.name, m.shelves])).toEqual([['A shared video', ['liked']]])
+    await youtube.titleAction(ctx, { type: 'video', id: 'https://youtu.be/shared1', action: 'like' })
+    expect(validateLibrary(await youtube.library(ctx)).items).toEqual([])
   })
 })

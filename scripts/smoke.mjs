@@ -162,6 +162,12 @@ const flick = createServer((req, res) => {
   if (u.pathname === '/grid-plugin.js') return res.writeHead(200, { 'content-type': 'text/javascript' }).end(GRID_PLUGIN.replaceAll('$BASE', `http://127.0.0.1:${flick.address().port}`))
   if (u.pathname === '/theme.json') return json(200, SMOKE_THEME)
   if (u.pathname === '/shelves.js') return res.writeHead(200, { 'content-type': 'text/javascript' }).end(readFileSync('tests/fixtures/shelves-plugin.js'))
+  // The real YouTube plugin with its desktop-only line taken out, so the website can run it (P10c case 19).
+  if (u.pathname === '/youtube.js') {
+    const code = readFileSync('plugins/youtube/plugin.js', 'utf8')
+    if (!code.includes("  platforms: ['desktop'],\n")) return json(500, { error: 'plugins/youtube/plugin.js no longer says platforms: desktop' })
+    return res.writeHead(200, { 'content-type': 'text/javascript' }).end(code.replace("  platforms: ['desktop'],\n", ''))
+  }
   if (req.headers.authorization !== `Bearer ${FLICK_CODE}` && u.searchParams.get('t') !== FLICK_CODE) return json(401, { error: 'wrong code' })
   if (u.pathname === '/api/library') {
     return json(200, { name: 'Smoke NAS', folders: ['Movies', 'Books'], items: Object.entries(flickFiles).map(([id, f]) => ({ id, folder: f.folder, path: f.path ?? f.name, name: f.name, kind: f.kind, ext: f.ext, size: f.body.length, mtime: 1732550400000 })) })
@@ -900,6 +906,22 @@ try {
   await page.getByText('Liked', { exact: true }).waitFor({ timeout: 10000 })
   await page.locator('.nav-item', { hasText: 'Library' }).click()
   check(await tab(/^Liked/).waitFor({ timeout: 10000 }).then(() => true, () => false), 'after an action the Liked chip shows with no reload')
+  // SPEC-library-format case 19: Like on a YouTube title puts it on the Liked chip with no reload.
+  // The plugin is the real one; YouTube's oEmbed answer comes from here, never from YouTube.
+  await page.route(/^https:\/\/www\.youtube\.com\/oembed/, (r) => r.fulfill({ contentType: 'application/json', body: JSON.stringify({ title: 'Smoke YouTube Talk', author_name: 'Smoke Tube' }) }))
+  await page.goto(`${BASE}/#/settings/plugins`)
+  await addByAddress(`${FLICK_URL}/youtube.js`)
+  await sheet.getByRole('button', { name: 'Install' }).click()
+  await page.waitForURL(/#\/settings\/plugins\/com\.youtube$/, { timeout: 5000 })
+  await page.goto(`${BASE}/#/p/com.youtube/video/${encodeURIComponent('https://www.youtube.com/watch?v=smokeTube01')}`)
+  await page.getByRole('heading', { name: 'Smoke YouTube Talk' }).waitFor({ timeout: 15000 })
+  const like = page.locator('.title-acts button', { hasText: /^Like/ })
+  await like.click()
+  await page.locator('.title-acts button[aria-pressed="true"]', { hasText: /^Like/ }).waitFor({ timeout: 10000 })
+  await page.locator('.nav-item', { hasText: 'Library' }).click()
+  await tab(/^Liked/).click()
+  check(await page.locator('.card', { hasText: 'Smoke YouTube Talk' }).waitFor({ timeout: 10000 }).then(() => true, () => false), 'Like on a YouTube title shows it on the Liked chip with no reload')
+  check(await page.locator('.card', { hasText: 'Smoke Pancakes' }).count() === 1, "YouTube's Liked and another plugin's Liked are one chip")
   await page.setViewportSize({ width: 390, height: 844 })
   await page.waitForTimeout(300)
   const row = await page.evaluate(() => { const c = document.querySelector('.toolbar .chips'); return { page: document.documentElement.scrollWidth, chips: c.scrollWidth > c.clientWidth, n: document.querySelectorAll('.toolbar .chip').length } })
