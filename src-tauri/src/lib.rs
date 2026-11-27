@@ -15,13 +15,9 @@ use tauri::{Emitter, Manager};
 mod plugins;
 mod selftest;
 mod share;
-// The torrent engine and its checks; the engine and the app's commands join it next in this series.
 #[cfg(desktop)]
-#[cfg_attr(not(test), allow(dead_code))]
 mod torrent;
-// The torrent engine (next in this series) is its first caller.
 #[cfg(desktop)]
-#[cfg_attr(not(test), allow(dead_code))]
 mod torrent_http;
 #[cfg(desktop)]
 mod vpn;
@@ -1401,7 +1397,11 @@ pub fn run() {
             #[cfg(desktop)]
             vpn::watch::vpn_gate_hold,
             #[cfg(desktop)]
-            vpn::watch::vpn_gate_release
+            vpn::watch::vpn_gate_release,
+            #[cfg(desktop)]
+            torrent::torrent_play,
+            #[cfg(desktop)]
+            torrent::torrent_stop
         ])
         .setup(|app| {
             if selftest::active(app) {
@@ -1445,6 +1445,8 @@ pub fn run() {
         if let tauri::RunEvent::Exit = &event {
             share::stop_all(handle);
             ytdlp::stop_job(&handle.state::<ytdlp::PluginTools>());
+            #[cfg(desktop)]
+            torrent::shutdown();
         }
         let _ = (handle, event);
     });
