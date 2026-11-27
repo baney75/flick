@@ -14,7 +14,7 @@ const BASE = process.env.SMOKE_BASE ?? `http://localhost:${PORT}`
 const media = 'test-media/Sample.Clip.2023.webm'
 if (!existsSync(media)) {
   mkdirSync('test-media', { recursive: true })
-  execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=30', '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '20',
+  execFileSync('ffmpeg', ['-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=30', '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', '20',
     '-c:v', 'libvpx-vp9', '-deadline', 'realtime', '-cpu-used', '8', '-b:v', '1M', '-c:a', 'libopus', '-shortest', media])
 }
 mkdirSync('test-media/shots', { recursive: true })
@@ -250,7 +250,7 @@ try {
   for (let i = 0; i < 50; i++) {
     try { await fetch(`${BASE}/`); break } catch { await new Promise((r) => setTimeout(r, 200)) }
   }
-  const browser = await chromium.launch({ channel: process.env.SMOKE_CHANNEL ?? 'chrome', args: ['--autoplay-policy=no-user-gesture-required'] })
+  const browser = await chromium.launch({ channel: process.env.SMOKE_CHANNEL ?? 'chrome', args: ['--autoplay-policy=no-user-gesture-required', '--mute-audio'] })
   const page = await (await browser.newContext({ viewport: { width: 1280, height: 800 } })).newPage()
   const errors = []
   page.on('pageerror', (e) => errors.push(e.message))
@@ -521,12 +521,34 @@ try {
   await page.waitForTimeout(1500)
   const landed = (await bounded(page.locator('.reader-title .t2').innerText({ timeout: 15_000 }), 'the chapter title')).split(' · ')[0]
   check(landed === 'Chapter Two', `quick turns past a chapter's end land in the next chapter (${landed})`)
+  // The jump lays the chapter out again in a new frame, even to the chapter already open. Its title is
+  // already Chapter Two, so the wait is for the new frame's own "Page 1 of" (#168), from a later page.
+  if (/^Page 1 of/.test(await pageNo.innerText())) {
+    await page.keyboard.press('ArrowRight')
+    await pageNo.filter({ hasText: /^Page 2 of/ }).waitFor({ timeout: 5000 })
+  }
   await page.getByRole('button', { name: 'Contents' }).click()
   await page.locator('.epub-toc').getByText('Chapter Two').click()
   await page.locator('.reader-title .t2', { hasText: 'Chapter Two' }).waitFor({ timeout: 5000 })
+  await pageNo.filter({ hasText: /^Page 1 of/ }).waitFor({ timeout: 5000 })
   await page.keyboard.press('ArrowRight')
-  await pageNo.filter({ hasText: /^Page 2 of/ }).waitFor({ timeout: 3000 })
-  check(true, 'contents jump to a chapter')
+  check(await pageNo.filter({ hasText: /^Page 2 of/ }).waitFor({ timeout: 5000 }).then(() => true, () => false), 'contents jump to a chapter')
+  // A turn in the same moment as the jump waits for the new frame instead of going to the old one: the
+  // page reads 1 (the new frame) and then 2 (the turn), and stays on 2.
+  const seen = await page.evaluate(() => new Promise((res) => {
+    const label = document.querySelector('.reader-page')
+    const hist = [label.textContent]
+    const mo = new MutationObserver(() => { hist.push(label.textContent) })
+    mo.observe(label, { subtree: true, childList: true, characterData: true })
+    ;[...document.querySelectorAll('.reader-bar button')].find((b) => b.textContent === 'Contents').click()
+    setTimeout(() => {
+      ;[...document.querySelectorAll('.epub-toc button')].find((b) => b.textContent === 'Chapter Two').click()
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+      setTimeout(() => { mo.disconnect(); res(hist.map((t) => t.replace(/ of .*/, ''))) }, 2500)
+    }, 100)
+  }))
+  const one = seen.lastIndexOf('Page 1')
+  check(one > 0 && seen.at(-1) === 'Page 2' && seen.indexOf('Page 2', one) > one, `a page turn sent with a contents jump turns the new chapter (${seen.join(', ')})`)
   const before2 = await pageNo.innerText()
   await page.getByRole('button', { name: 'Larger text' }).click()
   await page.getByRole('button', { name: 'Larger text' }).click()
