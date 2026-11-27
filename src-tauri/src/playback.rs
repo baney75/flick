@@ -138,6 +138,15 @@ impl StreamProbe {
         self.converts_audio = self.audio.is_some();
         self
     }
+
+    /// The probe for that restart, or why there is none: Dolby Vision profile 5 has no HDR10 base layer,
+    /// so a plain transcode would play with the wrong colours. The player shows the card instead.
+    pub fn forced(self) -> Result<Self, String> {
+        if self.video_out == Some(VideoOut::Dvh1) {
+            return Err("This Dolby Vision file cannot play here.".into());
+        }
+        Ok(self.transcoded())
+    }
 }
 
 /// The extension of a path or URL, without its query or fragment.
@@ -719,6 +728,10 @@ mod tests {
         assert_eq!(p("hevc", true).transcoded().video_out(), VideoOut::Hevc10);
         let audio = StreamProbe { audio: Some("aac".into()), ..Default::default() }.transcoded();
         assert!(!audio.converts_video && audio.converts_audio);
+        // Dolby Vision profile 5 is never transcoded without its reshaping: the card shows instead.
+        let dv5 = StreamProbe { video_out: Some(VideoOut::Dvh1), deep: true, ..p("hevc", true) };
+        assert_eq!(dv5.forced().unwrap_err(), "This Dolby Vision file cannot play here.");
+        assert_eq!(p("hevc", true).forced().unwrap().video_out(), VideoOut::Hevc10);
     }
 
     // Cases 7 and 8 against real files: the probe reads the pixel format ffmpeg wrote.

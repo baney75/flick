@@ -388,7 +388,7 @@ pub async fn remux_start(
                 .unwrap_or_else(|_| StreamProbe::safe()),
         };
         // A run the player could not decode restarts once with both transcoded (rule 5).
-        let p = if transcode == Some(true) { p.transcoded() } else { p };
+        let p = if transcode == Some(true) { p.forced()? } else { p };
         let ffmpeg = find_tool("ffmpeg").ok_or(NEEDS_FFMPEG)?;
         let s = run(
             &st,
@@ -533,7 +533,7 @@ mod tests {
     }
 
     // Case 10, the run (rule 5): the one restart after a decode error, mid-file, transcodes what a plain
-    // run copied. 8-bit HEVC with AC-3 comes out H.264 and AAC; 10-bit HEVC stays 10-bit in HEVC main10.
+    // run copied (remux_start's forced()). 8-bit HEVC with AC-3 comes out H.264 and AAC; 10-bit stays HEVC main10.
     #[test]
     fn a_forced_transcode_run_converts_what_a_plain_run_copies() {
         let Some((ffmpeg, ffprobe)) = tools() else {
@@ -550,11 +550,11 @@ mod tests {
         assert!(!p.deep, "{p:?}");
         let s = start(&st, &ffmpeg, &runs, &format!("{base}/h8.mkv"), None, &p, 8.0).unwrap();
         assert_eq!(codecs_of(&ffprobe, &s.playlist), "hevc,hvc1 ac3,ac-3");
-        let s = start(&st, &ffmpeg, &runs, &format!("{base}/h8.mkv"), None, &p.transcoded(), 8.0).unwrap();
+        let s = start(&st, &ffmpeg, &runs, &format!("{base}/h8.mkv"), None, &p.forced().unwrap(), 8.0).unwrap();
         assert_eq!(codecs_of(&ffprobe, &s.playlist), "h264,avc1 aac,mp4a");
         let p = probe(&ffprobe, &format!("{base}/h10.mkv"), None, LIMIT, &[]).unwrap();
         assert!(p.deep, "{p:?}");
-        let s = start(&st, &ffmpeg, &runs, &format!("{base}/h10.mkv"), None, &p.transcoded(), 8.0).unwrap();
+        let s = start(&st, &ffmpeg, &runs, &format!("{base}/h10.mkv"), None, &p.forced().unwrap(), 8.0).unwrap();
         assert_eq!(codecs_of(&ffprobe, &s.playlist), "hevc,hvc1 aac,mp4a");
         let out = Command::new(&ffprobe)
             .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=profile,pix_fmt", "-of", "csv=p=0"])
