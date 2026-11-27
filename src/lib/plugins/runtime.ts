@@ -164,6 +164,11 @@ export async function openToolStream(url: string, fresh = false): Promise<ToolPl
   return r.kind === 'hls' ? { url: r.url, live: !!r.live } : { url: await fileUrl(r.path), live: false }
 }
 
+/** The player closed or replaced a `flick-tool:` stream: stop its yt-dlp and ffmpeg and remove its folder. */
+export function stopToolStream(url: string) {
+  if (isDesktop) invoke('tool_stop', { url }).catch(() => {})
+}
+
 /** Starts finding a `flick-tool:` stream's address before Play, so Play does not wait for yt-dlp. */
 export function prefetchToolStream(url: string | undefined) {
   if (isDesktop && url?.startsWith('flick-tool:')) invoke('tool_prefetch', { url }).catch(() => {})
