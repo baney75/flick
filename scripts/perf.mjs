@@ -39,22 +39,35 @@ const budgets = JSON.parse(readFileSync('perf/budgets.json', 'utf8'))
 // --no-build serves the dist/ that is already there.
 const VITE = ['node_modules/vite/bin/vite.js']
 const BUILD = flag('no-build') ? 'dist' : mkdtempSync(join(tmpdir(), 'flick-perf-dist-'))
+// Temp folders go however the run ends: a thrown step, a failed build, or no WebKit.
+const temps = BUILD === 'dist' ? [] : [BUILD]
+let server
+process.on('exit', () => { server?.kill(); for (const d of temps) rmSync(d, { recursive: true, force: true }) })
+// A stop from outside (Ctrl-C, a timeout) still runs the cleanup above.
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => process.exit(130))
 if (!flag('no-build')) execFileSync(process.execPath, [...VITE, 'build', '--logLevel', 'warn', '--outDir', BUILD, '--emptyOutDir', ...(flag('no-minify') ? ['--minify', 'false'] : [])], { stdio: 'inherit' })
+const PORT = await freePort()
+const BASE = `http://127.0.0.1:${PORT}`
 
-// ---- images: small PNGs, so decoding is real work and nothing leaves this machine ----
+// ---- images: PNGs the size of real thumbnails and posters (about 23 KB and 9 KB), so decoding is
+// real work and nothing leaves this machine. One bit of noise a channel, Sub filtered, keeps them from
+// compressing to nothing without making them five times the size of a real JPEG thumbnail.
 function png(w, h, variant) {
   const raw = Buffer.alloc((w * 3 + 1) * h)
+  let rnd = variant + 1
   const hue = (variant * 47) % 360
   const [r0, g0, b0] = [Math.cos(hue) * 60 + 120, Math.sin(hue) * 60 + 110, 140 - Math.cos(hue) * 50]
   for (let y = 0; y < h; y++) {
     const row = y * (w * 3 + 1)
+    const px = []
     for (let x = 0; x < w; x++) {
       const stripe = ((x + y + variant * 7) >> 3) & 1 ? 18 : 0
-      const n = ((x * 73856093) ^ (y * 19349663) ^ variant) & 15
-      raw[row + 1 + x * 3] = Math.min(255, r0 + (x / w) * 80 + stripe + n)
-      raw[row + 2 + x * 3] = Math.min(255, g0 + (y / h) * 70 + n)
-      raw[row + 3 + x * 3] = Math.min(255, b0 + stripe + n)
+      rnd = (rnd * 1103515245 + 12345) >>> 0
+      const n = (rnd >>> 16) & 1
+      px.push(Math.min(255, r0 + (x / w) * 80 + stripe + n) | 0, Math.min(255, g0 + (y / h) * 70 + n) | 0, Math.min(255, b0 + stripe + n) | 0)
     }
+    raw[row] = 1
+    for (let i = 0; i < px.length; i++) raw[row + 1 + i] = (px[i] - (i >= 3 ? px[i - 3] : 0)) & 255
   }
   const chunk = (type, data) => {
     const len = Buffer.alloc(4); len.writeUInt32BE(data.length)
@@ -65,10 +78,14 @@ function png(w, h, variant) {
   const ihdr = Buffer.alloc(13)
   ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 2
   const file = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))])
-  return `data:image/png;base64,${file.toString('base64')}`
+  return file
 }
-const thumbImages = Array.from({ length: 48 }, (_, i) => png(320, 180, i))
-const posters = Array.from({ length: 16 }, (_, i) => png(120, 180, i + 100))
+const thumbImages = Array.from({ length: 48 }, (_, i) => `data:image/png;base64,${png(320, 180, i).toString('base64')}`)
+// Plugin posters are short URLs on the preview server, as a real plugin's are: data URLs would make every
+// library result carry megabytes of strings.
+mkdirSync(join(BUILD, 'perf-img'), { recursive: true })
+const posters = Array.from({ length: 16 }, (_, i) => { writeFileSync(join(BUILD, 'perf-img', `p${i}.png`), png(120, 180, i + 100)); return `${BASE}/perf-img/p${i}.png` })
+const rowArt = Array.from({ length: 8 }, (_, i) => { writeFileSync(join(BUILD, 'perf-img', `r${i}.png`), png(320, 180, i + 200)); return `${BASE}/perf-img/r${i}.png` })
 
 // ---- the seeded library and the fixture plugin, checked by the app's own validator ----
 const seed = buildSeed()
@@ -77,7 +94,7 @@ async function pluginRecord(id, code) {
   const manifest = V.validateManifest(mod, Object.keys(mod).filter((k) => typeof mod[k] === 'function'))
   return { id, kind: 'source', url: null, code, sha256: createHash('sha256').update(code).digest('hex'), manifest, enabled: true, official: false, settings: {}, installedAt: Date.now(), checkedAt: Date.now() }
 }
-const plugins = [await pluginRecord(PLUGIN_ID, pluginCode(seed.library, posters)), await pluginRecord(SHELF_PLUGIN_ID, shelvesPluginCode(thumbImages.slice(0, 8)))]
+const plugins = [await pluginRecord(PLUGIN_ID, pluginCode(seed.library, posters)), await pluginRecord(SHELF_PLUGIN_ID, shelvesPluginCode(rowArt))]
 
 async function writeSeed({ items, progress, folders, servers, thumbs, plugins, images }) {
   const blobs = await Promise.all(images.map((u) => fetch(u).then((r) => r.blob())))
@@ -121,22 +138,27 @@ async function findWebkit() {
 }
 const found = ENGINE === 'chromium' ? { exe: undefined, name: 'chromium' } : await findWebkit()
 // Each context gets its own throwaway profile, so perf never shares storage or a browser with smoke.
-const profiles = []
 const newContext = (viewport) => {
   const dir = mkdtempSync(join(tmpdir(), 'flick-perf-'))
-  profiles.push(dir)
+  temps.push(dir)
   const o = { viewport, serviceWorkers: 'block', executablePath: found.exe }
   return ENGINE === 'chromium' ? chromium.launchPersistentContext(dir, { ...o, channel: process.env.PERF_CHANNEL || undefined }) : webkit.launchPersistentContext(dir, o)
 }
 
-const PORT = await freePort()
-const BASE = `http://127.0.0.1:${PORT}`
 // Vite itself, not through npx, so kill() reaches the server and no preview outlives the run.
-const server = spawn(process.execPath, [...VITE, 'preview', '--outDir', BUILD, '--host', '127.0.0.1', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' })
+server = spawn(process.execPath, [...VITE, 'preview', '--outDir', BUILD, '--host', '127.0.0.1', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' })
 const agent = readFileSync(new URL('./perf-agent.js', import.meta.url), 'utf8')
 const samples = {}
 const add = (k, v, unit = 'ms') => { if (v == null || Number.isNaN(v)) return; (samples[k] ??= { unit, s: [] }).s.push(v) }
 const notes = []
+const pageErrors = new Set()
+let failure = null
+// A step that never shows its result counts as the whole wait, so a slow run cannot drop out of the p95.
+const STEP_TIMEOUT = 10000
+const timedOut = (r, what) => {
+  if (r.timedOut && r.painted == null) { r.painted = r.settled = STEP_TIMEOUT; notes.push(`a step timed out at ${STEP_TIMEOUT} ms waiting for ${JSON.stringify(what)}`) }
+  return r
+}
 
 const sel = {
   home: { sel: '.main .row-section' },
@@ -170,7 +192,7 @@ try {
     // so the first tap lands while startup work is still running, as a person's would.
     const open = async (quiet = true) => {
       const page = await ctx.newPage()
-      page.on('pageerror', (e) => notes.push(`page error: ${e.message}`))
+      page.on('pageerror', (e) => pageErrors.add(e.message))
       if (THROTTLE > 1 && ENGINE === 'chromium') await (await ctx.newCDPSession(page)).send('Emulation.setCPUThrottlingRate', { rate: THROTTLE })
       await page.goto(`${BASE}/`)
       const boot = await page.evaluate((q) => (q ? window.__perf.booted() : window.__perf.homePainted()), quiet)
@@ -193,11 +215,15 @@ try {
     const measure = (page, act, opts) => profiled(page, async () => {
       await page.evaluate((o) => window.__perf.arm(o), opts)
       await act()
-      const r = await page.evaluate(() => window.__perf.result())
+      const r = await page.evaluate((t) => window.__perf.result(100, t), STEP_TIMEOUT)
+      timedOut(r, opts.marker ?? opts.events)
       if (process.env.PERF_DEBUG) console.log('DEBUG', JSON.stringify(opts.marker ?? opts.events), JSON.stringify(r))
       return r
     })
-    const go = async (page, path, marker) => { await page.evaluate(([p, m]) => window.__perf.go(p, m), [path, marker]); return page.evaluate(() => window.__perf.result()) }
+    const go = async (page, path, marker) => {
+      await page.evaluate(([p, m]) => window.__perf.go(p, m), [path, marker])
+      return timedOut(await page.evaluate((t) => window.__perf.result(100, t), STEP_TIMEOUT), path)
+    }
     const tap = (page, label) => page.locator('.sidebar .nav-item', { hasText: label }).click()
 
     for (let run = 0; run < RUNS; run++) {
@@ -218,7 +244,8 @@ try {
 
       // Library chips, then search, then the fling.
       await go(page, '/library', sel.library)
-      if (on('chips')) for (const chip of ['All', 'Movies', 'Music', 'Shows', 'Photos', 'Continue']) {
+      // All is on when Library opens, so it goes last, after another chip.
+      if (on('chips')) for (const chip of ['Movies', 'Music', 'Shows', 'Photos', 'Continue', 'All']) {
         const loc = page.locator('.toolbar .chip', { hasText: new RegExp(`^${chip}\\b`) })
         if (!(await loc.count())) { notes.push(`${P}no ${chip} chip`); continue }
         const r = await measure(page, () => loc.click(), { events: ['click'], marker: { sel: '.toolbar .chip.on', text: chip } })
@@ -232,8 +259,8 @@ try {
       await box.click()
       for (const ch of 'the office') {
         const r = await measure(page, () => page.keyboard.type(ch), { events: ['keydown'] })
-        add(`${P}search.keystroke`, r.painted)
-        add(`${P}search.keystroke.settled`, r.settled)
+        // The frame after the grid shows the filtered list, not the first frame after the key.
+        add(`${P}search.keystroke`, r.settled)
       }
       await box.fill('')
       await page.evaluate(() => new Promise((r) => setTimeout(r, 300)))
@@ -327,11 +354,15 @@ try {
     await ctx.close()
     ctx = null
   }
+} catch (e) {
+  // Keep what was measured: the results say which step failed, and the run exits 1.
+  failure = e
+  notes.push(`the run stopped early: ${e.message.split('\n')[0]}`)
 } finally {
-  await ctx?.close()
+  await ctx?.close().catch(() => {})
   server.kill()
-  for (const d of [...profiles, ...(BUILD === 'dist' ? [] : [BUILD])]) rmSync(d, { recursive: true, force: true })
 }
+for (const e of pageErrors) notes.push(`page error: ${e}`)
 
 const metrics = Object.fromEntries(Object.entries(samples).map(([k, v]) => [k, { unit: v.unit, ...stats(v.s), samples: v.s.map((x) => Math.round(x * 1000) / 1000) }]))
 const meta = { engine, runs: RUNS, throttle: THROTTLE > 1 && ENGINE === 'chromium' ? THROTTLE : 1, viewports: sizes, inject: INJECT || undefined, at: new Date().toISOString(), commit: (() => { try { return execFileSync('git', ['rev-parse', '--short', 'HEAD']).toString().trim() } catch { return '' } })() }
@@ -344,9 +375,16 @@ console.log(table(metrics, budgets.budgets))
 if (notes.length) console.log(`\nNotes:\n${[...new Set(notes)].map((n) => `- ${n}`).join('\n')}`)
 const base = opt('compare')
 if (base) console.log(`\nAgainst ${base}:\n\n${compare(JSON.parse(readFileSync(base, 'utf8')).metrics, metrics, budgets.budgets)}`)
-// With --only, budgets for sections left out are not misses.
-const misses = gate(metrics, budgets.budgets).filter((m) => !(ONLY.length && m.why === 'not measured'))
-if (misses.length) {
-  console.log(`\nOver budget:\n${misses.map((m) => `- ${m.metric}: p95 ${m.p95 == null ? m.why : Math.round(m.p95 * 1000) / 1000} > ${m.budget}`).join('\n')}`)
-  if (!flag('no-gate')) process.exit(1)
+// Budgets are for 1280. With --only, or without the 1280 viewport, budgets for what did not run are not misses.
+const partial = ONLY.length || !sizes.includes('1280')
+const misses = gate(metrics, budgets.budgets).filter((m) => !(partial && m.why === 'not measured'))
+const problems = [
+  ...misses.map((m) => `${m.metric}: p95 ${m.p95 == null ? m.why : Math.round(m.p95 * 1000) / 1000} > ${m.budget}`),
+  // A screen that threw can look fast, so an app error fails the run too.
+  ...[...pageErrors].map((e) => `page error: ${e}`),
+  ...(failure ? [`the run stopped early: ${failure.message.split('\n')[0]}`] : []),
+]
+if (problems.length) {
+  console.log(`\nFailed:\n${problems.map((p) => `- ${p}`).join('\n')}`)
+  if (!flag('no-gate') || failure) process.exit(1)
 }

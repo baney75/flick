@@ -21,10 +21,11 @@
   // ---- cold start: from navigation to the first frame showing a marker, and to a quiet DOM ----
   const boot = (P.boot = { marks: {}, lastMut: 0, lastPaint: 0, gaps: [] })
   const want = { home: { sel: '.main .row-section' }, welcome: { sel: '.main .welcome' } }
-  new MutationObserver(() => {
+  const bootMo = new MutationObserver(() => {
     boot.lastMut = now()
     afterPaint((t) => { boot.lastPaint = t })
-  }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true })
+  })
+  bootMo.observe(document, { subtree: true, childList: true, attributes: true, characterData: true })
   let prev = 0
   const bootFrame = (t) => {
     if (prev) boot.gaps.push(t - prev)
@@ -36,7 +37,13 @@
   /** Resolves as soon as Home has painted (or the welcome screen, for an empty library). */
   P.homePainted = (timeout = 15000) => new Promise((ok) => {
     const t0 = now()
-    const tick = () => (boot.marks.home || now() - t0 > timeout ? ok({ painted: boot.marks.home ?? null, welcome: boot.marks.welcome ?? null }) : setTimeout(tick, 5))
+    const tick = () => {
+      if (!boot.marks.home && now() - t0 <= timeout) return setTimeout(tick, 5)
+      // The boot watchers stop here, so they add no work to the steps timed next.
+      P.bootDone = true
+      bootMo.disconnect()
+      ok({ painted: boot.marks.home ?? null, welcome: boot.marks.welcome ?? null })
+    }
     tick()
   })
   /** Resolves once Home has painted and the DOM has been quiet for `quiet` ms. */
@@ -46,6 +53,7 @@
       const settled = boot.marks.home && now() - boot.lastMut >= quiet && boot.lastPaint >= boot.lastMut
       if (settled || now() - t0 > timeout) {
         P.bootDone = true
+        bootMo.disconnect()
         const longest = Math.max(0, ...boot.gaps)
         ok({ painted: boot.marks.home ?? null, interactive: settled ? Math.max(boot.marks.home, boot.lastPaint) : null, welcome: boot.marks.welcome ?? null, longestFrame: longest })
       } else setTimeout(tick, 20)
@@ -60,7 +68,8 @@
     const onEv = (e) => {
       if (cur.t0 != null) return
       const n = now()
-      cur.t0 = e.timeStamp > 0 && e.timeStamp <= n && n - e.timeStamp < 1000 ? e.timeStamp : n
+      // The event's own time, however late the handler runs: that wait is what a busy page costs.
+      cur.t0 = e.timeStamp > 0 && e.timeStamp <= n ? e.timeStamp : n
       frame()
     }
     for (const t of types) addEventListener(t, onEv, true)
@@ -151,7 +160,10 @@
   // Each thing is known by what it shows (a card by its title), not by its DOM node: the virtual grid
   // reuses nodes for other cards as it scrolls, which moves no content. Positions are in the page's
   // own coordinates (viewport top plus the main pane's scroll), so scrolling itself is no shift.
-  const TRACK = '.main .card, .main .page-head, .main .toolbar, .main .list-row, .main .row-head, .main .detail-head, .main .hub-group > h4, .main .status, .main .empty, .main .welcome, .main .home-search, .main .chips, .main .vgrid'
+  // Moved areas are unioned on a 10 px grid, as CLS does, so a container and the cards in it that move
+  // together count once.
+  const TRACK = '.main .card, .main .page-head, .main .toolbar, .main .list-row, .main .shelf-row, .main .row-head, .main .detail-head, .main .hub-group > h4, .main .status, .main .empty, .main .welcome'
+  const CELL = 10
   P.clsStart = () => {
     const st = (P.cls = { score: 0, prev: new Map(), resizes: 0, on: true, shifts: [], t0: now() })
     const vw = innerWidth, vh = innerHeight, area = vw * vh
@@ -159,7 +171,8 @@
       if (!st.on) return
       const next = new Map()
       const seen = new Map()
-      let moved = 0, dist = 0
+      const hit = new Set()
+      let dist = 0
       for (const el of document.querySelectorAll(TRACK)) {
         // Count every copy of a title, on screen or not, so the nth copy stays the nth as others scroll away.
         const what = `${el.className.split(' ')[0]}|${el.getAttribute('title') ?? (el.textContent || '').slice(0, 40)}`
@@ -175,14 +188,14 @@
         if (!q) continue
         const dx = Math.abs(p[0] - q[0]), dy = Math.abs(p[1] - q[1]), dw = Math.abs(p[2] - q[2]), dh = Math.abs(p[3] - q[3])
         if (dx > 1 || dy > 1 || dw > 1 || dh > 1) {
-          const vis = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0)) * Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0))
-          moved += vis
+          for (let cy = Math.max(0, Math.floor(r.top / CELL)); cy < Math.min(vh, r.bottom) / CELL; cy++)
+            for (let cx = Math.max(0, Math.floor(r.left / CELL)); cx < Math.min(vw, r.right) / CELL; cx++) hit.add(cy * 10000 + cx)
           dist = Math.max(dist, dx, dy, dw, dh)
           if (el.classList.contains('card') && (dw > 1 || dh > 1)) st.resizes++
           st.shifts.push(`${Math.round(now() - st.t0)}ms ${k.slice(0, 50)} moved ${Math.round(dx)},${Math.round(dy)} resized ${Math.round(dw)},${Math.round(dh)}`)
         }
       }
-      if (moved) st.score += Math.min(1, moved / area) * Math.min(1, dist / Math.max(vw, vh))
+      if (hit.size) st.score += Math.min(1, (hit.size * CELL * CELL) / area) * Math.min(1, dist / Math.max(vw, vh))
       st.prev = next
       requestAnimationFrame(tick)
     }

@@ -226,7 +226,8 @@ const nas = createServer((req, res) => {
 await new Promise((r) => nas.listen(0, '127.0.0.1', r))
 const NAS_URL = `http://127.0.0.1:${nas.address().port}`
 
-const server = process.env.SMOKE_BASE ? null : spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' })
+// Vite itself, not through npx, so kill() stops the server and no preview keeps the port.
+const server = process.env.SMOKE_BASE ? null : spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' })
 const fails = []
 // A step that never returns (a key press into a frame that is being replaced has done it) fails the run
 // with the last check that passed, instead of hanging it. No step takes near this long.
