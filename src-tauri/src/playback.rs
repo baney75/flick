@@ -1,6 +1,7 @@
 // Streams the web view cannot open (SPEC-playback): an MKV, DTS or TrueHD audio, HEVC tagged hev1.
-// `probe_stream` reads at most 5 MB of a stream within 6 seconds and says whether the web view plays it
+// `probe_stream` reads at most 5 MB of a stream within 20 seconds and says whether the web view plays it
 // as it is (direct) or needs the live remux, and why ("MKV", "DTS audio"). Results are kept for the session.
+// A probe that fails never fails a play (SPEC-playback-2 rule 2): the player decides without it.
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -14,8 +15,9 @@ use tauri::Manager;
 use super::ytdlp::{kill_tree, own_group};
 use super::{basic, find_tool, input_args};
 
-const PROBE_LIMIT: Duration = Duration::from_secs(6);
-pub const SLOW_SERVER: &str = "The server did not answer within 6 seconds.";
+pub const PROBE_LIMIT: Duration = Duration::from_secs(20);
+/// What `output_within` returns when the command ran out of time.
+pub const TIMED_OUT: &str = "timed out";
 
 /// Audio fMP4 HLS carries that the web view plays: copied as is. Anything else becomes AAC.
 pub const COPY_AUDIO: &[&str] = &["aac", "mp3", "alac", "ac3", "eac3"];
@@ -52,6 +54,22 @@ pub struct StreamProbe {
     pub converts_audio: bool,
     /// False when ffprobe is missing: nothing was checked and the player plays it as it is.
     pub checked: bool,
+}
+
+impl StreamProbe {
+    /// The safe profile, for a stream the probe could not read: video to 8-bit H.264, audio to AAC
+    /// stereo, length unknown (rule 2).
+    pub fn safe() -> Self {
+        StreamProbe {
+            video: Some("unknown".into()),
+            audio: Some("unknown".into()),
+            channels: 2,
+            why: Some("safe profile".into()),
+            converts_video: true,
+            converts_audio: true,
+            ..Default::default()
+        }
+    }
 }
 
 /// The extension of a path or URL, without its query or fragment.
@@ -195,7 +213,7 @@ pub(crate) fn output_within(
             None if start.elapsed() >= limit => {
                 kill_tree(&mut child);
                 let _ = child.wait();
-                return Err(SLOW_SERVER.into());
+                return Err(TIMED_OUT.into());
             }
             None => std::thread::sleep(Duration::from_millis(20)),
         }
@@ -207,6 +225,23 @@ pub(crate) fn output_within(
     ))
 }
 
+pub fn probe_args(input: &str, auth: Option<&str>) -> Vec<String> {
+    let mut a: Vec<String> = ["-v", "error", "-probesize", "5M", "-analyzeduration", "5M"]
+        .map(String::from)
+        .into();
+    a.extend(
+        [
+            "-show_entries",
+            "format=format_name,duration:stream=codec_type,codec_name,codec_tag_string,channels",
+            "-of",
+            "json",
+        ]
+        .map(String::from),
+    );
+    a.extend(input_args(input, auth));
+    a
+}
+
 /// Probes `input` with ffprobe, reading at most 5 MB, for at most `limit`.
 pub fn probe(
     ffprobe: &Path,
@@ -215,13 +250,7 @@ pub fn probe(
     limit: Duration,
 ) -> Result<StreamProbe, String> {
     let mut cmd = Command::new(ffprobe);
-    cmd.args(["-v", "error", "-probesize", "5M", "-analyzeduration", "5M"])
-        .args([
-            "-show_entries",
-            "format=format_name,duration:stream=codec_type,codec_name,codec_tag_string,channels",
-        ])
-        .args(["-of", "json"])
-        .args(input_args(input, auth));
+    cmd.args(probe_args(input, auth));
     let (ok, out, err) = output_within(&mut cmd, limit)?;
     let j: serde_json::Value = serde_json::from_slice(&out).unwrap_or_default();
     if !ok || j["format"].is_null() {
@@ -478,19 +507,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    // Case 7: a server that never answers fails the probe after 6 s, not later.
+    // SPEC-playback-2 case 6 (the probe's half): a server that never answers stops the probe at its
+    // limit (20 s, shortened here) with no player message; the run then takes the safe profile.
     #[test]
-    fn a_server_that_never_answers_fails_the_probe_in_6_seconds() {
+    fn a_probe_that_times_out_says_nothing_and_leaves_the_safe_profile() {
+        assert_eq!(PROBE_LIMIT, Duration::from_secs(20));
+        let a = super::super::live::run_args(
+            "https://x/a.mkv",
+            None,
+            &StreamProbe::safe(),
+            0.0,
+            Path::new("/c/r"),
+        );
+        let a = a.join(" ");
+        assert!(a.contains("-c:a aac -b:a 384k -ac 2"), "{a}");
+        if cfg!(target_os = "macos") {
+            assert!(
+                a.contains("-c:v h264_videotoolbox -b:v 10M -pix_fmt yuv420p"),
+                "{a}"
+            );
+        }
         let Some((_, ffprobe)) = tools() else {
             return eprintln!("skipped: needs ffprobe");
         };
         let base = serve(std::env::temp_dir(), true);
+        let limit = Duration::from_secs(2);
         let t0 = Instant::now();
-        let e = probe(&ffprobe, &format!("{base}/a.mkv"), None, PROBE_LIMIT).unwrap_err();
+        let e = probe(&ffprobe, &format!("{base}/a.mkv"), None, limit).unwrap_err();
         let took = t0.elapsed();
-        assert_eq!(e, SLOW_SERVER);
+        assert_eq!(e, TIMED_OUT);
         assert!(
-            took >= PROBE_LIMIT && took < PROBE_LIMIT + Duration::from_secs(1),
+            took >= limit && took < limit + Duration::from_secs(1),
             "took {took:?}"
         );
     }

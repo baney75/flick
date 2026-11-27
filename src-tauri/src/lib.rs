@@ -152,11 +152,32 @@ fn basic(user: &str, pass: &str) -> Option<String> {
     })
 }
 
-/// ffmpeg/ffprobe input arguments. An http(s) input gets the login as a header, never in the URL.
+/// How ffmpeg and ffprobe read a URL, as Stremio's player does (SPEC-playback-2 rule 3): reconnect on a
+/// dropped connection and on these server errors, back off up to 15 s, and give up after 30 s silent.
+const RECONNECT: [&str; 12] = [
+    "-reconnect",
+    "1",
+    "-reconnect_streamed",
+    "1",
+    "-reconnect_on_network_error",
+    "1",
+    "-reconnect_on_http_error",
+    "408,429,500,502,503,504",
+    "-reconnect_delay_max",
+    "15",
+    "-rw_timeout",
+    "30000000",
+];
+
+/// ffmpeg/ffprobe input arguments. An http(s) input gets the login as a header, never in the URL,
+/// and the reconnect flags.
 fn input_args(input: &str, auth: Option<&str>) -> Vec<String> {
     let mut a = vec![];
     if let (true, Some(auth)) = (is_url(input), auth) {
         a.extend(["-headers".into(), format!("Authorization: {auth}\r\n")]);
+    }
+    if is_url(input) {
+        a.extend(RECONNECT.map(String::from));
     }
     a.extend(["-i".into(), input.into()]);
     a
@@ -1579,23 +1600,42 @@ mod tests {
             .unwrap();
         assert_eq!(decoded, b"kodi:p@ss");
         let url = "http://192.168.1.30:8080/vfs/%2Fa.mkv";
-        assert_eq!(
-            input_args(url, Some(&auth)),
-            [
-                "-headers".to_string(),
-                format!("Authorization: {auth}\r\n"),
-                "-i".to_string(),
-                url.to_string()
-            ]
-        );
+        let flags = RECONNECT.map(String::from);
+        let mut want = vec!["-headers".to_string(), format!("Authorization: {auth}\r\n")];
+        want.extend(flags.clone());
+        want.extend(["-i".to_string(), url.to_string()]);
+        assert_eq!(input_args(url, Some(&auth)), want);
         assert_eq!(input_args("HTTPS://h/x.mkv", Some(&auth))[0], "-headers");
-        assert_eq!(input_args(url, None), ["-i", url]);
+        assert_eq!(input_args(url, None)[..12], flags);
         // A local file never gets the header, even with a login.
         assert_eq!(
             input_args("/media/http:/a.mkv", Some(&auth)),
             ["-i", "/media/http:/a.mkv"]
         );
         assert!(basic("", "x").is_none());
+    }
+
+    // SPEC-playback-2 case 12: every ffprobe and ffmpeg read of a URL carries the reconnect flags,
+    // before its -i; a local file gets none.
+    #[test]
+    fn every_url_read_reconnects_like_stremio() {
+        let flags = RECONNECT.join(" ");
+        assert_eq!(flags, "-reconnect 1 -reconnect_streamed 1 -reconnect_on_network_error 1 -reconnect_on_http_error 408,429,500,502,503,504 -reconnect_delay_max 15 -rw_timeout 30000000");
+        let url = "https://x.example/a.mkv";
+        let p = playback::StreamProbe::safe();
+        let reads = [
+            input_args(url, None),
+            input_args(url, Some("Basic eA==")),
+            playback::probe_args(url, None),
+            live::run_args(url, None, &p, 0.0, Path::new("/c/r")),
+            live::run_args(url, Some("Basic eA=="), &p, 60.0, Path::new("/c/r")),
+        ];
+        for a in reads {
+            let s = a.join(" ");
+            assert!(s.contains(&format!("{flags} -i {url}")), "{s}");
+        }
+        let local = playback::probe_args("/m/a.mkv", None).join(" ");
+        assert!(!local.contains("-reconnect"), "{local}");
     }
 
     /// Needs a local server with Basic auth. Set FLICK_HTTP_MKV (URL), FLICK_HTTP_USER, FLICK_HTTP_PASS.

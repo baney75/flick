@@ -12,7 +12,7 @@ use tauri::Manager;
 
 use super::playback::{probe_cached, Probes, StreamProbe, COPY_AUDIO};
 use super::ytdlp::{kill_tree, own_group};
-use super::{basic, find_tool, input_args, is_url, video_args};
+use super::{basic, find_tool, input_args, video_args};
 
 const FIRST_SEGMENT: Duration = Duration::from_secs(30);
 const DAY: Duration = Duration::from_secs(86_400);
@@ -28,19 +28,6 @@ pub fn run_args(
     dir: &Path,
 ) -> Vec<String> {
     let mut a: Vec<String> = ["-nostdin", "-loglevel", "error"].map(String::from).into();
-    if is_url(input) {
-        a.extend(
-            [
-                "-reconnect",
-                "1",
-                "-reconnect_streamed",
-                "1",
-                "-reconnect_delay_max",
-                "5",
-            ]
-            .map(String::from),
-        );
-    }
     if at > 0.0 {
         a.extend(["-ss".into(), format!("{at:.3}")]);
     }
@@ -364,13 +351,19 @@ pub async fn remux_start(
     pass: Option<String>,
     at: f64,
     owner: String,
+    safe: Option<bool>,
 ) -> Result<Opened, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let st = app.state::<Live>();
         // The claim comes before the probe, so a close while the server is slow ends this run.
         let id = ticket(&st, &owner);
         let auth = basic(&user.unwrap_or_default(), &pass.unwrap_or_default());
-        let p = probe_cached(&app.state::<Probes>(), &url, auth.as_deref())?;
+        // A stream the probe could not read plays through the safe profile (SPEC-playback-2 rule 2).
+        let p = match safe {
+            Some(true) => StreamProbe::safe(),
+            _ => probe_cached(&app.state::<Probes>(), &url, auth.as_deref())
+                .unwrap_or_else(|_| StreamProbe::safe()),
+        };
         let ffmpeg = find_tool("ffmpeg").ok_or(NEEDS_FFMPEG)?;
         let s = run(
             &st,
@@ -466,7 +459,7 @@ mod tests {
             Path::new("/c/r"),
         );
         let s = a.join(" ");
-        assert!(s.starts_with("-nostdin -loglevel error -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss 5400.000 -headers"), "{s}");
+        assert!(s.starts_with("-nostdin -loglevel error -ss 5400.000 -headers"), "{s}");
         assert!(s.contains("-i https://x/a.mkv -map 0:V:0? -map 0:a:0? -c:v copy -tag:v hvc1 -c:a aac -b:a 384k -ac 6"), "{s}");
         assert!(s.ends_with("-sn -f hls -hls_segment_type fmp4 -hls_time 4 -hls_playlist_type event -hls_flags independent_segments -hls_fmp4_init_filename init.mp4 /c/r/index.m3u8"), "{s}");
         let p = StreamProbe {
