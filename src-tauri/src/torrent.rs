@@ -18,7 +18,7 @@ use librqbit::{
     SessionOptions,
 };
 use rules::{Want, DROPPED, MAX_ACTIVE, MAX_PEERS, NO_PEERS, TOO_MANY, UPLOAD_BPS};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, SeekFrom};
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
@@ -27,12 +27,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
 use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 use tokio::time::{timeout, timeout_at, Instant};
 
 /// A player read waiting on a piece gives up after this, freeing its server worker.
 const READ_WAIT: Duration = Duration::from_secs(30);
-/// Stopping a torrent's session (rule 6 allows 30 seconds).
-const STOP_WAIT: Duration = Duration::from_secs(10);
+/// How long a stop waits for a torrent's session to close (rule 6 allows 30 seconds).
+pub const STOP_WAIT: Duration = Duration::from_secs(10);
 
 /// Playback stopped while its torrent was still starting.
 const STOPPED: &str = "Playback stopped before the torrent started.";
@@ -62,6 +63,8 @@ pub struct Config {
     pub dht: bool,
     /// Peers every torrent also tries (tests: a seeder on this computer).
     pub peers: Vec<SocketAddr>,
+    /// How long a stop waits for a session to close (STOP_WAIT; shorter in tests).
+    pub stop_wait: Duration,
 }
 
 /// A torrent the engine runs, keyed by info hash.
@@ -106,7 +109,10 @@ pub struct Engine {
     server: Arc<Server>,
     gate: Arc<dyn Gate>,
     cfg: Config,
-    table: Mutex<Table>,
+    table: Arc<Mutex<Table>>,
+    /// Tests: how long each session waits before it starts to close.
+    #[cfg(test)]
+    stall: Mutex<Duration>,
 }
 
 #[derive(Default)]
@@ -116,6 +122,30 @@ struct Table {
     last: Option<GateState>,
     heard: u64,
     next: u64,
+    /// Torrents whose sessions have left the table but not yet closed. No new session opens one
+    /// of these cache folders until its old session has.
+    closing: HashSet<String>,
+}
+
+impl Table {
+    /// Takes `hash`'s running torrent out, marked as closing until its session has closed.
+    fn retire(&mut self, hash: &str) -> Option<Running> {
+        match self.slots.remove(hash) {
+            Some(Slot::Running(r)) => {
+                self.closing.insert(hash.to_string());
+                Some(r)
+            }
+            Some(other) => {
+                self.slots.insert(hash.to_string(), other);
+                None
+            }
+            None => None,
+        }
+    }
+}
+
+fn lock(table: &Mutex<Table>) -> MutexGuard<'_, Table> {
+    table.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn hold_id(hash: &str, token: u64) -> String {
@@ -130,19 +160,20 @@ impl Engine {
             .thread_name("torrent")
             .build()?;
         let server = Server::start()?;
-        let table = Mutex::default();
         Ok(Engine {
             rt,
             server,
             gate,
             cfg,
-            table,
+            table: Arc::default(),
+            #[cfg(test)]
+            stall: Mutex::default(),
         })
     }
 
     // The gate is never called while this lock is held: its hooks call on_gate, which takes it.
     fn table(&self) -> MutexGuard<'_, Table> {
-        self.table.lock().unwrap_or_else(|e| e.into_inner())
+        lock(&self.table)
     }
 
     /// The gate's last answer through `on_gate`.
@@ -190,6 +221,9 @@ impl Engine {
         let (hash, trackers) = rules::check_want(want)?;
         let (token, cancel, old) = {
             let mut t = self.table();
+            if t.closing.contains(&hash) {
+                return Err(STOPPING.into());
+            }
             match t.slots.get(&hash) {
                 Some(Slot::Running(r)) if want.file_idx.is_none_or(|i| i == r.file) => {
                     return Ok(r.url.clone());
@@ -203,7 +237,7 @@ impl Engine {
                 None => {}
             }
             // Another file of a running torrent replaces it.
-            let old = t.slots.remove(&hash);
+            let old = t.retire(&hash);
             if old.is_none() && t.slots.len() >= MAX_ACTIVE {
                 return Err(TOO_MANY.into());
             }
@@ -220,7 +254,7 @@ impl Engine {
             (token, cancel, old)
         };
         // The old session closes before a new one opens the same cache folder.
-        if let Some(Slot::Running(r)) = old {
+        if let Some(r) = old {
             if !self.end(&hash, r, true) {
                 self.forget(&hash, token);
                 return Err(STOPPING.into());
@@ -237,10 +271,18 @@ impl Engine {
                 return Err(msg.into());
             }
         };
-        if let Some(Slot::Starting(s)) = self.table().slots.get_mut(&hash) {
-            if s.token == token {
+        // A start ended while its hold ran (or while the old session closed) opens nothing.
+        let ended = match self.table().slots.get_mut(&hash) {
+            Some(Slot::Starting(s)) if s.token == token => {
                 s.iface = Some(iface.clone());
+                s.ended
             }
+            _ => Some(DROPPED),
+        };
+        if let Some(why) = ended {
+            self.forget(&hash, token);
+            self.gate.release(&id);
+            return Err(why.into());
         }
         let started =
             self.rt
@@ -263,8 +305,10 @@ impl Engine {
                 Ok(url)
             }
             (started, why) => {
+                if started.is_ok() {
+                    t.closing.insert(hash.clone());
+                }
                 drop(t);
-                // The slot stays until the session is closed, so a new play waits for it.
                 let err = match started {
                     Ok(r) => {
                         self.end(&hash, r, true);
@@ -325,7 +369,10 @@ impl Engine {
         let disk = |e: io::Error| format!("Flick can't write the torrent cache: {e}");
         std::fs::create_dir_all(&dir).map_err(disk)?;
         rules::touch(&dir).map_err(disk)?;
-        let mut keep: Vec<String> = self.table().slots.keys().cloned().collect();
+        let mut keep: Vec<String> = {
+            let t = self.table();
+            t.slots.keys().chain(&t.closing).cloned().collect()
+        };
         keep.push(hash.to_string());
         rules::trim(&self.cfg.cache, self.cfg.cap, &keep).map_err(disk)?;
         let opts = self.session_options(iface);
@@ -360,16 +407,22 @@ impl Engine {
                         url,
                     }),
                     Err(e) => {
-                        stop(&session).await;
+                        self.shut(hash, session).await;
                         Err(e)
                     }
                 }
             }
             Err(e) => {
-                stop(&session).await;
+                self.shut(hash, session).await;
                 Err(e)
             }
         }
+    }
+
+    /// Closes the session of a start that won't play, marked as closing until it has.
+    async fn shut(&self, hash: &str, session: Arc<Session>) {
+        self.table().closing.insert(hash.to_string());
+        closed(self.cfg.stop_wait, vec![self.close(hash, session)]).await;
     }
 
     /// Metadata, the checks, then only the chosen file, until its first data arrives.
@@ -444,18 +497,32 @@ impl Engine {
     fn end(&self, hash: &str, r: Running, wait: bool) -> bool {
         self.server.remove(&r.key);
         let id = hold_id(hash, r.token);
-        let session = r.session;
         if wait {
             self.gate.release(&id);
-            self.rt.block_on(stop(&session))
+            let closing = self.close(hash, r.session);
+            self.rt.block_on(closed(self.cfg.stop_wait, vec![closing]))
         } else {
+            self.close(hash, r.session);
             let gate = Arc::clone(&self.gate);
-            self.rt.spawn(async move {
-                gate.release(&id);
-                stop(&session).await;
-            });
+            self.rt.spawn(async move { gate.release(&id) });
             true
         }
+    }
+
+    /// Closes the session of `hash`, which left the table marked as closing. The mark goes once
+    /// the session has closed, however long that takes, so no new session opens its cache folder
+    /// before then.
+    fn close(&self, hash: &str, session: Arc<Session>) -> JoinHandle<()> {
+        let table = Arc::clone(&self.table);
+        let hash = hash.to_string();
+        #[cfg(test)]
+        let stall = *self.stall.lock().unwrap();
+        self.rt.spawn(async move {
+            #[cfg(test)]
+            tokio::time::sleep(stall).await;
+            session.stop().await;
+            lock(&table).closing.remove(&hash);
+        })
     }
 
     /// Playback of `hash` stopped. A running torrent's session closes before this returns, so it
@@ -468,9 +535,9 @@ impl Engine {
                 s.end(STOPPED);
                 return;
             }
-            t.slots.remove(&hash)
+            t.retire(&hash)
         };
-        if let Some(Slot::Running(r)) = running {
+        if let Some(r) = running {
             self.end(&hash, r, true);
         }
     }
@@ -486,15 +553,13 @@ impl Engine {
             return;
         }
         // At quit the sessions close together, under one bounded wait.
-        let mut closing = tokio::task::JoinSet::new();
+        let mut closing = vec![];
         for (hash, r) in running {
             self.server.remove(&r.key);
             self.gate.release(&hold_id(&hash, r.token));
-            let session = r.session;
-            closing.spawn_on(async move { stop(&session).await }, self.rt.handle());
+            closing.push(self.close(&hash, r.session));
         }
-        self.rt
-            .block_on(async { while closing.join_next().await.is_some() {} });
+        self.rt.block_on(closed(self.cfg.stop_wait, closing));
     }
 
     /// Ends the starts on a tunnel `gone` matches (every start with `all`) and takes out the
@@ -512,7 +577,7 @@ impl Engine {
                     }
                 }
                 Some(Slot::Running(r)) if gone(&r.iface) => {
-                    if let Some(Slot::Running(r)) = t.slots.remove(&hash) {
+                    if let Some(r) = t.retire(&hash) {
                         out.push((hash, r));
                     }
                 }
@@ -540,13 +605,20 @@ impl Engine {
     }
 }
 
-/// Whether the session closed within STOP_WAIT.
-async fn stop(session: &Arc<Session>) -> bool {
-    let closed = timeout(STOP_WAIT, session.stop()).await.is_ok();
-    if !closed {
-        eprintln!("torrent: a session took over {:?} to stop", STOP_WAIT);
+/// Whether every session in `closing` closed within `wait`. Past it they go on closing.
+async fn closed(wait: Duration, closing: Vec<JoinHandle<()>>) -> bool {
+    let all = async {
+        for c in closing {
+            if let Err(e) = c.await {
+                eprintln!("torrent: closing a session failed: {e}");
+            }
+        }
+    };
+    let done = timeout(wait, all).await.is_ok();
+    if !done {
+        eprintln!("torrent: a session took over {wait:?} to stop");
     }
-    closed
+    done
 }
 
 /// The chosen file of a running torrent, read from the playhead (librqbit fetches the pieces
@@ -619,6 +691,7 @@ fn engine(app: &tauri::AppHandle) -> Result<Arc<Engine>, String> {
         wait: Duration::from_secs(45),
         dht: true,
         peers: vec![],
+        stop_wait: STOP_WAIT,
     };
     let gate: Arc<dyn Gate> = Arc::clone(watch) as Arc<dyn Gate>;
     let started = Arc::new(Engine::new(cfg, gate).map_err(|e| e.to_string())?);

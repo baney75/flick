@@ -2,7 +2,7 @@
 
 use super::rules;
 use super::rules::tests::{tmp, want, HASH, PIECE};
-use super::{Config, Engine, Gate};
+use super::{Config, Engine, Gate, STOPPING, STOP_WAIT};
 use crate::vpn::{Fail, GateState};
 use librqbit::{CreateTorrentOptions, ListenerMode, ListenerOptions, Session, SessionOptions};
 use std::io::{Read, Write};
@@ -112,6 +112,24 @@ impl Seeder {
             .block_on(self.session.create_and_serve_torrent(&path, opts));
         made.unwrap().0.info_hash().as_string()
     }
+
+    /// Seeds a folder of `files` as one torrent and returns its info hash.
+    fn seed_dir(&self, name: &str, files: &[(&str, Vec<u8>)]) -> String {
+        let sub = self.dir.join(name);
+        std::fs::create_dir_all(&sub).unwrap();
+        for (file, body) in files {
+            std::fs::write(sub.join(file), body).unwrap();
+        }
+        let opts = CreateTorrentOptions {
+            name: None,
+            trackers: vec![],
+            piece_length: Some(PIECE as u32),
+        };
+        let made = self
+            .rt
+            .block_on(self.session.create_and_serve_torrent(&sub, opts));
+        made.unwrap().0.info_hash().as_string()
+    }
 }
 
 impl Drop for Seeder {
@@ -128,12 +146,23 @@ fn body(len: usize, salt: u8) -> Vec<u8> {
 }
 
 fn engine(tag: &str, gate: &Arc<Fake>, peers: Vec<SocketAddr>, wait: Duration) -> Arc<Engine> {
+    engine_with(tag, gate, peers, wait, STOP_WAIT)
+}
+
+fn engine_with(
+    tag: &str,
+    gate: &Arc<Fake>,
+    peers: Vec<SocketAddr>,
+    wait: Duration,
+    stop_wait: Duration,
+) -> Arc<Engine> {
     let cfg = Config {
         cache: tmp(&format!("cache-{tag}")),
         cap: rules::CACHE_CAP,
         wait,
         dht: false,
         peers,
+        stop_wait,
     };
     let e = Arc::new(Engine::new(cfg, Arc::clone(gate) as Arc<dyn Gate>).unwrap());
     let _ = gate.engine.set(Arc::downgrade(&e));
@@ -268,7 +297,8 @@ fn a_gate_failure_stops_every_torrent_and_a_new_tunnel_stops_the_old_ones() {
         "on_gate never waits"
     );
     assert!(e.running().is_empty());
-    wait_until(|| gate.held().is_empty());
+    // Their sessions close in the background; a new play waits for that.
+    wait_until(|| gate.held().is_empty() && e.table().closing.is_empty());
     assert_eq!(get(&url, None, "").0, 404);
 
     e.play(&want(&a, &[])).unwrap();
@@ -291,6 +321,10 @@ fn a_vpn_drop_while_a_torrent_starts_stops_it() {
     *gate.on_hold.lock().unwrap() = Some(Box::new(|e| e.on_gate(&failed())));
     assert_eq!(e.play(&want(&hash, &[])), Err(rules::DROPPED.into()));
     assert!(e.running().is_empty());
+    assert!(
+        !e.cfg.cache.join(&hash).exists(),
+        "a start ended inside its hold opens no session"
+    );
     wait_until(|| gate.held().is_empty());
 
     // A new tunnel the engine hears before the start knows its own: the start still stops.
@@ -397,12 +431,66 @@ fn at_most_three_torrents_play_at_once() {
         3,
         "the refused torrent never asked the gate"
     );
-    // Quitting closes them all together.
+    // Quitting closes them all together: three 2 second closes, one after another, take 6.
+    *e.stall.lock().unwrap() = Duration::from_secs(2);
     let started = std::time::Instant::now();
     e.stop_all(true);
-    assert!(started.elapsed() < Duration::from_secs(12));
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_secs(2) && took < Duration::from_secs(4),
+        "{took:?}"
+    );
     assert!(e.running().is_empty());
     assert!(gate.held().is_empty());
+}
+
+#[test]
+fn a_session_slow_to_close_keeps_its_torrent_refused_until_it_has() {
+    let seeder = Seeder::new("slow");
+    let files = [("e1.mp4", body(200_000, 21)), ("e2.mp4", body(200_000, 22))];
+    let hash = seeder.seed_dir("show", &files);
+    let gate = Fake::passing();
+    let quick = Duration::from_millis(300);
+    let e = engine_with(
+        "slow",
+        &gate,
+        vec![seeder.addr()],
+        Duration::from_secs(30),
+        quick,
+    );
+    let file = |i| {
+        let mut w = want(&hash, &[]);
+        w.file_idx = Some(i);
+        w
+    };
+    let closing = || !e.table().closing.is_empty();
+    e.play(&file(0)).unwrap();
+    // Each session now takes 2 seconds to close, past the 300 ms a stop waits for it.
+    *e.stall.lock().unwrap() = Duration::from_secs(2);
+    let stopping = Err(STOPPING.to_string());
+    assert_eq!(
+        e.play(&file(1)),
+        stopping,
+        "another file waits for the old session"
+    );
+    assert!(e.running().is_empty() && e.starting().is_empty());
+    assert!(gate.held().is_empty());
+    assert_eq!(
+        e.play(&file(1)),
+        stopping,
+        "Play again while it still closes"
+    );
+    wait_until(|| !closing());
+    let url = e.play(&file(1)).unwrap();
+    assert!(url.ends_with(&format!("/{hash}/1")), "{url}");
+
+    // A stop that outlasts its wait leaves the torrent closing the same way.
+    e.stop(&hash);
+    assert!(closing());
+    assert_eq!(e.play(&file(1)), stopping);
+    wait_until(|| !closing());
+    *e.stall.lock().unwrap() = Duration::ZERO;
+    assert!(e.play(&file(1)).is_ok());
 }
 
 #[test]
