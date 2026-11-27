@@ -108,6 +108,9 @@ async function writeSeed({ items, progress, folders, servers, thumbs, plugins, i
     tx.onabort = () => no(new Error(`${store} aborted: ${tx.error?.name} ${tx.error?.message}`))
   })
   await put('items', items.map((i) => [i.id, i]))
+  // As the app's own writes do (src/lib/db.ts), so a copy of the items saved by the first, empty load is stale.
+  const rev = await new Promise((ok, no) => { const r = db.transaction('kv').objectStore('kv').get('items.rev'); r.onsuccess = () => ok(r.result ?? 0); r.onerror = () => no(r.error) })
+  await put('kv', [['items.rev', rev + 1]])
   await put('progress', Object.entries(progress))
   await put('kv', [['folders', folders], ['servers', servers]])
   await put('plugins', plugins.map((p) => [p.id, p]))
@@ -185,6 +188,23 @@ try {
     await first.goto(`${BASE}/`)
     await first.getByText('Drop anything here to play it.').waitFor()
     const n = await first.evaluate(writeSeed, { ...seed, plugins, images: thumbImages })
+    // One open after the seed, as a person's library was opened before: the app saves its copy of the
+    // items then, so the runs below time a normal start, not the first one after an update.
+    await first.reload()
+    const copied = () => first.evaluate(() => new Promise((ok) => {
+      const r = indexedDB.open('flick')
+      r.onerror = () => ok(false)
+      r.onsuccess = () => {
+        const db = r.result, kv = db.transaction('kv').objectStore('kv'), rev = kv.get('items.rev'), copy = kv.get('items.copy')
+        // The first, empty load saved a copy too: only one at the seed's rev counts.
+        copy.onsuccess = () => { db.close(); ok(!!copy.result && copy.result.rev === (rev.result ?? 0)) }
+        copy.onerror = () => { db.close(); ok(false) }
+      }
+    }))
+    for (const end = Date.now() + 30000; !(await copied());) {
+      if (Date.now() > end) { notes.push(`${size}: the app saved no copy of the seeded items within 30 s, so each run starts as the first after an update`); break }
+      await new Promise((r) => setTimeout(r, 250))
+    }
     await first.close()
     console.log(`${size}: seeded ${n} items, ${seed.thumbs.length} thumbnails, a plugin with ${seed.library.length} titles, and one with a 1,000 row shelf`)
 
@@ -241,6 +261,7 @@ try {
         add(`${P}nav.${from}-${to}`, r.painted)
         add(`${P}nav.${from}-${to}.settled`, r.settled)
       }
+      add(`${P}start.items`, await page.waitForFunction(() => window.__perf.boot.marks.items, null, { timeout: 30000 }).then((h) => h.jsonValue(), () => null))
 
       // Library chips, then search, then the fling.
       await go(page, '/library', sel.library)
