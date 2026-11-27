@@ -120,9 +120,9 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         if (url.startsWith('flick-tool:')) {
           setStatus('Starting the stream')
           toolUrl = url
+          // A close while this opens stops it in the app: an open that began before a close starts nothing.
           const got = await openToolStream(url)
-          // Closed while it started: the stream began after the close's stop, so stop it again.
-          if (cancelled) { stopToolStream(url); return }
+          if (cancelled) return
           tool.current = { url, retry: oneRetry(openToolStream) }
           setLive(got.live)
           url = got.url
@@ -265,7 +265,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     const again = tool.current?.retry(tool.current.url, v.currentTime || req.startAt || 0)
     if (again) {
       setStatus('Reconnecting')
-      again.then(({ play, at }) => { req.startAt = at; setLive(play.live); return attach(v, play.url) })
+      // Closed meanwhile: the close's stop already ended this open in the app.
+      again.then(({ play, at }) => { if (video.current !== v) return; req.startAt = at; setLive(play.live); return attach(v, play.url) })
         .catch((e) => { setStatus(null); setError((e as Error).message || msg) })
       return
     }

@@ -59,6 +59,27 @@ struct Job {
     children: Vec<Child>,
     /// The folder the stream writes to, so the player can stop its own stream and no other.
     dir: Option<PathBuf>,
+    /// Counts opens and closes, so a close can tell which opens began before it.
+    clock: u64,
+    /// When the player last closed each folder's stream, on `clock`.
+    closed: HashMap<PathBuf, u64>,
+}
+
+impl Job {
+    /// Whether the player closed `dir`'s stream after an open that began at `began`.
+    fn closed_since(&self, dir: &Path, began: u64) -> bool {
+        self.closed.get(dir).is_some_and(|&at| at > began)
+    }
+}
+
+/// An open that the player closed before it started its processes.
+const CLOSED: &str = "The player closed this stream.";
+
+/// An open of a `flick-tool:` stream begins: its mark on the job's clock.
+fn begin(state: &PluginTools) -> u64 {
+    let mut job = state.job.lock().unwrap();
+    job.clock += 1;
+    job.clock
 }
 
 /// The release file for this computer, and the name Flick saves it under.
@@ -586,11 +607,14 @@ pub fn stop_job(state: &PluginTools) {
 }
 
 /// The player closed or replaced the stream that writes to `dir`: stop its processes, end a start
-/// still waiting for its first segment, and remove the folder. A stream in another folder keeps
-/// running, so a late stop never ends a newer video.
+/// still waiting for its first segment, and remove the folder. An open of `dir` that began before
+/// this starts nothing, and a stream in another folder keeps running.
 fn stop_stream(state: &PluginTools, dir: &Path) {
     let children = {
         let mut job = state.job.lock().unwrap();
+        job.clock += 1;
+        let at = job.clock;
+        job.closed.insert(dir.to_path_buf(), at);
         if job.dir.as_deref() != Some(dir) {
             Vec::new()
         } else {
@@ -616,17 +640,23 @@ fn stop_job_if(state: &PluginTools, id: u64) {
     kill_all(children);
 }
 
-/// Makes `children` the playing job, writing to `dir`, stops any older one, and returns the new
-/// job's id.
-fn start_job(state: &PluginTools, children: Vec<Child>, dir: Option<PathBuf>) -> u64 {
-    let old = {
+/// Makes `children` the playing job, stops any older one, and returns the new job's id. With
+/// `open`, the folder it writes to and when its open began: when the player closed that folder's
+/// stream since, `children` stop instead and the playing job stays.
+fn start_job(state: &PluginTools, children: Vec<Child>, open: Option<(&Path, u64)>) -> Option<u64> {
+    let (old, id) = {
         let mut job = state.job.lock().unwrap();
+        if open.is_some_and(|(dir, began)| job.closed_since(dir, began)) {
+            drop(job);
+            kill_all(children);
+            return None;
+        }
         job.id += 1;
-        job.dir = dir;
-        std::mem::replace(&mut job.children, children)
+        job.dir = open.map(|(dir, _)| dir.to_path_buf());
+        (std::mem::replace(&mut job.children, children), job.id)
     };
     kill_all(old);
-    state.job.lock().unwrap().id
+    Some(id)
 }
 
 /// Waits for the first segment of stream `id`. Gives up when its processes end with nothing
@@ -713,14 +743,19 @@ fn last_line(p: &Path) -> String {
 /// Serves whatever `source` writes to stdout as a local HLS event playlist in `dir`, so a long video
 /// plays while it streams: ffmpeg copies the tracks into segments, re-encoding nothing. The source's
 /// stderr goes to `dir/<log>`. Returns the playlist once it lists a segment. The yt-dlp fallback uses it,
-/// and so may any other source that writes a stream to stdout.
+/// and so may any other source that writes a stream to stdout. `began` is when its open began
+/// (`begin`): an open the player closed since then touches nothing, not even a newer stream.
 pub(crate) fn local_hls(
     mut source: Command,
     log: &str,
     ffmpeg: &Path,
     dir: &Path,
     state: &PluginTools,
+    began: u64,
 ) -> Result<PathBuf, String> {
+    if state.job.lock().unwrap().closed_since(dir, began) {
+        return Err(CLOSED.into());
+    }
     stop_job(state);
     let playlist = dir.join("index.m3u8");
     if std::fs::read_to_string(&playlist).is_ok_and(|t| t.contains("#EXT-X-ENDLIST")) {
@@ -775,7 +810,9 @@ pub(crate) fn local_hls(
             return Err(e.to_string());
         }
     };
-    let id = start_job(state, vec![yt, ff], Some(dir.to_path_buf()));
+    let Some(id) = start_job(state, vec![yt, ff], Some((dir, began))) else {
+        return Err(CLOSED.into());
+    };
     wait_for_segment(state, id, &playlist, dir, log, Duration::from_secs(45))
 }
 
@@ -881,6 +918,8 @@ fn open(
     url: &str,
     fresh: bool,
 ) -> Result<Value, String> {
+    // Before the lookups, which can take minutes: a close during them ends this open.
+    let began = begin(state);
     match choose(state, url, fresh, &|p| find_master(env, p))? {
         Play::Master(m) => {
             // Nothing local plays now: stop an older fallback stream.
@@ -893,7 +932,7 @@ fn open(
             let bin = with_ytdlp(env, Duration::from_secs(300), |b| Ok(b.to_path_buf()))?;
             let mut yt = Command::new(bin);
             yt.args(fallback_args(&page));
-            let p = local_hls(yt, "yt-dlp.log", &ffmpeg, &cache.join(token), state)?;
+            let p = local_hls(yt, "yt-dlp.log", &ffmpeg, &cache.join(token), state, began)?;
             Ok(json!({ "kind": "file", "path": p }))
         }
     }
@@ -1339,8 +1378,8 @@ mod tests {
                     .iter_mut()
                     .all(|c| matches!(c.try_wait(), Ok(None)))
         };
-        let a = start_job(&st, vec![sleeper()], None);
-        let b = start_job(&st, vec![sleeper(), sleeper()], None);
+        let a = start_job(&st, vec![sleeper()], None).unwrap();
+        let b = start_job(&st, vec![sleeper(), sleeper()], None).unwrap();
         assert_ne!(a, b);
         let err = wait_for_segment(
             &st,
@@ -1385,7 +1424,7 @@ mod tests {
         )
         .spawn()
         .unwrap();
-        start_job(&st, vec![loader], None);
+        start_job(&st, vec![loader], None).unwrap();
         let t = Instant::now();
         let pid = loop {
             if let Some(p) = std::fs::read_to_string(&pidfile)
@@ -1426,7 +1465,8 @@ mod tests {
     }
 
     /// Audit F1: closing the player stops the fallback stream's yt-dlp and ffmpeg and removes its
-    /// folder, and a stop for another folder leaves a playing stream alone.
+    /// folder; an open that began before the close starts nothing, however late it lands; and a
+    /// stop for another folder leaves a playing stream alone.
     #[cfg(unix)]
     #[test]
     fn closing_a_fallback_stream_stops_its_processes_and_removes_its_folder() {
@@ -1467,10 +1507,35 @@ mod tests {
         };
         let st = PluginTools::default();
         let dir = root.join("cache").join("tok");
-        let playlist = local_hls(Command::new(&ytdlp), "yt-dlp.log", &ffmpeg, &dir, &st).unwrap();
+        let open = |began| {
+            local_hls(
+                Command::new(&ytdlp),
+                "yt-dlp.log",
+                &ffmpeg,
+                &dir,
+                &st,
+                began,
+            )
+        };
+        // A player closed while its open was still finding the video: that open starts nothing.
+        let late = begin(&st);
+        stop_stream(&st, &dir);
+        assert_eq!(open(late), Err(CLOSED.to_string()));
+        assert!(
+            !root.join("yt-dlp.pid").exists(),
+            "a closed open started yt-dlp"
+        );
+        // The next player's open of the same stream plays.
+        let playlist = open(begin(&st)).unwrap();
         assert!(playlist.starts_with(&dir));
         let pids = [pid(&ytdlp), pid(&ffmpeg)];
         assert!(pids.iter().all(|&p| alive(p)), "the stream never started");
+        // The closed open landing now leaves the newer player's stream alone.
+        assert_eq!(open(late), Err(CLOSED.to_string()));
+        assert!(
+            pids.iter().all(|&p| alive(p)) && playlist.is_file(),
+            "a closed open ended the newer stream"
+        );
         // Another stream's stop is not this one's.
         stop_stream(&st, &root.join("cache").join("other"));
         assert!(
@@ -1509,7 +1574,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let sleeper = Command::new("sleep").arg("30").spawn().unwrap();
-        let id = start_job(&st, vec![sleeper], Some(dir.clone()));
+        let id = start_job(&st, vec![sleeper], Some((&dir, begin(&st)))).unwrap();
         let st = Arc::new(st);
         let (st2, dir2) = (st.clone(), dir.clone());
         let waiting = std::thread::spawn(move || {
