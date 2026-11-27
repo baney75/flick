@@ -64,3 +64,25 @@ export function compare(base, cur, budgets) {
   }
   return rows.join('\n')
 }
+
+/** The least a median must worsen, by unit, to count as a regression: below it is run to run noise. */
+export const FLOOR = { ms: 30, '%': 10, score: 0.03 }
+
+/**
+ * Budgeted metrics clearly worse than a base run on the same machine: the median above the base's
+ * median by half again and by at least FLOOR. For a machine too slow for the budgets themselves (a CI
+ * runner), where only a change between two builds measured side by side is reliable. Medians, not
+ * p95: of five runs the p95 is the slowest one, and a single stall on a shared runner sets it.
+ */
+export function regressions(base, cur, budgets) {
+  const out = []
+  const budgeted = (m) => budgetFor(m, budgets) != null
+  for (const [m, a] of Object.entries(base)) {
+    if (!budgeted(m) || Number.isNaN(a.median)) continue
+    const v = cur[m]
+    if (!v || Number.isNaN(v.median)) { out.push({ metric: m, median: null, base: a.median, allowed: null, why: 'not measured' }); continue }
+    const allowed = a.median + Math.max(FLOOR[v.unit] ?? FLOOR.ms, a.median * 0.5)
+    if (v.median > allowed) out.push({ metric: m, median: v.median, base: a.median, allowed, why: 'regressed' })
+  }
+  return out
+}
