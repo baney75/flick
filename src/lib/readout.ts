@@ -3,6 +3,7 @@
 // a link from a service plays in the web view, which reports how much of the file it holds as
 // buffered time, so the bytes are the growth of that time at the file's average bytes per second.
 
+import { signal } from '@preact/signals'
 import { formatMbps, readoutLabel } from './speed'
 import type { Ranked } from './pick'
 
@@ -47,4 +48,15 @@ export function viaLine(v: Via, mbps: number | null, vpn: boolean | null): strin
   // Until the gate answers, the line makes no claim about the VPN.
   if (vpn === null) return mbps === null ? `via ${v.service}` : `via ${v.service} · ${formatMbps(mbps)}`
   return `via ${v.service} · ${mbps === null ? (vpn ? 'via VPN' : 'no VPN') : readoutLabel(mbps, vpn)}`
+}
+
+/** What the built-in engine reports for the torrent playing now: its speed and live peers. */
+export interface EngineNow { mbps: number; peers: number }
+
+/** Set by the engine's poll while it plays a torrent (lib/torrent), null otherwise. */
+export const engineNow = signal<EngineNow | null>(null)
+
+/** "12 Mbps via VPN · 8 peers": the engine plays only through the VPN gate. */
+export function engineLine(e: EngineNow): string {
+  return `${readoutLabel(e.mbps, true)} · ${e.peers} ${e.peers === 1 ? 'peer' : 'peers'}`
 }

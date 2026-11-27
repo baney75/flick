@@ -198,6 +198,10 @@ fn a_seeded_torrent_plays_from_the_local_url_with_ranges_and_stops() {
     assert!(url.starts_with("http://127.0.0.1:"), "{url}");
     assert!(url.ends_with(&format!("/{hash}/0")), "{url}");
     assert_eq!(e.running(), std::slice::from_ref(&hash));
+    let stats = e
+        .stats(&hash.to_ascii_uppercase())
+        .expect("a running torrent has stats");
+    assert!(stats.peers <= 1, "{stats:?}");
     assert_eq!(gate.held(), [format!("torrent:{hash}:1")]);
     assert_eq!(
         e.play(&want(&hash, &[])).unwrap(),
@@ -232,6 +236,7 @@ fn a_seeded_torrent_plays_from_the_local_url_with_ranges_and_stops() {
     e.stop(&hash.to_ascii_uppercase());
     assert!(started.elapsed() < Duration::from_secs(30));
     assert!(e.running().is_empty());
+    assert!(e.stats(&hash).is_none(), "no stats once stopped");
     assert!(gate.held().is_empty());
     assert_eq!(get(&url, None, "").0, 404, "stopped");
     assert!(e.cfg.cache.join(&hash).is_dir(), "pieces stay in the cache");

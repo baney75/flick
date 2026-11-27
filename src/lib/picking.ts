@@ -137,15 +137,17 @@ export function shutFor(r: Ranked | undefined, vpnForDebrid: boolean): string | 
 }
 
 export const WINDOWS_NO_ENGINE = 'Torrents play on Windows through a debrid service for now'
-export const NO_ENGINE_YET = 'Torrents play through a debrid service for now'
-/** SPEC-torrent's built-in engine sets this once it plays on macOS and Linux. */
-const ENGINE = false
 
-/** Why this platform cannot play a torrent from peers; undefined when it can. */
+/** Why this platform cannot play a torrent from peers; undefined when it can (the desktop app on macOS and Linux). */
 export function noEngineFor(p: { desktop: boolean; mobile: boolean; windows: boolean }): string | undefined {
   if (!p.desktop || p.mobile) return DESKTOP_ONLY
   if (p.windows) return WINDOWS_NO_ENGINE
-  return ENGINE ? undefined : NO_ENGINE_YET
+  return undefined
+}
+
+/** A row's "Check again" (SPEC-torrent rule 28): the gate reruns its exit check now. */
+export function checkAgain() {
+  invoke<Gate>('vpn_gate', { force: true }).then((g) => { gate.value = g }, (e) => { gate.value = { ok: false, message: String(e) } })
 }
 
 /** Settings > Streaming services' "Require a VPN for debrid services too" (SPEC-debrid rule 10), off by default. */

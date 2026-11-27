@@ -505,7 +505,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         <div class="titles">
           <div class="t1">{req.title}</div>
           {req.subtitle && <div class="t2">{req.subtitle}</div>}
-          {req.via && <Readout video={video} via={req.via} url={req.url} />}
+          <Readout video={video} via={req.via} url={req.url} />
         </div>
         {file && hasOpfs && req.src?.t === 'session' && (
           <button class="btn ghost" onClick={store} disabled={storing !== null}>

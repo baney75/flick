@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
 import { signal } from '@preact/signals'
 import type { ComponentChildren } from 'preact'
-import { go, play, notify, progress, nowPlaying } from '../lib/store'
+import { go, play, notify, progress, nowPlaying, toast } from '../lib/store'
 import { Card, Row } from '../components/Card'
 import { Icon } from '../components/icons'
 import { isDesktop, isMobileApp } from '../lib/platform'
@@ -20,7 +20,8 @@ import { streamCandidates } from '../lib/candidates'
 import { cancelFetch, canStart, serviceTag, wantsGate } from '../lib/debrid-play'
 import { DebridWait, playTorrent, useCached } from './Debrid'
 import { viaOf } from '../lib/readout'
-import { ctxNow, current, debridNow, deviceFor, holdGate, NO_ENGINE_YET, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
+import { checkAgain, ctxNow, current, debridNow, deviceFor, holdGate, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
+import { dropTorrent, playTorrent as fromEngine, playingTorrent, STARTING } from '../lib/torrent'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
 import { langCode } from '../lib/release'
@@ -405,6 +406,7 @@ export function PluginTitle({ p, type, id, videoId }: { p: string; type: string;
   )
 }
 
+const NOTHING_YET = "This stream doesn't play in Flick yet."
 const dlKind = (s: Stream) => downloadable(s, { desktop: isDesktop, mobile: isMobileApp })
 
 const epLabel = (v?: Video) => (v && v.season != null && v.episode != null ? `S${v.season} E${v.episode}` : '')
@@ -460,8 +462,9 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   const streamOf = (r: Ranked) => shown[Number(r.c.id.slice(r.c.id.lastIndexOf('#') + 1))]
   const rowOf = new Map(rows.map((r) => [streamOf(r), r]))
   const shutBy = (r?: Ranked) => shutFor(r, ctx.vpnForDebrid)
-  // Play starts a stream with a url, or a torrent a debrid service takes; the built-in engine is P6's.
-  const best = rows.find((r) => !r.blocked && !shutBy(r) && canStart(r, streamOf(r))) ?? null
+  // Play starts a stream with a url, a torrent a debrid service takes, or one the built-in engine plays from peers.
+  const playable = (r: Ranked) => canStart(r, streamOf(r)) || (r.c.via === 'p2p' && !!streamOf(r).torrent)
+  const best = rows.find((r) => !r.blocked && !shutBy(r) && playable(r)) ?? null
   const top = best ? streamOf(best) : null
 
   const start = async (s: Stream, startAt?: number) => {
@@ -472,13 +475,22 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     const r = rowOf.get(s)
     const shut = shutBy(r)
     if (shut) { notify(shut); return }
-    // A torrent has no url to open: a debrid service gives it one, else it waits for the engine.
     let url = s.url
-    if (!url && r && canStart(r, s)) {
+    // A torrent from peers gets its url from the built-in engine, which holds the VPN gate itself.
+    const hash = !url && s.torrent && r?.c.via === 'p2p' ? s.torrent.infoHash : undefined
+    if (hash && s.torrent) {
+      notify(STARTING, 60_000)
+      const got = await fromEngine(s.torrent).then((u) => ({ u }), (e) => ({ e: String(e) }))
+      if (current(t) && toast.value?.text === STARTING) toast.value = null
+      if ('e' in got) { if (current(t)) notify(got.e, 6000); return }
+      if (!current(t)) { dropTorrent(hash); return }
+      url = got.u
+    } else if (!url && r && canStart(r, s)) {
+      // A torrent a debrid service takes gets its url from the service.
       try { url = (await playTorrent(key, s, r)) ?? undefined } catch (e) { if (current(t)) notify((e as Error).message); return }
       if (!url || !current(t)) return
     }
-    if (!url) { notify(r?.blocked ?? NO_ENGINE_YET); return }
+    if (!url) { notify(r?.blocked ?? NOTHING_YET); return }
     if (s.external) { window.open(url, '_blank', 'noopener'); return }
     if (s.kind === 'book') {
       go(`/read-url?u=${encodeURIComponent(url)}&t=${encodeURIComponent(meta.name)}&r=${encodeURIComponent(JSON.stringify(ref))}`)
@@ -494,20 +506,26 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     // The hold comes last, with nothing awaited between it and play, so a drop cannot slip between.
     if (gated(r)) {
       const g = await holdGate(key, t)
-      if (!g.ok) { if (current(t)) notify(g.message || 'Turn on your VPN'); return }
+      if (!g.ok) {
+        if (hash) dropTorrent(hash)
+        if (current(t)) notify(g.message || 'Turn on your VPN')
+        return
+      }
     } else {
       // A newer tap plays instead of this one.
       if (!current(t)) return
       releaseGate()
     }
     const via = r && viaOf(r, serviceName)
+    if (hash) playingTorrent(key, hash)
     play({
       key,
       title: meta.name,
       subtitle: label,
       kind: s.kind === 'audio' ? 'audio' : 'video',
       url,
-      // A service's link is a plain https file: an MKV takes the desktop's convert path (SPEC-debrid rule 5).
+      // A torrent's file (the engine's, or a service's plain https link) the web view can't decode,
+      // such as MKV, takes the desktop's convert path (SPEC-torrent rule 24, SPEC-debrid rule 5).
       ...(s.torrent ? { src: { t: 'url' as const, url } } : {}),
       ...(via ? { via } : {}),
       poster: video?.thumbnail ?? meta.background ?? meta.poster,
@@ -548,6 +566,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
             </div>
           <Icon name={s.external ? 'external' : 'play'} size={18} class="stream-go" />
         </button>
+      {why && gated(rowOf.get(s)) && !ctx.gate && !ctx.noGate && <button class="btn ghost sm stream-dl" onClick={checkAgain}>Check again</button>}
       {canSave && <button class="btn ghost sm stream-dl" onClick={() => save(s)} aria-label={`Download ${s.title ?? meta.name}`}><Icon name="download" size={16} /> Download</button>}
       </div>
     )
@@ -563,7 +582,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
         {dl?.state === 'done'
           ? <button class="btn primary play-best" onClick={() => playSaved(dl, { onSave })}><Icon name="play" size={16} /> {resumeAt ? `Resume downloaded ${formatTime(resumeAt)}` : 'Play downloaded'}</button>
           : top ? <><button class="btn primary play-best" onClick={() => start(top)}><Icon name="play" size={16} /> {resumeAt ? `Resume ${formatTime(resumeAt)}` : 'Play'}</button><span class="pick-line small dim">{pickLine(best!, serviceName)}</span></>
-            : rows[0] && <p class="pick-why small">{shutBy(rows[0]) ?? rows[0].blocked ?? NO_ENGINE_YET}</p>}
+            : rows[0] && <p class="pick-why small">{shutBy(rows[0]) ?? rows[0].blocked ?? NOTHING_YET}</p>}
         {(dl?.state === 'done' || top) && resumeAt > 0 && <button class="btn ghost start-over" onClick={() => (dl?.state === 'done' ? playSaved(dl, { onSave, startAt: 0 }) : start(top!, 0))}>Start over</button>}
       </div>
       <DebridWait streamKey={key} />
