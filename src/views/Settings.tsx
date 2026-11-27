@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
-import { settings, setSettings, notify, items, go, route } from '../lib/store'
+import { settings, setSettings, notify, items, go } from '../lib/store'
 import { isDesktop, invoke } from '../lib/platform'
 import { formatBytes } from '../lib/parse'
 import { SyncPanel } from './Sync'
@@ -8,12 +8,11 @@ import { Icon } from '../components/icons'
 import { downloads, removeDownload } from '../lib/downloads'
 import { playSaved, badgeFor } from '../lib/offline'
 import { currentSetup, encodeSetup, validateSetup, SETUP_BASE } from '../lib/setup'
-import { PluginsPanel, ThemePicker } from './Plugins'
+import { ThemePicker } from './Plugins'
 import { UpdatesPanel } from './Updates'
-import { ServersPanel } from './Servers'
+import { PluginsHub } from './Hub'
 import { VpnPanel } from './Vpn'
 import { StreamPrefs } from './StreamPrefs'
-import { ServicesPanel } from './Services'
 
 async function shareSetup() {
   const link = SETUP_BASE + encodeSetup(await currentSetup())
@@ -45,9 +44,6 @@ export function Settings() {
     navigator.storage?.estimate?.().then(setUsage).catch(() => {})
     if (isDesktop) invoke<{ ffmpeg: string | null }>('ffmpeg_status').then((r) => setFf(r.ffmpeg)).catch(() => setFf(null))
   }, [])
-  // `#/servers` and `#/settings/servers` open Settings at the Servers panel.
-  const toServers = /^\/(servers|settings\/servers)\b/.test(route.value)
-  useEffect(() => { if (toServers) document.getElementById('servers')?.scrollIntoView({ block: 'start' }) }, [toServers])
 
   const makeDefault = async () => {
     try {
@@ -62,7 +58,7 @@ export function Settings() {
     <div class="page narrow">
       <header class="page-head"><h1>Settings</h1></header>
 
-      <ServersPanel />
+      <PluginsHub />
 
       <section class="panel">
         <h3>Playback</h3>
@@ -95,10 +91,6 @@ export function Settings() {
         </label>
         <ThemePicker />
       </section>
-
-      <ServicesPanel />
-
-      <PluginsPanel />
 
       <UpdatesPanel />
 

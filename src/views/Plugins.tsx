@@ -1,5 +1,5 @@
-// Settings > Plugins: installed plugins and themes, the review sheet before any install, the official
-// list, settings and action forms, each plugin's log, and a prompt for making your own.
+// Plugin pieces the hub and plugin pages share: the review sheet before any install, the theme
+// picker, settings and action forms, and the prompt for making your own.
 
 import { useEffect, useState } from 'preact/hooks'
 import { notify, settings, setSettings } from '../lib/store'
@@ -12,7 +12,7 @@ import { themes } from '../lib/plugins/use'
 import type { ActionDef, Field, PluginManifest, ThemeManifest } from '../lib/plugins/validate'
 
 const DOCS = 'https://github.com/baney75/flick/blob/main/docs/PLUGINS.md'
-const PROMPT = `Write a Flick plugin for: <the site, API or service you want in Flick>.
+export const PROMPT = `Write a Flick plugin for: <the site, API or service you want in Flick>.
 Read the contract at ${DOCS} and follow the skill at https://github.com/baney75/flick/blob/main/skills/flick-plugin/SKILL.md.
 Start from https://raw.githubusercontent.com/baney75/flick/main/plugins/template/plugin.js.
 Clone https://github.com/baney75/flick, run npm install, and run npm run plugin:check -- plugin.js until every line is PASS.
@@ -72,102 +72,6 @@ export function ThemePicker() {
         {look && !themes.value.some((t) => t.id === look) && <option value={look}>{look} (not installed)</option>}
       </select>
     </label>
-  )
-}
-
-export function PluginsPanel() {
-  const [url, setUrl] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [cand, setCand] = useState<Candidate | null>(null)
-  const [open, setOpen] = useState<string | null>(null)
-  const [official, setOfficial] = useState<OfficialEntry[]>([])
-  useEffect(() => { officialList().then(setOfficial) }, [])
-
-  const review = async (src: { url?: string; text?: string }) => {
-    setBusy(true)
-    try { setCand(await prepare(src)) } catch (e) { notify(`Plugin: ${(e as Error).message}`, 6000) }
-    setBusy(false)
-  }
-  const fromFile = () => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = '.js,.mjs,.json,text/javascript,application/json'
-    input.onchange = async () => { const f = input.files?.[0]; if (f) review({ text: await f.text() }) }
-    input.click()
-  }
-  const copyPrompt = async () => {
-    try { await navigator.clipboard.writeText(PROMPT); notify('Prompt copied. Paste it into any AI agent.') } catch { prompt('Copy this prompt:', PROMPT) }
-  }
-
-  const have = new Set(installed.value.map((p) => p.url && absolute(p.url)))
-  const offer = official.filter((o) => o.kind !== 'service' && !have.has(absolute(o.url)))
-  return (
-    <section class="panel">
-      <h3>Plugins</h3>
-      <p class="dim small">Plugins add sources (catalogs, search, streams) and themes; debrid services are under Streaming services. Each source runs in its own sandbox. Flick never installs one without your tap.</p>
-      {installed.value.filter((p) => !isDesktop || p.kind !== 'service').map((p) => <PluginRow p={p} open={open === p.id} onToggle={() => setOpen(open === p.id ? null : p.id)} />)}
-      <form class="url-form" onSubmit={(e) => { e.preventDefault(); if (url.trim()) review({ url: url.trim() }) }}>
-        <Icon name="link" size={16} />
-        <input value={url} onInput={(e) => setUrl((e.target as HTMLInputElement).value)} placeholder="https://…/plugin.js or theme.json" aria-label="Plugin address" />
-        <button class="btn" disabled={busy || !url.trim()}>{busy ? 'Reading…' : 'Add'}</button>
-      </form>
-      <div class="row">
-        <button class="btn ghost sm" onClick={fromFile}><Icon name="file" size={16} /> From a file</button>
-        <button class="btn ghost sm" onClick={copyPrompt}><Icon name="plus" size={16} /> Make your own</button>
-      </div>
-      {offer.length > 0 && <h4 class="small dim">From Flick</h4>}
-      {offer.map((o) => (
-        <div class="list-row">
-          <Icon name="plug" size={18} />
-          <div class="grow"><div>{o.name}</div>{o.description && <div class="small dim">{o.description}</div>}</div>
-          <button class="btn sm" disabled={busy} onClick={() => review({ url: o.url })}>Install</button>
-        </div>
-      ))}
-      {cand && <ReviewSheet c={cand} onDone={(ok) => { setCand(null); if (ok) setUrl('') }} />}
-    </section>
-  )
-}
-
-function PluginRow({ p, open, onToggle }: { p: Installed; open: boolean; onToggle: () => void }) {
-  const m = p.manifest
-  const src = p.kind === 'source' ? (m as PluginManifest) : null
-  const drop = async () => {
-    if (!confirm(`Remove ${m.name}? Its saved data on this device goes too.`)) return
-    if (settings.value.look === p.id) setSettings({ look: '' })
-    await remove(p.id)
-  }
-  return (
-    <div class="plugin-row">
-      <div class="list-row">
-        {p.kind === 'theme' ? <span class="swatch" style={{ background: (m as ThemeManifest).dark.accent }} /> : <PluginIcon rec={p} size={20} />}
-        <div class="grow">
-          <div>{m.name} <span class="small dim">v{m.version}</span> {!p.official && <span class="tag">Not from Flick</span>}</div>
-          <div class="small dim">{p.kind === 'theme' ? 'Theme' : m.author}{src && !p.enabled ? ' · off' : ''}</div>
-        </div>
-        {src && <label class="toggle"><input type="checkbox" checked={p.enabled} onChange={(e) => setEnabled(p.id, (e.target as HTMLInputElement).checked)} aria-label={`Turn ${m.name} on`} /></label>}
-        {src && p.enabled && <a class="btn ghost sm" href={`#/p/${encodeURIComponent(p.id)}`} aria-label={`Open ${m.name}`}>Open</a>}
-        {src && <button class="btn ghost sm" onClick={onToggle} aria-expanded={open}>{open ? 'Close' : 'Manage'}</button>}
-        <button class="btn ghost sm" onClick={drop}>Remove</button>
-      </div>
-      {p.pending && (
-        <div class="warn-box small">
-          An update to {p.pending.manifest.version} asks to {p.pending.added.join(', ')}.
-          <button class="btn sm" onClick={() => acceptUpdate(p.id)}>Allow and update</button>
-        </div>
-      )}
-      {open && src && (
-        <div class="plugin-detail">
-          {src.description && <p class="small dim">{src.description}</p>}
-          <p class="small dim">Reaches {src.hosts.length ? src.hosts.map(hostWords).join(', ') : 'only what the browser allows'}.{p.url ? ` From ${absolute(p.url)}.` : ''}</p>
-          {src.settings.length > 0 && <SettingsForm p={p} fields={src.settings} />}
-          {src.actions.map((a) => <ActionForm p={p} a={a} />)}
-          <details>
-            <summary class="small">Log</summary>
-            <pre class="plugin-log">{(logs.value[p.id] ?? []).join('\n') || 'Nothing yet.'}</pre>
-          </details>
-        </div>
-      )}
-    </div>
   )
 }
 

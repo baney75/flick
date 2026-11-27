@@ -4,7 +4,7 @@
 export function tabOf(r: string): string {
   const first = r.split('?')[0].split('/').filter(Boolean)[0] ?? ''
   if (['library', 'continue', 'show', 'read', 'read-url', 'listen'].includes(first)) return '/library'
-  if (['settings', 'servers', 'setup', 'pair'].includes(first)) return '/settings'
+  if (['settings', 'servers', 'services', 'setup', 'pair'].includes(first)) return '/settings'
   return '/'
 }
 

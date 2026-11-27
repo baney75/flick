@@ -44,6 +44,9 @@ const NAV = [
   { path: '/settings', label: 'Settings', icon: 'settings' },
 ]
 
+/** A hand-edited link with a broken %-escape stays as typed instead of failing the whole view. */
+const safeDecode = (x: string) => { try { return decodeURIComponent(x) } catch { return x } }
+
 function View() {
   const r = route.value
   const [path, query] = r.split('?')
@@ -58,8 +61,8 @@ function View() {
   if (parts[0] === 'sources') return <SourcesPage />
   if (parts[0] === 'listen' && parts[1]) return <Listen key={parts[1]} id={decodeURIComponent(parts[1])} />
   if (parts[0] === 'show' && parts[1]) return <ShowPage name={decodeURIComponent(parts[1])} />
-  if (parts[0] === 'servers') return <Settings />
-  if (parts[0] === 'settings' && parts[1] === 'plugins' && parts[2]) return <Manage key={r} path={parts.slice(2).map(decodeURIComponent)} />
+  if (parts[0] === 'servers' || parts[0] === 'services') return <Settings />
+  if (parts[0] === 'settings' && parts[1] === 'plugins' && parts[2]) return <Manage key={r} path={parts.slice(2).map(safeDecode)} />
   if (parts[0] === 'settings') return <Settings />
   if (parts[0] === 'pair') return <PairPage k={qs.get('k')} />
   if (parts[0] === 'setup') return <Setup key={r} code={qs.get('c') ?? ''} />

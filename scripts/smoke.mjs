@@ -297,11 +297,17 @@ try {
   await page.goto(`${BASE}/#/settings`)
   await page.getByRole('heading', { name: 'Sync across devices' }).waitFor()
   check(await page.getByText('Share this library').count() === 0, 'no Share this library section on the website')
-  // Debrid services run only in the desktop app; the website says so and its Plugins list never offers one.
-  await page.getByRole('heading', { name: 'Streaming services' }).waitFor()
-  check(await page.getByText('debrid services work in the Flick desktop app').count() === 1, 'Streaming services on the website says it is a desktop feature')
-  await page.getByText('From Flick', { exact: true }).waitFor({ timeout: 10000 })
-  check(await page.locator('.list-row', { hasText: /TorBox|Real-Debrid|AllDebrid|Premiumize/ }).count() === 0, 'the Plugins list offers no debrid service')
+  // Settings > Plugins starts empty, with one Add button; debrid services run only in the desktop app,
+  // so the website's Add picker never offers one.
+  const hub = page.locator('#plugins')
+  check(await hub.getByText('Nothing connected yet').waitFor({ timeout: 5000 }).then(() => true, () => false) && await hub.getByRole('button', { name: 'Add' }).count() === 1, 'with nothing connected the hub says so and shows Add')
+  await hub.getByRole('button', { name: 'Add' }).click()
+  const picker = page.getByRole('dialog', { name: 'Add to Flick' })
+  await picker.getByRole('button', { name: /Stremio/ }).waitFor({ timeout: 10000 })
+  check(await picker.locator('.list-row', { hasText: /TorBox|Real-Debrid|AllDebrid|Premiumize/ }).count() === 0, 'the Add picker offers no debrid service on the website')
+  check(await picker.getByText('Reaches any public website').isVisible() && await picker.getByText('Reaches archive.org').isVisible(), "Flick's list says what each plugin reaches")
+  await picker.getByRole('link', { name: /Jellyfin or Emby/ }).click()
+  check(await page.waitForURL(/#\/settings\/plugins\/new\/jellyfin$/, { timeout: 5000 }).then(() => true, () => false) && await page.getByLabel('Server address').waitFor({ timeout: 5000 }).then(() => true, () => false), 'Add > Jellyfin opens its connect page')
 
   // Books: store a PDF, read it, and reopen it in a fresh tab where the library loads after the reader mounts.
   await page.goto(`${BASE}/#/library`)
@@ -470,15 +476,15 @@ try {
   check(await page.locator('.card', { hasText: 'Test Epub' }).first().waitFor({ timeout: 5000 }).then(() => true, () => false), 'EPUB shows in Continue')
 
   // A Flick server: connect through the form, see its items, play the video, read the book.
-  await page.goto(`${BASE}/#/servers`)
-  const flickForm = page.locator('form', { hasText: 'Flick server (NAS)' })
+  await page.goto(`${BASE}/#/settings/plugins/new/flick`)
+  const flickForm = page.locator('.manage form')
   await flickForm.getByLabel('Address').fill(FLICK_URL)
   await flickForm.getByLabel('Access code').fill('not-the-right-code-at-all')
   await flickForm.getByRole('button', { name: 'Connect' }).click()
   check(await flickForm.getByText('access code is wrong').waitFor({ timeout: 5000 }).then(() => true, () => false), 'Flick server form says when the code is wrong')
   await flickForm.getByLabel('Access code').fill(FLICK_CODE)
   await flickForm.getByRole('button', { name: 'Connect' }).click()
-  check(await page.getByText('Smoke NAS: 5 items in your library.').waitFor({ timeout: 8000 }).then(() => true, () => false), 'Flick server connects through the Servers form')
+  check(await page.getByText('Smoke NAS: 5 items in your library.').waitFor({ timeout: 8000 }).then(() => true, () => false), 'Flick server connects through its page in Settings > Plugins')
   await page.goto(`${BASE}/#/library`)
   await page.getByRole('tab', { name: /Movies/ }).click()
   await page.getByText('Server Movie').first().waitFor({ timeout: 5000 })
@@ -507,8 +513,12 @@ try {
 
   // The same server again, from a setup link after removing it.
   await page.goto(`${BASE}/#/servers`)
-  await page.locator('.list-row', { hasText: 'Smoke NAS' }).getByRole('button', { name: 'Remove' }).click()
-  await page.locator('.list-row', { hasText: 'Smoke NAS' }).waitFor({ state: 'detached' })
+  check(await page.locator('#servers .hub-row', { hasText: 'Smoke NAS' }).getByText('Flick server (NAS) · 5 items').waitFor({ timeout: 5000 }).then(() => true, () => false), 'the hub lists the server under Servers with its item count')
+  await page.locator('#servers .hub-row', { hasText: 'Smoke NAS' }).click()
+  page.once('dialog', (d) => d.accept())
+  await page.getByRole('button', { name: 'Remove' }).click()
+  await page.waitForURL(/#\/settings\/plugins$/)
+  await page.locator('#servers').waitFor({ state: 'detached' })
   const flickSetup = Buffer.from(JSON.stringify({ v: 1, servers: [{ type: 'flick', name: 'Smoke NAS', url: FLICK_URL, token: FLICK_CODE }] })).toString('base64url')
   await page.goto(`${BASE}/#/setup?c=${flickSetup}`)
   await page.getByRole('button', { name: 'Connect all' }).click()
@@ -593,11 +603,11 @@ try {
   check(webNet === 'reached' && appNet === 'blocked', `in the apps a plugin's own fetch is refused (app page ${appNet}, website page ${webNet})`)
 
   // A source plugin from a URL: review first, then its page, a title page, a stream that plays.
-  await page.goto(`${BASE}/#/settings`)
-  const addForm = page.locator('form', { has: page.getByLabel('Plugin address') })
-  await page.getByLabel('Plugin address').fill(`${FLICK_URL}/plugin.js`)
-  await addForm.getByRole('button', { name: 'Add' }).click()
-  const sheet = page.getByRole('dialog')
+  await page.goto(`${BASE}/#/settings/plugins`)
+  const openAdd = async () => { await page.locator('#plugins').getByRole('button', { name: 'Add' }).click(); return page.getByRole('dialog', { name: 'Add to Flick' }) }
+  const addByAddress = async (u) => { const d = await openAdd(); await d.getByLabel('Plugin address').fill(u); await d.getByRole('button', { name: 'Add', exact: true }).click() }
+  await addByAddress(`${FLICK_URL}/plugin.js`)
+  const sheet = page.getByRole('dialog', { name: /^(Install|Update) / })
   await sheet.waitFor({ timeout: 15000 })
   check(await sheet.getByText('Not from Flick').isVisible() && await sheet.getByText('127.0.0.1').first().isVisible(), 'review sheet shows the hosts and "Not from Flick"')
   check(await sheet.locator('.web-hosts').isVisible(), 'on the website the review sheet says the host list is not enforced')
@@ -606,7 +616,7 @@ try {
   await sheet.getByRole('button', { name: 'Install' }).click()
   await sheet.waitFor({ state: 'detached' })
   check(await count() === 1, 'Install saves the plugin')
-  await page.goto(`${BASE}/#/settings/plugins/org.smoke.films`)
+  check(await page.waitForURL(/#\/settings\/plugins\/org\.smoke\.films$/, { timeout: 5000 }).then(() => true, () => false), 'a reviewed install opens the plugin page')
   await page.getByRole('heading', { name: 'Smoke Films' }).waitFor()
   check(await page.getByText('Not from Flick').isVisible() && await page.getByLabel('On').isChecked() && await page.getByText('Log', { exact: true }).isVisible(), 'a plugin page shows where it is from, its switch and its log')
   check(!(await page.locator('.nav-item', { hasText: 'Smoke Films' }).count()), 'a plugin gets no bar item')
@@ -734,12 +744,13 @@ try {
   check(await page.waitForURL(/#\/p\/org\.smoke\.films\/movie\/lib-only/, { timeout: 5000 }).then(() => true, () => false), 'a title only in a plugin opens its title page with no sheet')
 
   // A theme changes Flick's colors.
-  await page.goto(`${BASE}/#/settings`)
+  await page.goto(`${BASE}/#/settings/plugins`)
   const accent = () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())
   const accent0 = await accent()
-  await page.getByLabel('Plugin address').fill(`${FLICK_URL}/theme.json`)
-  await addForm.getByRole('button', { name: 'Add' }).click()
+  await addByAddress(`${FLICK_URL}/theme.json`)
   await sheet.getByRole('button', { name: 'Install' }).click()
+  await page.waitForURL(/#\/settings\/plugins\/org\.smoke\.theme$/, { timeout: 5000 })
+  await page.goto(`${BASE}/#/settings`)
   await page.getByLabel('Colors').selectOption('org.smoke.theme')
   await page.waitForFunction(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() === '#2f7a4f', null, { timeout: 5000 }).catch(() => {})
   check(accent0 !== "#2f7a4f" && await accent() === "#2f7a4f", `a theme sets --accent (${accent0} -> ${await accent()})`)
@@ -758,11 +769,9 @@ try {
   await page.screenshot({ path: 'test-media/shots/updates.png' })
 
   // The Stremio plugin from Flick's list, without an account: Cinemeta rows, a title page, search.
-  await page.locator('.list-row', { hasText: 'Stremio' }).getByRole('button', { name: 'Install' }).click()
-  await sheet.waitFor({ timeout: 15000 })
-  check(!(await sheet.getByText('Not from Flick').isVisible()), 'the Stremio plugin reviews as from Flick')
-  await sheet.getByRole('button', { name: 'Install' }).click()
-  await sheet.waitFor({ state: 'detached' })
+  await (await openAdd()).getByRole('button', { name: /Stremio/ }).click()
+  check(await page.waitForURL(/#\/settings\/plugins\/dev\.flick\.stremio$/, { timeout: 15000 }).then(() => true, () => false) && !(await sheet.count()), "Add > Stremio installs with no review sheet and opens Stremio's page")
+  check(await page.getByRole('button', { name: 'Sign in to Stremio' }).isVisible(), "Stremio's page offers Sign in to Stremio")
   await page.getByRole('link', { name: 'Open Stremio' }).click()
   const firstCard = page.locator('.row-section .card:not(.skeleton)').first()
   await firstCard.waitFor({ timeout: 20000 })
@@ -813,7 +822,14 @@ try {
   await page.screenshot({ path: 'test-media/shots/phone-home.png' })
   await page.goto(`${BASE}/#/servers`)
   await page.waitForTimeout(400)
-  check(await page.locator('h1', { hasText: 'Settings' }).isVisible() && await page.evaluate(() => { const r = document.getElementById('servers')?.getBoundingClientRect(); return !!r && r.top < innerHeight && r.bottom > 0 }), '#/servers opens Settings at the Servers panel')
+  check(await page.locator('h1', { hasText: 'Settings' }).isVisible() && await page.evaluate(() => { const r = document.getElementById('servers')?.getBoundingClientRect(); return !!r && r.top < innerHeight && r.bottom > 0 }), '#/servers opens Settings at the Servers group of Plugins')
+  const wide = () => page.evaluate(() => document.documentElement.scrollWidth > innerWidth || [...document.querySelectorAll('.hub-row, .add-sheet')].some((e) => e.getBoundingClientRect().right > innerWidth + 1))
+  check(!(await wide()) && await page.locator('#plugins .hub-row').count() >= 3, 'phone: the hub rows fit at 390px with no sideways scroll')
+  await page.locator('#plugins').getByRole('button', { name: 'Add' }).click()
+  await page.getByRole('dialog', { name: 'Add to Flick' }).getByText('Internet Archive').waitFor({ timeout: 10000 })
+  check(!(await wide()), 'phone: the Add picker fits at 390px')
+  await page.screenshot({ path: 'test-media/shots/phone-add.png' })
+  await page.keyboard.press('Escape')
 
   // Photos, in fresh contexts so nothing else is in the library. The folder is added the way Safari and
   // Firefox do it (a directory input), which hands Flick the files themselves.

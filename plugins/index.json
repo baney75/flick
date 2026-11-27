@@ -1,12 +1,12 @@
 {
   "api": 1,
   "plugins": [
-    { "url": "/plugins/stremio.js", "name": "Stremio", "kind": "source", "description": "Your Stremio addons, library and Continue Watching, or Cinemeta and OpenSubtitles without an account." },
-    { "url": "/plugins/archive.js", "name": "Internet Archive", "kind": "source", "description": "Public domain films, classic TV, audiobooks, old-time radio and books from archive.org." },
-    { "url": "/plugins/youtube.js", "name": "YouTube", "kind": "source", "description": "Search and watch YouTube in the desktop app, through yt-dlp." },
-    { "url": "/plugins/torbox.js", "name": "TorBox", "kind": "service", "description": "Plays torrents from TorBox's servers, so nothing is shared from this computer." },
-    { "url": "/plugins/realdebrid.js", "name": "Real-Debrid", "kind": "service", "description": "Plays torrents from Real-Debrid's servers, so nothing is shared from this computer." },
-    { "url": "/plugins/alldebrid.js", "name": "AllDebrid", "kind": "service", "description": "Plays torrents from AllDebrid's servers, so nothing is shared from this computer." },
-    { "url": "/plugins/premiumize.js", "name": "Premiumize", "kind": "service", "description": "Plays torrents from Premiumize's servers, so nothing is shared from this computer." }
+    { "url": "/plugins/stremio.js", "name": "Stremio", "kind": "source", "description": "Your Stremio addons, library and Continue Watching, or Cinemeta and OpenSubtitles without an account.", "hosts":["*"] },
+    { "url": "/plugins/archive.js", "name": "Internet Archive", "kind": "source", "description": "Public domain films, classic TV, audiobooks, old-time radio and books from archive.org.", "hosts":["archive.org", "*.archive.org", "*.us.archive.org"] },
+    { "url": "/plugins/youtube.js", "name": "YouTube", "kind": "source", "description": "Search and watch YouTube in the desktop app, through yt-dlp.", "hosts":["www.youtube.com", "youtube.com", "m.youtube.com", "youtu.be"] },
+    { "url": "/plugins/torbox.js", "name": "TorBox", "kind": "service", "description": "Plays torrents from TorBox's servers, so nothing is shared from this computer.", "hosts":["api.torbox.app", "*.tb-cdn.st", "*.tb-cdn.io", "*.tb-cdn.cx", "*.tb-cdn.earth", "*.tb-cdn.pw"] },
+    { "url": "/plugins/realdebrid.js", "name": "Real-Debrid", "kind": "service", "description": "Plays torrents from Real-Debrid's servers, so nothing is shared from this computer.", "hosts":["api.real-debrid.com", "*.download.real-debrid.com"] },
+    { "url": "/plugins/alldebrid.js", "name": "AllDebrid", "kind": "service", "description": "Plays torrents from AllDebrid's servers, so nothing is shared from this computer.", "hosts":["api.alldebrid.com", "*.debrid.it"] },
+    { "url": "/plugins/premiumize.js", "name": "Premiumize", "kind": "service", "description": "Plays torrents from Premiumize's servers, so nothing is shared from this computer.", "hosts":["www.premiumize.me", "*.energycdn.com"] }
   ]
 }

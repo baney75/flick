@@ -524,3 +524,18 @@ html.tv .hrow { grid-auto-columns: 300px; padding: 10px 6px 14px; }
 .photo-nav.next svg { transform: scaleX(-1); }
 .continue-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 20px 16px; }
 @media (max-width: 600px) { .continue-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 10px; } }
+
+/* Settings > Plugins: one list, one Add picker. */
+.hub-head { display: flex; align-items: center; gap: 12px; }
+.hub-head h3 { margin-right: auto; }
+.hub-group { margin-top: 14px; }
+.hub-group h4 { margin: 0 0 2px; }
+.hub-row { color: inherit; text-decoration: none; min-width: 0; }
+button.hub-row { width: 100%; background: none; border: 0; border-top: 1px solid var(--line); font: inherit; text-align: left; cursor: pointer; }
+button.hub-row:disabled { cursor: default; opacity: .7; }
+.hub-row .grow { min-width: 0; }
+.hub-row .hub-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hub-row .chev { transform: rotate(180deg); color: var(--faint); flex: none; }
+.add-sheet h4 { margin: 14px 0 2px; }
+.add-sheet .url-form { margin-bottom: 8px; }
+.add-sheet .url-form input { min-width: 0; flex: 1; }

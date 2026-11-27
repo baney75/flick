@@ -61,7 +61,7 @@ export function Home() {
           <div class="welcome-actions">
             <button class="btn primary lg" onClick={openFiles}><Icon name="file" size={18} /> Open a file</button>
             <button class="btn lg" onClick={addFolder}><Icon name="folder" size={18} /> Add a folder</button>
-            <button class="btn lg" onClick={() => go('/settings')}><Icon name="plug" size={18} /> Add plugins</button>
+            <button class="btn lg" onClick={() => go('/settings/plugins')}><Icon name="plug" size={18} /> Add plugins</button>
             <button class="btn lg" onClick={() => go('/servers')}><Icon name="server" size={18} /> Connect a server</button>
           </div>
           <form class="url-form" onSubmit={(e) => { e.preventDefault(); openUrl(url) }}>

@@ -10,7 +10,7 @@ import * as Srv from '../lib/servers'
 import { isDesktop } from '../lib/platform'
 import { Icon } from '../components/icons'
 import { PluginIcon } from './Plugin'
-import { acceptUpdate, absolute, installed, remove, setEnabled, type Installed } from '../lib/plugins/registry'
+import { acceptUpdate, absolute, installed, pluginsLoaded, remove, setEnabled, type Installed } from '../lib/plugins/registry'
 import { logs } from '../lib/plugins/runtime'
 import { allServices, hasKey, moveService, removeService, type Service } from '../lib/plugins/services'
 import type { PluginManifest, ThemeManifest } from '../lib/plugins/validate'
@@ -31,10 +31,11 @@ export type ServerKind = (typeof SERVER_KINDS)[number]['kind']
 export const kindName = (k: Srv.Server['type']) => SERVER_KINDS.find((x) => x.kind === k)?.name ?? k
 
 /** The server Flick is syncing right now, so its page can say so after an add moves to it. */
-const syncing = signal<string | null>(null)
+const syncing = signal<ReadonlySet<string>>(new Set())
 
 async function syncNow(s: Srv.Server) {
-  syncing.value = s.id
+  if (syncing.value.has(s.id)) return
+  syncing.value = new Set([...syncing.value, s.id])
   try {
     const n = await Srv.syncServer(s)
     await reloadItems()
@@ -42,7 +43,7 @@ async function syncNow(s: Srv.Server) {
   } catch (e) {
     notify(`${s.name}: ${(e as Error).message}`)
   }
-  if (syncing.value === s.id) syncing.value = null
+  syncing.value = new Set([...syncing.value].filter((x) => x !== s.id))
 }
 
 /** `path` is what follows `#/settings/plugins/`, decoded: [id] or ['new', kind]. */
@@ -55,7 +56,7 @@ export function Manage({ path }: { path: string[] }) {
   if (p) return <Frame title={p.manifest.name} icon={p.kind === 'theme' ? <span class="swatch" style={{ background: (p.manifest as ThemeManifest).dark.accent }} /> : <PluginIcon rec={p} size={28} />}><PluginBody p={p} /></Frame>
   const s = servers?.find((x) => x.id === id)
   if (s) return <Frame title={s.name} icon={<Icon name="server" size={28} />}><ServerBody s={s} /></Frame>
-  if (!servers) return <div class="page narrow manage" />
+  if (!servers || !pluginsLoaded.value) return <div class="page narrow manage" />
   return <Frame title="Not connected"><p class="dim">Nothing with that name is connected on this device.</p></Frame>
 }
 
@@ -93,11 +94,13 @@ function NewServer({ kind }: { kind?: string }) {
 
 function ServerBody({ s }: { s: Srv.Server }) {
   const n = items.value.filter((i) => i.server === s.id).length
-  const busy = syncing.value === s.id
+  const busy = syncing.value.has(s.id)
   const drop = async () => {
     if (!confirm(`Remove ${s.name}? Its titles leave your library on this device; the server keeps its files.`)) return
-    await Srv.removeServer(s)
-    await reloadItems()
+    try {
+      await Srv.removeServer(s)
+      await reloadItems()
+    } catch (e) { notify(`${s.name}: ${(e as Error).message}`); return }
     notify(`${s.name} removed.`)
     go(HUB)
   }
@@ -122,7 +125,9 @@ function PluginBody({ p }: { p: Installed }) {
   const drop = async () => {
     if (!confirm(`Remove ${m.name}? Its saved data on this device goes too.`)) return
     if (settings.value.look === p.id) setSettings({ look: '' })
-    if (p.kind === 'service') await removeService(p.id); else await remove(p.id)
+    try {
+      if (p.kind === 'service') await removeService(p.id); else await remove(p.id)
+    } catch (e) { notify(`${m.name}: ${(e as Error).message}`); return }
     notify(`${m.name} removed.`)
     go(HUB)
   }
