@@ -12,7 +12,7 @@
 
 import type { Item } from '../library'
 import type { Progress } from '../store'
-import { isSecret, portable, publicSettings, type Installed, type Candidate } from '../plugins/registry'
+import { isSecret, portable, publicSettings, takesOver, type Installed, type Candidate } from '../plugins/registry'
 import { addedPermissions, type PluginManifest } from '../plugins/validate'
 
 const LOCAL = new Set(['local', 'stored'])
@@ -87,6 +87,19 @@ export function mayInstallSynced(v: SyncedPlugin, c: Candidate): boolean {
   if (v.sha256 && c.sha256 === v.sha256) return true
   if (c.kind === 'theme') return true
   return addedPermissions({ hosts: v.hosts ?? [], tools: v.tools ?? [] }, c.manifest as PluginManifest).length === 0
+}
+
+/**
+ * Whether a plugin synced from another device may take over an id that a different plugin holds here (another
+ * address, kind or official status). Only once the doc says that plugin was removed, as it is when the user
+ * replaced it there; a service, a file install or a plugin still synced waits for a review on this device.
+ * install() then clears the old plugin's secret settings and saved data.
+ */
+export function mayTakeOverSynced(c: Candidate, read: (key: string) => unknown): boolean {
+  const old = c.replaces
+  if (!old || !takesOver(c, old)) return true
+  const was = old.url && portable(old.url)
+  return !!was && read(`x:${was}`) === null
 }
 
 export function contentIndex(items: Item[]): Map<string, string[]> {

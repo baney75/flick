@@ -126,9 +126,44 @@ async function save(rec: Installed) {
   announce('plugins')
 }
 
+/**
+ * Whether a candidate takes over an installed plugin's id rather than updating it: it comes from another
+ * address (a chosen file never proves it is the same one), it is or stops being Flick's own, or it is a
+ * different kind. A takeover keeps none of the old plugin's secret settings or saved data.
+ */
+export function takesOver(c: Pick<Candidate, 'url' | 'official' | 'kind'>, old: Pick<Installed, 'url' | 'official' | 'kind'> | undefined): boolean {
+  if (!old) return false
+  const same = old.url != null && c.url != null && absolute(old.url) === absolute(c.url)
+  return !same || old.official !== c.official || old.kind !== c.kind
+}
+
+/** The installed plugin's settings that carry over to a candidate: all of them on an update, none secret in either version on a takeover. */
+export function carried(c: Candidate, old = c.replaces ?? installed.value.find((p) => p.id === c.manifest.id)): Record<string, unknown> {
+  if (!old) return {}
+  if (!takesOver(c, old)) return old.settings
+  const next = { kind: c.kind, manifest: c.manifest }
+  return Object.fromEntries(Object.entries(old.settings).filter(([k]) => !isSecret(old, k) && !isSecret(next, k)))
+}
+
+/** Where a plugin came from, as the review sheet says it: Flick, a file, or the address's host. */
+export function origin(p: Pick<Candidate, 'url' | 'official'>): string {
+  if (p.official) return 'Flick'
+  if (!p.url) return 'a file'
+  try { return new URL(absolute(p.url)).host || p.url } catch { return p.url }
+}
+
+/** The review sheet's warning for a takeover, or null for an install or an update. */
+export function replaceLine(c: Candidate): string | null {
+  const old = c.replaces
+  if (!old || !takesOver(c, old)) return null
+  return `This replaces ${old.manifest.name} from ${origin(old)} with a plugin from ${origin(c)}. Its saved keys and data are cleared.`
+}
+
 export async function install(c: Candidate, settings?: Record<string, unknown>): Promise<Installed> {
   const old = c.replaces ?? installed.value.find((p) => p.id === c.manifest.id)
   if (old) stopPlugin(old.id)
+  const takeover = takesOver(c, old)
+  if (takeover) await step('Clearing the old plugin', () => db.del('pluginData', c.manifest.id))
   const rec: Installed = {
     id: c.manifest.id,
     kind: c.kind,
@@ -138,7 +173,7 @@ export async function install(c: Candidate, settings?: Record<string, unknown>):
     manifest: c.manifest,
     enabled: old?.enabled ?? true,
     official: c.official,
-    settings: { ...defaults(c.manifest), ...old?.settings, ...settings },
+    settings: { ...defaults(c.manifest), ...carried(c, old), ...settings },
     installedAt: old?.installedAt ?? Date.now(),
     checkedAt: Date.now(),
   }

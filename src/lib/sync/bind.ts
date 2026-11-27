@@ -9,7 +9,7 @@ import { items, progress, settings, setSettings, notify, reloadItems, type Progr
 import { validPref } from '../prefs'
 import { getServers, saveServer, removeServer, syncServer, type Server } from '../servers'
 import type { Item } from '../library'
-import { contentIndex, localProgressKeys, progressDocKey, pluginSnapshot, mayInstallSynced, secretLeaks, type SyncedPlugin } from './keys'
+import { contentIndex, localProgressKeys, progressDocKey, pluginSnapshot, mayInstallSynced, mayTakeOverSynced, secretLeaks, type SyncedPlugin } from './keys'
 import { installed, prepare, install, remove, setEnabled, setPluginSettings, isSecret, portable } from '../plugins/registry'
 import { legacyProgress } from '../plugins/migrate'
 import { startSync, publish, docValue, docKeys } from './engine'
@@ -171,6 +171,7 @@ async function applyPlugins() {
           const c = await prepare({ url })
           // Code that changed since it was reviewed, and asks for more, waits for a review on this device.
           if (!mayInstallSynced(v, c)) { notify(`${c.manifest.name} changed since you added it on another device. Add it in Settings to review it here.`); continue }
+          if (!mayTakeOverSynced(c, docValue)) { notify(`${c.manifest.name} from another device would replace ${c.replaces!.manifest.name} here. Add it in Settings to review it here.`); continue }
           rec = await install(c)
         } catch { continue }
       }
