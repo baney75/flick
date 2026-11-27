@@ -10,6 +10,7 @@ import fx from './fixtures/stremio/addons.json'
 import { fakeCtx, split, type Req, type Reply } from './debrid-ctx'
 
 const TORRENTIO = 'https://torrentio.strem.fun/manifest.json'
+const TORRENTIO_TB = 'https://torrentio.strem.fun/torbox=made-up-key/manifest.json'
 const CINEMETA = fx.official.addons[0]
 const OPENSUBS = fx.official.addons[4]
 const CHANNELS = fx.official.addons[1]
@@ -17,15 +18,15 @@ const CATALOG = 'https://v3-cinemeta.strem.io/addon_catalog/all/'
 let n = 0
 
 /** A fake Stremio: manifests and catalogs from the fixture, and one account's addon collection. */
-function world(signedIn: boolean, settings: Record<string, unknown> = { addons: [] }) {
+function world(signedIn: boolean, settings: Record<string, unknown> = { addons: [] }, reply: { addons?: unknown[] } | null = null) {
   const account = { addons: [CINEMETA, CHANNELS, OPENSUBS] as unknown[], sets: [] as unknown[][] }
   const route = (r: Req): Reply => {
-    if (r.url === TORRENTIO) return { status: 200, body: fx.torrentio }
+    if (r.url === TORRENTIO || r.url === TORRENTIO_TB) return { status: 200, body: fx.torrentio }
     if (r.url === `${CATALOG}official.json`) return { status: 200, body: fx.official }
     if (r.url === `${CATALOG}community.json`) return { status: 200, body: fx.community }
     const known = [...fx.official.addons, ...fx.community.addons].find((a) => a.transportUrl === r.url)
     if (known) return { status: 200, body: known.manifest }
-    if (r.url.endsWith('/api/addonCollectionGet')) return { status: 200, body: { result: { addons: account.addons } } }
+    if (r.url.endsWith('/api/addonCollectionGet')) return { status: 200, body: { result: reply ?? { addons: account.addons } } }
     if (r.url.endsWith('/api/addonCollectionSet')) {
       const body = JSON.parse(r.body!)
       account.sets.push(body.addons)
@@ -123,10 +124,10 @@ describe('Stremio addons', () => {
     const find = async () => V.validateExtensions(await stremio.extensionCatalog(ctx, { search: 'torrentio' }), true)
     const [row, ...rest] = await find()
     expect(rest).toEqual([])
-    expect(row).toMatchObject({ id: 'com.stremio.torrentio.catalog.addon', url: 'https://torrent-catalogs.strem.fun/manifest.json', installed: false, removable: true })
+    expect(row).toMatchObject({ id: 'com.stremio.torrentio.catalog.addon', url: 'https://torrent-catalogs.strem.fun/manifest.json', installed: false, removable: false })
     await stremio.addExtension(ctx, { url: row.url })
     expect(account.sets).toHaveLength(1)
-    expect((await find())[0].installed).toBe(true)
+    expect((await find())[0]).toMatchObject({ installed: true, removable: true })
   })
 
   it('the catalog lists Official before Community, Cinemeta installed and not removable, http addons left out', async () => {
@@ -135,5 +136,33 @@ describe('Stremio addons', () => {
     expect(rows[0]).toMatchObject({ id: 'com.linvo.cinemeta', installed: true, removable: false })
     expect(ids(rows)).not.toContain('org.stremio.local')
     expect(ids(rows).indexOf('com.stremio.torrentio.catalog.addon')).toBeGreaterThan(ids(rows).indexOf('org.stremio.watchhub'))
+  })
+
+  it('signed out, the catalog says OpenSubtitles is not removable, as Addons does', async () => {
+    const { ctx } = world(false)
+    const rows = V.validateExtensions(await stremio.extensionCatalog(ctx, { search: 'opensubtitles' }), true)
+    expect(rows.find((e) => e.id === 'org.stremio.opensubtitlesv3')).toMatchObject({ installed: true, removable: false })
+  })
+
+  it('signed in, an account read with no addon list changes nothing', async () => {
+    const { ctx, account } = world(true, undefined, {})
+    await expect(stremio.addExtension(ctx, { url: TORRENTIO })).rejects.toThrow(/nothing was changed/)
+    await expect(stremio.removeExtension(ctx, { id: 'com.linvo.stremiochannels' })).rejects.toThrow(/nothing was changed/)
+    expect(account.sets).toEqual([])
+  })
+
+  it('signed in, adding to an empty account keeps Cinemeta and OpenSubtitles', async () => {
+    const { ctx, account } = world(true, undefined, { addons: [] })
+    expect((await stremio.addExtension(ctx, { url: TORRENTIO })).ok).toBe(true)
+    expect(account.sets).toHaveLength(1)
+    expect(account.sets[0].map((a) => (a as { manifest: { id: string } }).manifest.id)).toEqual(['com.linvo.cinemeta', 'org.stremio.opensubtitlesv3', 'com.stremio.torrentio.addon'])
+    expect((account.sets[0][0] as { flags: unknown }).flags).toEqual({ official: true, protected: true })
+  })
+
+  it('signed out, a new configuration of an added addon replaces the old one in place', async () => {
+    const other = 'https://torrent-catalogs.strem.fun/manifest.json'
+    const { ctx } = world(false, { addons: [TORRENTIO, other] })
+    const r = await stremio.addExtension(ctx, { url: TORRENTIO_TB })
+    expect(r).toEqual({ ok: true, message: 'Added Torrentio.', settings: { addons: [TORRENTIO_TB, other] } })
   })
 })

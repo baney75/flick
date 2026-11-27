@@ -126,6 +126,17 @@ async function manifest(ctx, url) {
 
 const extraUrls = (ctx) => (Array.isArray(ctx.settings.addons) ? ctx.settings.addons : []).map(normalizeAddonUrl)
 const collection = async (ctx, authKey) => (await api(ctx, 'addonCollectionGet', { type: 'AddonCollectionGet', authKey, update: true })).addons ?? []
+/**
+ * The account's collection, to write back changed. A reply with no list is refused, so a bad read never
+ * overwrites the account; an empty one starts from Cinemeta and OpenSubtitles, as Stremio's apps do.
+ */
+async function collectionToWrite(ctx, authKey) {
+  const r = await api(ctx, 'addonCollectionGet', { type: 'AddonCollectionGet', authKey, update: true })
+  if (!Array.isArray(r?.addons)) throw new Error('Could not read your Stremio addons, so nothing was changed.')
+  if (r.addons.length) return r.addons
+  const defaults = await Promise.all([CINEMETA, OPENSUBS].map((u) => manifest(ctx, u)))
+  return defaults.map((a) => ({ ...a, flags: { official: true, protected: PROTECTED.includes(a.manifest.id) } }))
+}
 
 let cache = null
 /** Every addon Flick uses, and where each came from: the account, the built-in pair, or the addons setting. */
@@ -177,6 +188,16 @@ async function addonCatalog(ctx) {
   const list = lists.flat().filter((a) => a?.manifest?.id && a.transportUrl && !seen.has(a.manifest.id) && seen.add(a.manifest.id))
   if (list.length) catalogCache = { at: Date.now(), list }
   return list
+}
+
+/** The Addons list: each addon once, removable when it came from the setting or is the account's own. */
+async function installedRows(ctx) {
+  const { list, from } = await load(ctx)
+  const seen = new Set()
+  return list.filter((a) => !seen.has(a.manifest.id) && seen.add(a.manifest.id)).map((a) => {
+    const f = from.get(a.transportUrl)
+    return row(a, f === 'setting' || (f === 'account' && !isProtected(a)))
+  })
 }
 
 /** Catalog ids carry the addon and catalog, so a fresh sandbox can find them again. */
@@ -284,22 +305,19 @@ export default {
   // ---------- addons (docs/PLUGINS.md, "Addons") ----------
 
   /** Signed in: the account's addons, then any from the addons setting. Signed out: Cinemeta, OpenSubtitles and the setting. */
-  async extensions(ctx) {
-    const { list, from } = await load(ctx)
-    const seen = new Set()
-    return list.filter((a) => !seen.has(a.manifest.id) && seen.add(a.manifest.id)).map((a) => {
-      const f = from.get(a.transportUrl)
-      return row(a, f === 'setting' || (f === 'account' && !isProtected(a)))
-    })
-  },
+  extensions: installedRows,
 
   async extensionCatalog(ctx, { search } = {}) {
-    const mine = await addons(ctx)
+    const mine = await installedRows(ctx)
     const q = String(search ?? '').trim().toLowerCase()
     return (await addonCatalog(ctx))
       .filter((a) => !q || [a.manifest.name, a.manifest.id, a.manifest.description].some((t) => typeof t === 'string' && t.toLowerCase().includes(q)))
       .slice(0, 500)
-      .map((a) => ({ ...row(a, !isProtected(a)), installed: mine.some((m) => m.transportUrl === a.transportUrl || m.manifest.id === a.manifest.id) }))
+      .map((a) => {
+        // Removable only when Addons would offer Remove for it; a row not added yet has nothing to remove.
+        const have = mine.find((m) => m.url === a.transportUrl || m.id === a.manifest.id)
+        return { ...row(a, have?.removable ?? false), installed: !!have }
+      })
   },
 
   /** Reads the manifest so the user sees what they are adding. Saves nothing. */
@@ -321,9 +339,15 @@ export default {
     if (!authKey) {
       const extra = extraUrls(ctx)
       if (extra.includes(u)) return { ok: true, message: `${name} is already added.` }
-      return { ok: true, message: `Added ${name}.`, settings: { addons: [...extra, u] } }
+      // As signed in: a new configuration of an addon in the setting replaces the old one in place.
+      const { list, from } = await load(ctx)
+      const old = new Set(list.filter((x) => x.manifest.id === a.manifest.id && from.get(x.transportUrl) === 'setting').map((x) => x.transportUrl))
+      if (!old.size) return { ok: true, message: `Added ${name}.`, settings: { addons: [...extra, u] } }
+      const next = []
+      for (const x of extra) if (!old.has(x)) next.push(x); else if (!next.includes(u)) next.push(u)
+      return { ok: true, message: `Added ${name}.`, settings: { addons: next } }
     }
-    const old = await collection(ctx, authKey)
+    const old = await collectionToWrite(ctx, authKey)
     if (old.some((x) => x.transportUrl === u)) return { ok: true, message: `${name} is already in your Stremio account.` }
     const same = old.findIndex((x) => x.manifest?.id === a.manifest.id)
     if (same >= 0 && isProtected(old[same])) return { ok: false, message: `${name} is built into Stremio and cannot be replaced.` }
@@ -345,7 +369,7 @@ export default {
     const authKey = await ctx.store.get('authKey')
     let name = list.find((a) => a.manifest.id === id)?.manifest.name ?? id
     if (authKey) {
-      const old = await collection(ctx, authKey)
+      const old = await collectionToWrite(ctx, authKey)
       const hit = old.filter((x) => x.manifest?.id === id)
       if (hit.some(isProtected)) return { ok: false, message: `${hit[0].manifest.name ?? id} is built into Stremio and cannot be removed.` }
       if (hit.length) {
