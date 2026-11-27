@@ -875,6 +875,28 @@ try {
   check(await page.locator('.card', { hasText: 'Smoke Song' }).count() === 1, 'a plugin song with no shelf is in Music')
   await tab(/^Watch later/).click()
   check(await page.locator('.shelf-row', { hasText: 'Smoke Talk' }).count() === 1 && await page.locator('.card').count() === 0, 'a list shelf shows rows, not a grid')
+  {
+    // A long list shelf keeps only the rows near the screen in the page, and scrolling shows every row.
+    const seen = new Set()
+    let most = 0
+    for (let i = 0; i < 200; i++) {
+      const s = await page.evaluate(() => {
+        const m = document.querySelector('.main')
+        const rows = [...document.querySelectorAll('.shelf-list .shelf-row')]
+        const view = m.getBoundingClientRect()
+        const shown = rows.filter((r) => { const b = r.getBoundingClientRect(); return b.bottom > view.top && b.top < view.bottom }).map((r) => r.querySelector('.t1').textContent)
+        const end = m.scrollTop + m.clientHeight >= m.scrollHeight - 4
+        m.style.scrollBehavior = 'auto'; m.scrollTop += m.clientHeight / 2
+        return { n: rows.length, shown, end }
+      })
+      most = Math.max(most, s.n)
+      s.shown.forEach((t) => seen.add(t))
+      if (s.end) break
+      await page.waitForTimeout(30)
+    }
+    check(seen.size === 301 && most < 100, `a 301 row list shelf scrolls through every row with few in the page (${seen.size} seen, at most ${most} at once)`)
+    await page.evaluate(() => { document.querySelector('.main').scrollTop = 0 })
+  }
   // A sort picked on one tab stays there: a shelf opens in its own order until it is sorted itself.
   const sortBox = page.getByLabel('Sort')
   await tab(/^All/).click()

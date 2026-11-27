@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useLayoutEffect } from 'preact/hooks'
-import type { ComponentChildren } from 'preact'
+import { Fragment, type ComponentChildren } from 'preact'
 import { thumbUrl, KODI_IMG, type Item } from '../lib/library'
 import { kodiPoster } from '../lib/servers'
 import { thumbTick, progress, episodeLabel } from '../lib/store'
@@ -119,6 +119,63 @@ export function Row({ title, children, action }: { title: string; children: Comp
  * Only renders the rows on screen, so a library of 50,000 files scrolls as fast as one of 50.
  * The scroll container is the app's main pane.
  */
+/**
+ * A long list, one row a line, with only the rows near the screen in the page, as VirtualGrid does for
+ * cards. Every row must be the same height: the first row in the page sets it, and is read again when
+ * the rows resize (a larger text size). A list shelf's rows are: the thumbnail sets their height.
+ */
+export function VirtualList<T>({ list, gap = 4, class: cls, keyOf, render }: {
+  list: T[]
+  gap?: number
+  class?: string
+  /** Each row's key: a scroll then moves the rows it keeps instead of giving each one another item. */
+  keyOf: (t: T) => string
+  render: (t: T) => ComponentChildren
+}) {
+  const box = useRef<HTMLDivElement>(null)
+  const inner = useRef<HTMLDivElement>(null)
+  const [rowH, setRowH] = useState(0)
+  const [range, setRange] = useState<[number, number]>([0, 30])
+
+  useLayoutEffect(() => {
+    const el = inner.current!
+    const read = () => {
+      const first = el.firstElementChild as HTMLElement | null
+      if (first) setRowH(first.offsetHeight + gap)
+    }
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    read()
+    return () => ro.disconnect()
+  }, [gap])
+
+  useEffect(() => {
+    const el = box.current!
+    const scroller = el.closest('.main') as HTMLElement | null
+    if (!scroller || !rowH) return
+    // As in VirtualGrid: a closed screen's listener can still hear a scroll after the list is gone.
+    const update = () => {
+      if (!el.isConnected) return
+      const top = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top
+      const start = Math.max(0, Math.floor(-top / rowH) - 8)
+      const end = Math.min(list.length, Math.ceil((-top + scroller.clientHeight) / rowH) + 8)
+      setRange((r) => (r[0] === start && r[1] === end ? r : [start, end]))
+    }
+    update()
+    scroller.addEventListener('scroll', update, { passive: true })
+    return () => scroller.removeEventListener('scroll', update)
+  }, [rowH, list.length])
+
+  const [a, b] = rowH ? range : [0, 30]
+  return (
+    <div ref={box} style={rowH ? { height: `${Math.max(0, list.length * rowH - gap)}px` } : undefined}>
+      <div ref={inner} class={cls} style={{ transform: `translateY(${a * rowH}px)`, gap: `${gap}px` }}>
+        {list.slice(a, b).map((t) => <Fragment key={keyOf(t)}>{render(t)}</Fragment>)}
+      </div>
+    </div>
+  )
+}
+
 export function VirtualGrid<T>({ list, min = 220, ratio = 9 / 16, extra = 54, render }: {
   list: T[]
   min?: number
