@@ -45,7 +45,7 @@ tiny_http = "0.12"
 # maps a port only for a listener, and the engine never listens. Exact pin; its tree is pinned in
 # Cargo.lock.
 librqbit = { version = "=9.1.0", default-features = false, features = ["rust-tls"] }
-tokio = { version = "1", features = ["rt-multi-thread", "time", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "io-util", "sync", "macros"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
