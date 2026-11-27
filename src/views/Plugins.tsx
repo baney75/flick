@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'preact/hooks'
 import { notify, settings, setSettings } from '../lib/store'
 import { Icon } from '../components/icons'
+import { useEscape } from '../lib/escape'
 import { isDesktop } from '../lib/platform'
 import { PluginIcon } from './Plugin'
 import { installed, prepare, install, remove, setEnabled, setPluginSettings, acceptUpdate, officialList, absolute, replaceLine, type Candidate, type OfficialEntry } from '../lib/plugins/registry'
@@ -30,6 +31,7 @@ export function ReviewSheet({ c, extra, onDone }: { c: Candidate; extra?: string
   const old = c.replaces
   const swap = replaceLine(c)
   const verb = swap ? 'Replace' : old ? 'Update' : 'Install'
+  useEscape(true, () => { if (!busy) onDone(false) })
   const go = async () => {
     setBusy(true)
     try {

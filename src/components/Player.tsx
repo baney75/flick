@@ -10,6 +10,7 @@ import { isDesktop, isMobileApp, hasOpfs, invoke } from '../lib/platform'
 import { kodiLive, urlLive } from '../lib/servers'
 import { barFor, oneRetry, openToolStream, stopToolStream } from '../lib/plugins/runtime'
 import { Icon } from './icons'
+import { useEscape } from '../lib/escape'
 import { Readout } from './Readout'
 import { Delayed, KEEPS_STALLING, kindOf, OPENING, waitLine, Watchdog } from '../lib/stalls'
 import { note, sourceOf } from '../lib/playlog'
@@ -73,6 +74,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   const [idle, setIdle] = useState(false)
   const [full, setFull] = useState(false)
   const [menu, setMenu] = useState<null | 'speed' | 'subs' | 'help'>(null)
+  // The key handler below is registered after paint, so an Escape right after a menu opens saw it closed.
+  useEscape(menu !== null, () => setMenu(null))
   const [subs, setSubs] = useState<LoadedSub[]>([])
   const [subOn, setSubOn] = useState(-1)
   const [osd, setOsd] = useState<{ text: string; n: number } | null>(null)

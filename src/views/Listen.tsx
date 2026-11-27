@@ -8,6 +8,7 @@ import { formatTime } from '../lib/parse'
 import { isDesktop, invoke } from '../lib/platform'
 import { mp4Info, id3Cover, sniff, bookChapters, blobRead, urlRead, chapterAt, startSleep, sleepDue, bookSpeed, setBookSpeed, type Chapter, type Sleep } from '../lib/audiobook'
 import { Icon } from '../components/icons'
+import { useEscape } from '../lib/escape'
 
 const SPEEDS = [0.75, 1, 1.1, 1.2, 1.3, 1.5, 1.75, 2, 2.5, 3]
 const SLEEPS: (number | 'chapter')[] = [15, 30, 45, 60, 'chapter']
@@ -165,11 +166,13 @@ function Book({ it }: { it: Item }) {
   const nextChapter = () => { if (chapters[cur + 1]) seek(chapters[cur + 1].start) }
   const rate = (s: number) => { setSpeed(s); if (audio.current) audio.current.playbackRate = s; setBookSpeed(it.id, s).catch(() => {}); setMenu(null) }
   const leave = () => { save(); history.length > 1 ? history.back() : go('/library') }
+  useEscape(true, leave, true)
+  useEscape(!!menu, () => setMenu(null))
 
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest('input, select') || e.metaKey || e.ctrlKey) return
-      const act: Record<string, () => void> = { ' ': toggle, k: toggle, ArrowLeft: () => seek(t - 30), ArrowRight: () => seek(t + 30), Escape: () => (menu ? setMenu(null) : leave()) }
+      const act: Record<string, () => void> = { ' ': toggle, k: toggle, ArrowLeft: () => seek(t - 30), ArrowRight: () => seek(t + 30), }
       if (act[e.key]) { e.preventDefault(); act[e.key]() }
     }
     addEventListener('keydown', k)
