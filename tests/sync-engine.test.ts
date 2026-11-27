@@ -132,15 +132,36 @@ describe('sync engine', () => {
     await quiet(sock)
     expect(Math.max(...sock.sent.map((s: string) => new TextEncoder().encode(s).length))).toBeLessThanOrEqual(CAP)
 
-    // A digest that arrives in parts is answered once, after the last part, with only what the peer lacks.
-    sock.sent.length = 0
-    const rows = digest(new Map(docKeys('').map((k) => [k, { v: null, t: Number.MAX_SAFE_INTEGER - 1, d: 'z' }])))
+    // A digest that arrives in parts is answered once, after the last part, with only what the peer lacks:
+    // here one key the peer's digest leaves out.
+    const keys = docKeys('')
+    const lacks = keys[1234]
+    const newer = (ks: string[]) => digest(new Map(ks.map((k) => [k, { v: null, t: Number.MAX_SAFE_INTEGER - 1, d: 'z' }])))
+    const rows = newer(keys.filter((k) => k !== lacks))
     const half = Math.ceil(rows.length / 2)
-    for (const [i, part] of [rows.slice(0, half), rows.slice(half)].entries()) {
-      await sock.onmessage({ data: await seal(g.key, { type: 'digest', from: 'peer-big', rows: part, set: 'r1', part: i, parts: 2 }) })
-      await quiet(sock)
-    }
-    const sent = await Promise.all(sock.sent.map((s: string) => unseal<any>(g.key, s)))
-    expect(sent.filter((m) => m.type === 'entries')).toEqual([])
+    const sentNow = () => Promise.all(sock.sent.map((s: string) => unseal<any>(g.key, s)))
+    sock.sent.length = 0
+    await sock.onmessage({ data: await seal(g.key, { type: 'digest', from: 'peer-big', rows: rows.slice(0, half), set: 'r1', part: 0, parts: 2 }) })
+    await quiet(sock)
+    expect(sock.sent).toEqual([])
+    await sock.onmessage({ data: await seal(g.key, { type: 'digest', from: 'peer-big', rows: rows.slice(half), set: 'r1', part: 1, parts: 2 }) })
+    await quiet(sock)
+    expect((await sentNow()).flatMap((m) => m.list.map(([k]: [string]) => k))).toEqual([lacks])
+
+    // A welcome in parts, out of order and with a part repeated, gets one digest set back and one round
+    // of entries, only once the last part is in.
+    sock.sent.length = 0
+    const w = (part: number, r: typeof rows) => seal(g.key, { type: 'welcome', from: 'peer-w', name: 'TV', rows: r, set: 'w1', part, parts: 2 })
+    await sock.onmessage({ data: await w(1, rows.slice(half)) })
+    await sock.onmessage({ data: await w(1, rows.slice(half)) })
+    await quiet(sock)
+    expect(sock.sent).toEqual([])
+    await sock.onmessage({ data: await w(0, rows.slice(0, half)) })
+    await quiet(sock)
+    const back = await sentNow()
+    const digests = back.filter((m) => m.type === 'digest')
+    expect(new Set(digests.map((m) => m.set)).size).toBe(1)
+    expect(digests.flatMap((m) => m.rows).length).toBe(keys.length)
+    expect(back.filter((m) => m.type === 'entries').flatMap((m) => m.list.map(([k]: [string]) => k))).toEqual([lacks])
   })
 })

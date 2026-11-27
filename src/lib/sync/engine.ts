@@ -356,8 +356,8 @@ function sendEntries(to: string | undefined, list: [string, Entry][]) {
   for (const chunk of split(list)) send({ type: 'entries', from: tab, to, list: [...chunk] })
 }
 
-// Digest parts held until the set is complete, by sender and set. A set that never completes (the
-// sender went away) is dropped after a minute, and all of them when the connection is retired.
+// Digest parts held until the set is complete, by sender and set. A set that stops arriving (the
+// sender went away) is dropped a minute after its last part, and all of them when the connection is retired.
 const gathering = new Map<string, { rows: DigestRow[][]; got: number; at: number }>()
 const MAX_PARTS = 1000
 const GATHER_MS = 60_000
@@ -372,7 +372,8 @@ function gather(m: { type: string; from: string; rows: DigestRow[] } & Parts): D
   const key = `${m.type} ${m.from} ${m.set}`
   const g = gathering.get(key) ?? { rows: new Array<DigestRow[]>(parts), got: 0, at: now }
   if (g.rows.length !== parts) return null
-  if (!g.rows[part!]) { g.rows[part!] = m.rows; g.got++ }
+  // The minute counts from the latest part, so a slow sender (a throttled tab, a weak TV) still finishes.
+  if (!g.rows[part!]) { g.rows[part!] = m.rows; g.got++; g.at = now }
   gathering.set(key, g)
   if (g.got < parts) return null
   gathering.delete(key)
