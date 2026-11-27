@@ -75,6 +75,7 @@ export default {
       { key: 'password', label: 'Password', type: 'password' },   // password fields are secret
     ] },
   ],
+  layout: 'rows',                            // the plugin's page: 'rows' (default) or 'grid', see below
   titleActions: [                            // optional buttons on each title page, at most 6
     { id: 'like', label: 'Like', key: 'l' },   // key: one letter, a shortcut on the title page and on a focused card
   ],
@@ -177,6 +178,14 @@ line). `secret: true` keeps the value on the device: it never syncs and never go
 `password` fields are always secret. Setting values reach the plugin as `ctx.settings`. Action field
 values go only to that one `action()` call and are not saved; keep what you need (a token) with
 `ctx.store`.
+
+### Layout
+
+`layout: 'rows'` (the default) shows each catalog as a row of cards. `layout: 'grid'` suits a video
+site: the search box on top, one chip per catalog (its `catalogs`, then its `userCatalogs`), and the
+chosen catalog as a grid of cards with Show more while `more` is true. It opens on the catalog chosen
+last in this session, or the first one with anything in it. On the plugin's page `/` focuses the search
+box, the arrow keys move between cards, and Enter opens a title, where Play has the focus.
 
 ### Title actions
 

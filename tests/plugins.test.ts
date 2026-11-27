@@ -43,6 +43,11 @@ describe('plugin validation', () => {
     expect(() => V.validateManifest(manifest({ titleActions: seven }), [...FNS, 'titleAction'])).toThrow(/at most 6/)
     expect(V.validateMeta({ id: 'a', type: 'video', name: 'A', marks: ['like', 'Bad Id', 3] }).marks).toEqual(['like'])
   })
+  it('reads a layout: rows by default, grid when asked, anything else refused', () => {
+    expect(V.validateManifest(manifest(), FNS).layout).toBe('rows')
+    expect(V.validateManifest(manifest({ layout: 'grid' }), FNS).layout).toBe('grid')
+    expect(() => V.validateManifest(manifest({ layout: 'list' }), FNS)).toThrow(/layout/)
+  })
   it('marks password fields secret', () => {
     const m = V.validateManifest(manifest({ actions: [{ id: 'in', label: 'Sign in', fields: [{ key: 'pw', type: 'password' }] }] }), [...FNS, 'action'])
     expect(m.actions[0].fields[0].secret).toBe(true)
