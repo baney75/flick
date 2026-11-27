@@ -285,6 +285,9 @@ export function webkitPath(webkit, cache = join(homedir(), 'Library/Caches/ms-pl
 }
 
 /** The same perf run in Playwright WebKit against the build the app was made from. */
+/** Launches a perf run may spend seeding before it gives up; src/lib/perf/seed.ts resumes across them. */
+const SEED_LAUNCHES = 6
+
 async function browserPerf(runs) {
   const { webkit } = await import('playwright')
   const { freePort } = await import('./free-port.mjs')
@@ -315,7 +318,7 @@ async function browserPerf(runs) {
       } finally { await ctx.close() }
     }
     const out = []
-    for (let i = 0; out.length < runs && i < runs + 1; i++) { const r = await run(); if (r.phase === 'measured') out.push(r) }
+    for (let i = 0; out.length < runs && i < runs + SEED_LAUNCHES; i++) { const r = await run(); if (r.phase === 'measured') out.push(r) }
     return out
   } finally {
     server.kill()
@@ -396,8 +399,9 @@ async function main() {
 async function perfMain(outPath) {
   const runs = Math.max(1, Number(process.argv[process.argv.indexOf('--runs') + 1]) || 5)
   const apps = []
-  // The first launch in a fresh profile seeds the library; every later one is a measured cold start.
-  for (let i = 0; apps.length < runs && i < runs + 1; i++) {
+  // The first launches in a fresh profile seed the library (a busy Mac may need several, each under
+  // the 30 s limit); every later one is a measured cold start.
+  for (let i = 0; apps.length < runs && i < runs + SEED_LAUNCHES; i++) {
     const r = await launch('perf').catch((e) => { console.error(`FAIL: ${e.message}`); process.exit(1) })
     if (r.progress) console.log(r.progress.trim())
     if (!r.report) { console.error(`FAIL: ${r.why} The app was stopped.`); process.exit(1) }
