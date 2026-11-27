@@ -260,12 +260,14 @@ plugin's page Flick calls `userCatalogs` again, so a list the action filled show
     URL; each also carries `channel`, `duration` (seconds, 0 when unknown), `views` (a count or null) and
     `uploaded` (Unix seconds or null, approximate: YouTube's search page says "3 years ago").
   - `resolve(url)`: returns a `flick-tool:` stream URL for an `https:` page on the plugin's `hosts`.
-    Flick picks the format (H.264 and AAC, up to 1080p) and plays it while yt-dlp streams it.
+    For YouTube, Flick plays YouTube's own HLS master (every quality, full seeking, live streams too)
+    and looks it up as soon as the title page opens, so Play rarely waits. A page with no master plays
+    one H.264 and AAC file that yt-dlp streams into a local playlist.
   - `download(url)`: a plugin cannot start a download; it fails with a plain message. The viewer saves
     a `resolve()`d stream with its Download button, and yt-dlp writes one mp4 in the same format.
   Flick downloads the official yt-dlp release on first use, checks it against the release's
   SHA2-256SUMS, and updates it once a day. While that first download runs, calls fail with how far
-  it got. A yt-dlp on PATH is used only when Flick's own fails. Playing needs ffmpeg.
+  it got. A yt-dlp on PATH is used only when Flick's own fails. Only that fallback needs ffmpeg.
 - `ctx.log(...)`: shows in Settings > Plugins > this plugin > Log.
 
 ## A service plugin

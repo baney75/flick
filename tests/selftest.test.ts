@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { failures, invokeSummary, medianReport, override, perfMarkdown, table, webkitPath, youtubeFailures, youtubeTable, identifierFor, profileDirs, removeDirs, TOOLS_LAYOUT } from '../scripts/desktop-selftest.mjs'
 import ytdlpRs from '../src-tauri/src/ytdlp.rs?raw'
-import { hostOf } from '../src/lib/plugins/selftest'
+import { hostOf, seekPlayed } from '../src/lib/plugins/selftest'
 
 const ok = (name: string, totalMs: number) => ({ url: `/plugins/${name}.js`, name, totalMs, steps: [{ step: 'fetch', ms: 1 }, { step: 'ping', ms: totalMs - 1 }] })
 
@@ -130,17 +130,31 @@ describe('desktop self-test perf', () => {
 })
 
 describe('YouTube self-test report', () => {
-  const run = { query: 'karpathy', rows: 20, host: 'asset://localhost', steps: [{ step: 'install', ms: 40 }, { step: 'search', ms: 2100, detail: '20 rows' }, { step: 'streams', ms: 900 }, { step: 'open', ms: 3000 }] }
+  it('counts a seek once the clock passes 2:00:00, even when the deadline is what reads it', () => {
+    expect(seekPlayed(0, 15.1, 100)).toBeNull()
+    expect(seekPlayed(1000, 7200, 1500)).toBeNull()
+    // The run that ended at 7200.4 s with the seek 1.9 s old: that seek played.
+    expect(seekPlayed(1000, 7200.4, 2900)).toBe(1900)
+  })
+  const watch = { firstFrameMs: 600, reached: 15, stalls: 0, seekMs: 900 }
+  const run = { query: 'karpathy', rows: 20, host: 'https://manifest.googlevideo.com', watch, steps: [{ step: 'install', ms: 40 }, { step: 'search', ms: 2100, detail: '20 rows' }, { step: 'streams', ms: 900 }, { step: 'open', ms: 3000 }] }
   it('passes with rows and a playable address, and says why when not', () => {
     expect(youtubeFailures(run)).toEqual([])
     expect(youtubeFailures({ ...run, rows: 0 })).toEqual(['YouTube: search "karpathy" returned no rows'])
     expect(youtubeFailures({ ...run, host: 'not a URL' })).toHaveLength(1)
+    // Case 11: the old local pipeline, a stall, a short play or a slow seek each fail the run.
+    expect(youtubeFailures({ ...run, host: 'asset://localhost' })).toEqual(["YouTube: the stream opened to asset://localhost, not YouTube's HLS master"])
+    expect(youtubeFailures({ ...run, watch: { ...watch, stalls: 2 } })).toEqual(['YouTube: 2 stalls after the first frame'])
+    expect(youtubeFailures({ ...run, watch: { ...watch, reached: 9 } })).toEqual(['YouTube: played to 9 s, not past 15 s'])
+    expect(youtubeFailures({ ...run, watch: { ...watch, seekMs: null } })).toHaveLength(1)
+    expect(youtubeFailures({ ...run, watch: undefined })).toEqual(['YouTube: the master was never played'])
     expect(youtubeFailures({ ...run, error: 'yt-dlp: ERROR: blocked', failedAfter: 'search' })).toEqual(['YouTube: yt-dlp: ERROR: blocked (at search)'])
     expect(youtubeFailures(null)).toHaveLength(1)
   })
   it('prints each step and the host only', () => {
     expect(youtubeTable(run)).toContain('| search  |   2100 | 20 rows')
-    expect(youtubeTable(run)).toContain('Plays from asset://localhost.')
+    expect(youtubeTable(run)).toContain('Plays from https://manifest.googlevideo.com.')
+    expect(youtubeTable(run)).toContain('Played to 15 s: first frame 600 ms, 0 stalls, seek to 2:00:00 in 900 ms.')
   })
   it('keeps the path and query out of the reported address', () => {
     expect(hostOf('http://asset.localhost/Users/x/cache/ytdlp/tok123/index.m3u8?sig=abc')).toBe('http://asset.localhost')

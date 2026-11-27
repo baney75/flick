@@ -8,7 +8,7 @@ import { formatTime } from '../lib/parse'
 import { vttUrl, toVtt } from '../lib/subs'
 import { isDesktop, isMobileApp, hasOpfs, invoke } from '../lib/platform'
 import { kodiConvert, convertUrl } from '../lib/servers'
-import { openToolStream } from '../lib/plugins/runtime'
+import { barFor, oneRetry, openToolStream } from '../lib/plugins/runtime'
 import { Icon } from './icons'
 import { Readout } from './Readout'
 import { Delayed, KEEPS_STALLING, kindOf, OPENING, WAITING, waitLine, Watchdog } from '../lib/stalls'
@@ -42,6 +42,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   const dog = useRef<Watchdog | null>(null)
   const [stallLine, setStallLine] = useState<string | null>(null)
   const [stuck, setStuck] = useState(false)
+  const tool = useRef<{ url: string; retry: ReturnType<typeof oneRetry> } | null>(null)
+  const [live, setLive] = useState(false)
 
   const [status, setStatus] = useState<string | null>(OPENING)
   // The words beside the spinner wait 1 s (rule 7); the spinner shows at once.
@@ -101,8 +103,11 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         if (!url) throw new Error('Nothing to play.')
         if (url.startsWith('flick-tool:')) {
           setStatus('Starting the stream')
-          url = await openToolStream(url)
+          const got = await openToolStream(url)
           if (cancelled) return
+          tool.current = { url, retry: oneRetry(openToolStream) }
+          setLive(got.live)
+          url = got.url
           setStatus(null)
         }
         let startAt = req.startAt
@@ -196,6 +201,14 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     // No reload behind an error card or a conversion; a failed reload says the stream keeps stalling.
     if (dog.current?.failed()) return
     if (remux.current) { setStatus(null); setError(msg); return }
+    // A plugin stream's address expires and is bound to this IP: look it up again once, at the same spot.
+    const again = tool.current?.retry(tool.current.url, v.currentTime || req.startAt || 0)
+    if (again) {
+      setStatus('Reconnecting')
+      again.then(({ play, at }) => { req.startAt = at; setLive(play.live); return attach(v, play.url) })
+        .catch((e) => { setStatus(null); setError((e as Error).message || msg) })
+      return
+    }
     const src = req.src
     // A URL with a server-side fallback stream (Jellyfin, Plex) uses that instead.
     const convertible = src?.t === 'kodi' || (src?.t === 'url' && !src.fallback)
@@ -588,6 +601,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     setStoring(null)
   }
 
+  const bar_ = barFor(live)
   const pct = dur ? (time / dur) * 100 : 0
   const bpct = dur ? (buffered / dur) * 100 : 0
   const showControls = !idle || !playing || menu !== null
@@ -673,7 +687,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
       )}
 
       <div class="bottom-bar">
-        <div class="scrub" ref={bar} onPointerDown={onBarDown} onPointerMove={onBarMove} onPointerUp={onBarUp} onPointerLeave={() => setHover(null)}
+        {bar_.seek && <div class="scrub" ref={bar} onPointerDown={onBarDown} onPointerMove={onBarMove} onPointerUp={onBarUp} onPointerLeave={() => setHover(null)}
           role="slider" aria-label="Seek" aria-valuemin={0} aria-valuemax={Math.round(dur)} aria-valuenow={Math.round(time)} tabIndex={0}>
           <div class="track"><div class="buf" style={{ width: `${bpct}%` }} /><div class="fill" style={{ width: `${pct}%` }} /><div class="knob" style={{ left: `${pct}%` }} /></div>
           {hover && dur > 0 && (
@@ -682,7 +696,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
               <span>{formatTime(hover.t)}</span>
             </div>
           )}
-        </div>
+        </div>}
         <div class="controls">
           <button class="icon-btn big" onClick={toggle} aria-label={playing ? 'Pause (Space)' : 'Play (Space)'}><Icon name={playing ? 'pause' : 'play'} size={28} /></button>
           <button class="icon-btn" onClick={() => seekBy(-settings.value.skipSeconds)} aria-label="Back 10 seconds (J)"><Icon name="back10" /></button>
@@ -694,7 +708,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
             </button>
             <input type="range" min={0} max={1} step={0.01} value={muted ? 0 : volume} onInput={(e) => setVol(Number((e.target as HTMLInputElement).value))} aria-label="Volume" />
           </div>
-          <div class="time">{formatTime(time)} <span>/ {formatTime(dur)}</span></div>
+          {bar_.label ? <div class="time live">{bar_.label}</div> : <div class="time">{formatTime(time)} <span>/ {formatTime(dur)}</span></div>}
           <div class="spacer" />
           <div class="menu-wrap">
             <button class={`icon-btn label ${speed !== 1 ? 'on' : ''}`} onClick={() => setMenu(menu === 'speed' ? null : 'speed')} aria-label="Speed">{speed}×</button>

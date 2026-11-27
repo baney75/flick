@@ -130,13 +130,22 @@ export function youtubeFailures(report) {
   if (report.error) return [`YouTube: ${report.error} (at ${report.failedAfter})`]
   const out = []
   if (!(report.rows > 0)) out.push(`YouTube: search "${report.query}" returned no rows`)
-  if (!/^(https?|asset):\/\/./.test(report.host ?? '')) out.push(`YouTube: the stream opened to no playable address (${report.host})`)
+  // SPEC-youtube-play case 11: YouTube's own master, played past 15 s with no stall, and a seek to 2:00:00 within 3 s.
+  if (report.host !== 'https://manifest.googlevideo.com') out.push(`YouTube: the stream opened to ${report.host}, not YouTube's HLS master`)
+  const w = report.watch
+  if (!w) out.push('YouTube: the master was never played')
+  else {
+    if (!(w.reached >= 15)) out.push(`YouTube: played to ${w.reached} s, not past 15 s`)
+    if (w.stalls) out.push(`YouTube: ${w.stalls} stalls after the first frame`)
+    if (w.seekMs == null || w.seekMs > 3000) out.push(`YouTube: the seek to 2:00:00 played after ${w.seekMs ?? 'never'} ms, over 3000 ms`)
+  }
   return out
 }
 
 export function youtubeTable(report) {
   const rows = report.steps.map((s) => `| ${s.step.padEnd(7)} | ${String(s.ms).padStart(6)} | ${s.detail ?? ''}`)
-  return ['| Step    |     ms | Detail', '| ------- | ------ | ------', ...rows, '', `Search "${report.query}": ${report.rows ?? 0} rows. Plays from ${report.host ?? 'nothing'}.`].join('\n')
+  return ['| Step    |     ms | Detail', '| ------- | ------ | ------', ...rows, '', `Search "${report.query}": ${report.rows ?? 0} rows. Plays from ${report.host ?? 'nothing'}.`,
+    ...(report.watch ? [`Played to ${report.watch.reached} s: first frame ${report.watch.firstFrameMs} ms, ${report.watch.stalls} stalls, seek to 2:00:00 in ${report.watch.seekMs ?? 'never'} ms.`] : [])].join('\n')
 }
 
 export function table(report) {
@@ -374,7 +383,7 @@ async function main() {
     console.log(youtubeTable(report))
     const bad = youtubeFailures(report)
     if (bad.length) { console.error(`\nFAIL\n${bad.join('\n')}`); process.exit(1) }
-    console.log('\nPASS: YouTube installed, searched, resolved and opened a stream.')
+    console.log('\nPASS: YouTube installed, searched, and played its HLS master with no stall and a quick seek.')
     return
   }
   if (report.plugins) console.log(table(report))

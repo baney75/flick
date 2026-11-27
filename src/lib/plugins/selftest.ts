@@ -57,8 +57,10 @@ export async function runPluginSelftest(): Promise<Report> {
   return { userAgent: navigator.userAgent, origin: location.origin, startedAt: new Date().toISOString(), plugins }
 }
 
-export interface YoutubeStep { step: 'install' | 'search' | 'streams' | 'open'; ms: number; detail?: string }
-export interface YoutubeReport { userAgent: string; origin: string; startedAt: string; query: string; rows?: number; host?: string; steps: YoutubeStep[]; error?: string; failedAfter?: string }
+export interface YoutubeStep { step: 'install' | 'search' | 'streams' | 'open' | 'watch'; ms: number; detail?: string }
+/** Case 11 of SPEC-youtube-play: how the master played in the real web view. */
+export interface Watch { firstFrameMs: number; reached: number; stalls: number; seekMs: number | null }
+export interface YoutubeReport { userAgent: string; origin: string; startedAt: string; query: string; rows?: number; host?: string; live?: boolean; watch?: Watch; steps: YoutubeStep[]; error?: string; failedAfter?: string }
 
 /** Where a playable address points, with no path or query (a token never leaves the app). */
 export function hostOf(url: string): string {
@@ -68,13 +70,56 @@ export function hostOf(url: string): string {
 /** How long the YouTube run may take in all; the script stops the app at 30 s. */
 export const YOUTUBE_MS = 28_000
 
-/** A short public video that stays up (YouTube's first upload), so the stream step is quick and stable. */
-export const PLAY_ID = 'https://www.youtube.com/watch?v=jNQXAC9IVRw'
+/** A long public video (3 h 31 m), so the run can seek to 2:00:00. */
+export const PLAY_ID = 'https://www.youtube.com/watch?v=7xTGNNLPyMI'
+const PLAY_TO = 15
+const SEEK_TO = 7200
+
+/** How long the seek took to play, once the clock is past SEEK_TO; null before. The deadline reads it
+ *  too, so a seek that played just before the run ended still counts (its time an upper bound). */
+export function seekPlayed(seekAt: number, time: number, t: number): number | null {
+  return seekAt && time > SEEK_TO + 0.2 ? Math.round(t - seekAt) : null
+}
+
+/** Plays `url` muted in a hidden video element until it passes PLAY_TO seconds, counting stalls after
+ *  the first frame, then seeks to SEEK_TO and times how long until it plays again. */
+export function watch(url: string, limitMs: number, now: () => number = () => performance.now(), say: (l: string) => void = note): Promise<Watch> {
+  // A window never shown renders no video frames, so the clock of a <video> there never moves; an
+  // <audio> element plays the same master, its variants and audio group, without a display.
+  const v = document.createElement('audio')
+  v.muted = true
+  say(`watch: page ${document.visibilityState}`)
+  document.body.append(v)
+  const t0 = now()
+  let first = 0
+  let stalls = 0
+  let seekAt = 0
+  let reached = 0
+  return new Promise<Watch>((resolve, reject) => {
+    const done = (w: Watch) => { clearInterval(tick); v.pause(); v.removeAttribute('src'); v.load(); v.remove(); resolve(w) }
+    v.addEventListener('error', () => reject(new Error(`video error ${v.error?.code}: ${v.error?.message ?? ''}`)))
+    const at = () => `${v.currentTime.toFixed(1)} s, ready ${v.readyState}, net ${v.networkState}, buffered ${v.buffered.length ? v.buffered.end(v.buffered.length - 1).toFixed(1) : 0} s`
+    v.addEventListener('loadedmetadata', () => say(`watch: metadata, ${Math.round(v.duration)} s long`))
+    v.addEventListener('playing', () => { if (!first) { first = now(); say(`watch: first frame at ${Math.round(first - t0)} ms`) } })
+    const tick = setInterval(() => say(`watch: ${at()}`), 3000)
+    v.addEventListener('waiting', () => { if (first && !seekAt) stalls++ })
+    v.addEventListener('timeupdate', () => {
+      if (!seekAt) reached = Math.max(reached, Math.floor(v.currentTime))
+      if (!seekAt && v.currentTime >= PLAY_TO) { seekAt = now(); say(`watch: seeking to ${SEEK_TO} s`); v.currentTime = SEEK_TO; return }
+      const seekMs = seekPlayed(seekAt, v.currentTime, now())
+      if (seekMs !== null) done({ firstFrameMs: Math.round(first - t0), reached, stalls, seekMs })
+    })
+    // Inside the run's deadline, so a play or seek that never finishes still reports how far it got.
+    setTimeout(() => { say(`watch: stopped at ${at()}`); done({ firstFrameMs: first ? Math.round(first - t0) : -1, reached, stalls, seekMs: seekPlayed(seekAt, v.currentTime, now()) }) }, Math.max(0, limitMs))
+    v.src = url
+    v.play().catch((e) => { say(`watch: play() refused: ${(e as Error).message}`); reject(e) })
+  })
+}
 
 /**
- * YouTube end to end, the way a user's taps go: install the bundled plugin, then at once search
- * through ctx.tools.ytdlp and open a stream to the address the player plays. The two run side by side
- * so the whole run fits the 30 s the script allows; each is timed on its own.
+ * YouTube end to end, the way a user's taps go: install the bundled plugin, find a long video's HLS
+ * master, play it past 15 s and seek to 2:00:00 (SPEC-youtube-play case 11), with a search through
+ * ctx.tools.ytdlp beside the playback so the whole run fits the 30 s the script allows.
  */
 export async function runYoutubeSelftest(query = 'karpathy', now: () => number = () => performance.now()): Promise<YoutubeReport> {
   // One deadline for every step, short of the script's 30 s, so a hang is reported with its step.
@@ -102,11 +147,14 @@ export async function runYoutubeSelftest(query = 'karpathy', now: () => number =
   try {
     rec = await step('install', async () => { const x = await install(await prepare({ url: '/plugins/youtube.js' })); await startPlugin(x); return x })
     const src = rec
-    const search = step('search', () => callPlugin(src, 'catalog', [{ id: 'search', type: 'video', search: query }]), (v) => `${v.items.length} rows`)
-      .then((found) => { r.rows = found.items.length })
-    const play = step('streams', () => callPlugin(src, 'streams', [{ type: 'video', id: PLAY_ID }]), (v) => `${v.length} stream`)
+    // The lookup first, alone: a search beside it doubled its 7 s. The search then runs beside playback.
+    const opened = step('streams', () => callPlugin(src, 'streams', [{ type: 'video', id: PLAY_ID }]), (v) => `${v.length} stream`)
       .then((list) => { if (!list[0]?.url) throw new Error('no stream'); return step('open', () => openToolStream(list[0].url!)) })
-      .then((playable) => { r.host = hostOf(playable) })
+    const search = opened.catch(() => {}).then(() => step('search', () => callPlugin(src, 'catalog', [{ id: 'search', type: 'video', search: query }]), (v) => `${v.items.length} rows`))
+      .then((found) => { r.rows = found.items.length })
+    const play = opened
+      .then((p) => { r.host = hostOf(p.url); r.live = p.live; return step('watch', () => watch(p.url, end - now() - 500), (w) => `first frame ${w.firstFrameMs} ms, stalls ${w.stalls}, seek ${w.seekMs ?? 'none'} ms`) })
+      .then((w) => { r.watch = w })
     const [a, b] = await Promise.allSettled([search, play])
     for (const x of [a, b]) if (x.status === 'rejected') throw x.reason
   } catch (e) {

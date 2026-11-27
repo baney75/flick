@@ -6,6 +6,7 @@
 // unpacked build (yt-dlp_macos.zip): the one-file build unpacks itself on every run, and macOS checks the
 // unpacked files each time, which cost about 4 s per call (`--version` 4.35 s, against 0.18 s unpacked).
 
+use super::ytmaster::{self, Masters};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -18,9 +19,12 @@ use std::time::{Duration, Instant};
 use tauri::{Manager, Url};
 
 const RELEASES: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download";
-// H.264 and AAC play in every web view and copy into HLS without re-encoding.
-const PLAY_FORMAT: &str =
+// What Download saves: H.264 and AAC, merged by yt-dlp into one MP4 file.
+const SAVE_FORMAT: &str =
     "bv[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/b[vcodec^=avc1][acodec^=mp4a]";
+// Play without a master (SPEC-youtube-play rule 4): one file with both tracks, fetched by yt-dlp's own
+// downloader. A `+` merge to stdout made yt-dlp's ffmpeg fetch two URLs, and it hung or got 403.
+const FALLBACK_FORMAT: &str = "b[vcodec^=avc1][acodec^=mp4a][protocol^=http]";
 const DAY: Duration = Duration::from_secs(86_400);
 
 #[derive(Clone, Default, Debug)]
@@ -42,6 +46,8 @@ pub struct PluginTools {
     fetch: Arc<Mutex<Fetch>>,
     /// yt-dlp and ffmpeg for the stream playing now. A new stream or app exit stops them.
     job: Mutex<Job>,
+    /// YouTube masters per page, looked up early (ytmaster.rs).
+    masters: Arc<Masters>,
 }
 
 /// The processes of one stream. `id` changes with every new stream, so an older call that is
@@ -405,6 +411,7 @@ fn metas(j: &Value) -> Vec<Value> {
 }
 
 /// What one call needs from the app: Flick's tools folder and the download state.
+#[derive(Clone)]
 struct Env {
     dir: PathBuf,
     fetch: Arc<Mutex<Fetch>>,
@@ -601,6 +608,7 @@ fn wait_for_segment(
     id: u64,
     playlist: &Path,
     dir: &Path,
+    log: &str,
     limit: Duration,
 ) -> Result<PathBuf, String> {
     let start = Instant::now();
@@ -620,7 +628,7 @@ fn wait_for_segment(
         if ended && segments(playlist) == 0 {
             stop_job_if(state, id);
             let why = [
-                last_line(&dir.join("yt-dlp.log")),
+                last_line(&dir.join(log)),
                 last_line(&dir.join("ffmpeg.log")),
             ]
             .into_iter()
@@ -674,14 +682,15 @@ fn last_line(p: &Path) -> String {
         .to_string()
 }
 
-/// yt-dlp writes the video to stdout (it picks the format) and ffmpeg turns that into a local HLS
-/// event playlist, so a long video plays while it streams. Returns the playlist once it lists a segment.
-fn stream(
-    bin: &Path,
+/// Serves whatever `source` writes to stdout as a local HLS event playlist in `dir`, so a long video
+/// plays while it streams: ffmpeg copies the tracks into segments, re-encoding nothing. The source's
+/// stderr goes to `dir/<log>`. Returns the playlist once it lists a segment. The yt-dlp fallback uses it,
+/// and so may any other source that writes a stream to stdout.
+pub(crate) fn local_hls(
+    mut source: Command,
+    log: &str,
     ffmpeg: &Path,
-    page: &str,
     dir: &Path,
-    base: &str,
     state: &PluginTools,
 ) -> Result<PathBuf, String> {
     stop_job(state);
@@ -691,22 +700,12 @@ fn stream(
     }
     let _ = std::fs::remove_dir_all(dir);
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let base = asset_url(&dir.join(""));
     let file = |n: &str| std::fs::File::create(dir.join(n)).map_err(|e| e.to_string());
-    let mut yt = own_group(&mut Command::new(bin))
-        .args([
-            "--no-warnings",
-            "--no-progress",
-            "--no-playlist",
-            "--no-part",
-            "-f",
-            PLAY_FORMAT,
-            "--ffmpeg-location",
-        ])
-        .arg(ffmpeg)
-        .args(["-o", "-", "--", page])
+    let mut yt = own_group(&mut source)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(file("yt-dlp.log")?)
+        .stderr(file(log)?)
         .spawn()
         .map_err(|e| e.to_string())?;
     let pipe = yt.stdout.take().ok_or("yt-dlp gave no output")?;
@@ -734,7 +733,7 @@ fn stream(
             "-hls_flags",
             "independent_segments",
             "-hls_base_url",
-            base,
+            &base,
         ])
         .arg(&playlist)
         .stdin(pipe)
@@ -749,11 +748,11 @@ fn stream(
         }
     };
     let id = start_job(state, vec![yt, ff]);
-    wait_for_segment(state, id, &playlist, dir, Duration::from_secs(45))
+    wait_for_segment(state, id, &playlist, dir, log, Duration::from_secs(45))
 }
 
-/// Start a `flick-tool:` stream a plugin resolved. Returns the local playlist path for convertFileSrc.
-fn open(env: &Env, state: &PluginTools, cache: &Path, url: &str) -> Result<PathBuf, String> {
+/// The page a `flick-tool:ytdlp/<token>` plays, and the token. Only resolve() makes tokens.
+fn page_of(state: &PluginTools, url: &str) -> Result<(String, String), String> {
     let token = url
         .strip_prefix("flick-tool:ytdlp/")
         .ok_or_else(|| format!("Flick cannot play {url}."))?;
@@ -764,18 +763,120 @@ fn open(env: &Env, state: &PluginTools, cache: &Path, url: &str) -> Result<PathB
         .get(token)
         .cloned()
         .ok_or("This stream has expired. Open the title again.")?;
-    let ffmpeg = super::find_tool("ffmpeg")
-        .ok_or("Playing this needs ffmpeg. Install it with: brew install ffmpeg")?;
-    let bin = match managed(&env.dir, &env.fetch, Duration::from_secs(300)) {
-        Ok(b) => b,
-        Err(e) => super::find_tool("yt-dlp").ok_or(e)?,
-    };
-    let dir = cache.join(token);
-    stream(&bin, &ffmpeg, &page, &dir, &asset_url(&dir.join("")), state)
+    Ok((page, token.into()))
+}
+
+/// Flick's yt-dlp, or one on PATH when Flick's fails (the same order as run_json).
+fn with_ytdlp<T>(
+    env: &Env,
+    wait: Duration,
+    f: impl Fn(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    match (
+        managed(&env.dir, &env.fetch, wait).and_then(|b| f(&b)),
+        super::find_tool("yt-dlp"),
+    ) {
+        (Err(e), Some(path)) if !e.starts_with("Flick is downloading") => f(&path).map_err(|_| e),
+        (r, _) => r,
+    }
+}
+
+/// One master lookup (ytmaster.rs): about 7 s, most of it YouTube's JS challenge.
+/// A lookup takes about 3 to 8 s; one that hangs (a stalled network, a challenge that never ends) is
+/// stopped here, so Play shows a message instead of waiting on it for good.
+const LOOKUP_LIMIT: Duration = Duration::from_secs(45);
+
+fn find_master(env: &Env, page: &str) -> ytmaster::Found {
+    find_master_within(env, page, LOOKUP_LIMIT)
+}
+
+fn find_master_within(env: &Env, page: &str, limit: Duration) -> ytmaster::Found {
+    with_ytdlp(env, Duration::from_secs(300), |bin| {
+        let (ok, out, err) =
+            crate::playback::output_within(Command::new(bin).args(ytmaster::args(page)), limit)
+                .map_err(|e| {
+                    if e == crate::playback::SLOW_SERVER {
+                        format!("yt-dlp found no stream within {} s.", limit.as_secs())
+                    } else {
+                        e
+                    }
+                })?;
+        ytmaster::parse(
+            ok,
+            &String::from_utf8_lossy(&out),
+            &String::from_utf8_lossy(&err),
+        )
+    })
+}
+
+/// How a stream plays: YouTube's master straight in the web view, or the local fallback for a page.
+#[derive(Debug, PartialEq)]
+enum Play {
+    Master(ytmaster::Master),
+    Fallback { page: String, token: String },
+}
+
+fn choose(
+    state: &PluginTools,
+    url: &str,
+    fresh: bool,
+    find: &dyn Fn(&str) -> ytmaster::Found,
+) -> Result<Play, String> {
+    let (page, token) = page_of(state, url)?;
+    Ok(match state.masters.get(&page, fresh, find)? {
+        Some(m) => Play::Master(m),
+        None => Play::Fallback { page, token },
+    })
+}
+
+fn fallback_args(page: &str) -> [&str; 10] {
+    [
+        "--no-warnings",
+        "--no-progress",
+        "--no-playlist",
+        "--no-part",
+        "-f",
+        FALLBACK_FORMAT,
+        "-o",
+        "-",
+        "--",
+        page,
+    ]
+}
+
+/// Start a `flick-tool:` stream a plugin resolved: `{kind: 'hls', url, live}` for a master, or
+/// `{kind: 'file', path}`, a local playlist for convertFileSrc.
+fn open(
+    env: &Env,
+    state: &PluginTools,
+    cache: &Path,
+    url: &str,
+    fresh: bool,
+) -> Result<Value, String> {
+    match choose(state, url, fresh, &|p| find_master(env, p))? {
+        Play::Master(m) => {
+            // Nothing local plays now: stop an older fallback stream.
+            stop_job(state);
+            Ok(json!({ "kind": "hls", "url": m.url, "live": m.live, "duration": m.duration }))
+        }
+        Play::Fallback { page, token } => {
+            let ffmpeg = super::find_tool("ffmpeg")
+                .ok_or("Playing this needs ffmpeg. Install it with: brew install ffmpeg")?;
+            let bin = with_ytdlp(env, Duration::from_secs(300), |b| Ok(b.to_path_buf()))?;
+            let mut yt = Command::new(bin);
+            yt.args(fallback_args(&page));
+            let p = local_hls(yt, "yt-dlp.log", &ffmpeg, &cache.join(token), state)?;
+            Ok(json!({ "kind": "file", "path": p }))
+        }
+    }
 }
 
 #[tauri::command]
-pub async fn tool_open(app: tauri::AppHandle, url: String) -> Result<String, String> {
+pub async fn tool_open(
+    app: tauri::AppHandle,
+    url: String,
+    fresh: Option<bool>,
+) -> Result<Value, String> {
     let cache = app
         .path()
         .app_cache_dir()
@@ -783,11 +884,28 @@ pub async fn tool_open(app: tauri::AppHandle, url: String) -> Result<String, Str
         .join("ytdlp");
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<PluginTools>();
-        let p = open(&env(&app, &state)?, &state, &cache, &url)?;
-        Ok(p.to_string_lossy().into_owned())
+        open(
+            &env(&app, &state)?,
+            &state,
+            &cache,
+            &url,
+            fresh.unwrap_or(false),
+        )
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Starts finding a stream's master before Play (the title page, a focused card). Never waits.
+#[tauri::command]
+pub fn tool_prefetch(app: tauri::AppHandle, url: String) {
+    let state = app.state::<PluginTools>();
+    let (Ok((page, _)), Ok(e)) = (page_of(&state, &url), env(&app, &state)) else {
+        return;
+    };
+    state
+        .masters
+        .prefetch(&page, Arc::new(move |p: &str| find_master(&e, p)));
 }
 
 /// Streams are a cache: drop any older than a day.
@@ -856,7 +974,7 @@ fn download_args(
         "--ignore-config",
         "--no-warnings", "--no-playlist", "--newline", "--progress-template",
         "download:FLICK %(progress.downloaded_bytes)s %(progress.total_bytes,progress.total_bytes_estimate)s",
-        "-f", PLAY_FORMAT, "--merge-output-format", "mp4", "--ffmpeg-location",
+        "-f", SAVE_FORMAT, "--merge-output-format", "mp4", "--ffmpeg-location",
     ]
     .map(Into::into)
     .into();
@@ -1143,7 +1261,14 @@ mod tests {
         }
         assert!(st.tokens.lock().unwrap().is_empty());
         // A token only plays what resolve() registered.
-        let err = open(&e, &st, Path::new("/nonexistent"), "flick-tool:ytdlp/abc").unwrap_err();
+        let err = open(
+            &e,
+            &st,
+            Path::new("/nonexistent"),
+            "flick-tool:ytdlp/abc",
+            false,
+        )
+        .unwrap_err();
         assert!(err.contains("expired"), "{err}");
     }
 
@@ -1169,15 +1294,29 @@ mod tests {
         let a = start_job(&st, vec![sleeper()]);
         let b = start_job(&st, vec![sleeper(), sleeper()]);
         assert_ne!(a, b);
-        let err =
-            wait_for_segment(&st, a, &playlist, &dir, Duration::from_millis(300)).unwrap_err();
+        let err = wait_for_segment(
+            &st,
+            a,
+            &playlist,
+            &dir,
+            "yt-dlp.log",
+            Duration::from_millis(300),
+        )
+        .unwrap_err();
         assert!(err.contains("Another video"), "{err}");
         assert!(running(&st), "A's wait stopped B's processes");
         // A replaced call that reaches its own timeout still leaves B running.
         stop_job_if(&st, a);
         assert!(running(&st), "stop_job_if(A) stopped B's processes");
-        let err =
-            wait_for_segment(&st, b, &playlist, &dir, Duration::from_millis(200)).unwrap_err();
+        let err = wait_for_segment(
+            &st,
+            b,
+            &playlist,
+            &dir,
+            "yt-dlp.log",
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
         assert!(err.contains("nothing within"), "{err}");
         assert!(st.job.lock().unwrap().children.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1238,6 +1377,105 @@ mod tests {
         );
     }
 
+    /// Flick's own yt-dlp, replaced by a script that prints `out` (SPEC-youtube-play cases 1 to 3).
+    #[cfg(unix)]
+    fn with_fake_master(out: &str) -> (PluginTools, Env, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "flick-master-{}-{}",
+            std::process::id(),
+            new_token().unwrap()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = managed_path(&dir);
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(
+            &bin,
+            format!("#!/bin/sh\necho \"$@\" >> \"$0.calls\"\nprintf '{out}'\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Fresh, so update_daily never runs the stand-in with -U.
+        std::fs::write(stamp_path(&dir, &bin), b"").unwrap();
+        let st = PluginTools::default();
+        st.tokens
+            .lock()
+            .unwrap()
+            .insert("t".into(), "https://www.youtube.com/watch?v=a".into());
+        (st, env_in(&dir), dir)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn plays_youtubes_master_with_no_ffmpeg() {
+        let m = "https://manifest.googlevideo.com/api/manifest/hls_variant/expire/99999999999/file/index.m3u8";
+        let (st, e, dir) = with_fake_master(&format!("{m}\\nFalse\\n12660\\n"));
+        let v = open(&e, &st, &dir.join("cache"), "flick-tool:ytdlp/t", false).unwrap();
+        assert_eq!(
+            v,
+            json!({ "kind": "hls", "url": m, "live": false, "duration": 12660.0 })
+        );
+        assert!(
+            st.job.lock().unwrap().children.is_empty(),
+            "a process started for a master"
+        );
+        assert!(!dir.join("cache").exists(), "the local pipeline ran");
+        let calls = std::fs::read_to_string(managed_path(&dir).with_extension("calls")).unwrap();
+        assert!(calls.contains("-f bv*[protocol^=m3u8] -O manifest_url -O is_live -O duration -- https://www.youtube.com/watch?v=a"), "{calls}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lookup_that_hangs_is_stopped_with_a_message() {
+        let (_st, e, dir) = with_fake_master("");
+        let bin = managed_path(&dir);
+        std::fs::write(&bin, "#!/bin/sh\nsleep 30\n").unwrap();
+        let t = Instant::now();
+        let r = find_master_within(
+            &e,
+            "https://www.youtube.com/watch?v=a",
+            Duration::from_secs(1),
+        );
+        assert_eq!(r.unwrap_err(), "yt-dlp found no stream within 1 s.");
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_master_or_one_elsewhere_plays_one_file_through_ytdlp() {
+        for out in [
+            "NA\\nFalse\\n60\\n",
+            "https://evil.example/api/manifest/index.m3u8\\nFalse\\n60\\n",
+        ] {
+            let (st, _e, dir) = with_fake_master(out);
+            let find = |p: &str| {
+                let o = Command::new(managed_path(&dir))
+                    .args(ytmaster::args(p))
+                    .output()
+                    .unwrap();
+                ytmaster::parse(o.status.success(), &String::from_utf8_lossy(&o.stdout), "")
+            };
+            assert_eq!(
+                choose(&st, "flick-tool:ytdlp/t", false, &find).unwrap(),
+                Play::Fallback {
+                    page: "https://www.youtube.com/watch?v=a".into(),
+                    token: "t".into()
+                },
+                "{out}"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        let a = fallback_args("https://www.youtube.com/watch?v=a");
+        let f = a[a.iter().position(|x| *x == "-f").unwrap() + 1];
+        assert!(f.starts_with("b[") && !f.contains('+'), "{f}");
+        assert_eq!(
+            a[a.len() - 4..],
+            ["-o", "-", "--", "https://www.youtube.com/watch?v=a"]
+        );
+    }
+
     #[test]
     fn a_download_saves_only_a_resolved_token_on_the_plugins_hosts() {
         let (st, e) = (PluginTools::default(), env_in(Path::new("/nonexistent")));
@@ -1274,7 +1512,7 @@ mod tests {
         );
         let a: Vec<String> = a.iter().map(|x| x.to_string_lossy().into_owned()).collect();
         let after = |k: &str| a[a.iter().position(|x| x == k).unwrap() + 1].clone();
-        assert_eq!(after("-f"), PLAY_FORMAT);
+        assert_eq!(after("-f"), SAVE_FORMAT);
         assert_eq!(after("--merge-output-format"), "mp4");
         assert_eq!(after("--ffmpeg-location"), "/bin/ffmpeg");
         assert!(
@@ -1490,7 +1728,7 @@ mod tests {
         assert!(!home.join("pl-long.mp4").exists());
     }
 
-    /// Real network run on this computer: Flick's own yt-dlp searches, resolves and streams.
+    /// Real network run on this computer: Flick's own yt-dlp searches, resolves and finds each master.
     /// `FLICK_YTDLP_DIR=<dir> cargo test ytdlp_live -- --ignored --nocapture`
     #[test]
     #[ignore]
@@ -1540,30 +1778,58 @@ mod tests {
         )
         .unwrap();
         println!("resolve: {url}");
-        let clock = Instant::now();
-        let cache = std::env::temp_dir().join("flick-ytdlp-live-cache");
-        let playlist = open(&e, &st, &cache, url.as_str().unwrap()).unwrap();
-        println!(
-            "stream: first segment listed after {:?}: {}",
-            clock.elapsed(),
-            playlist.display()
-        );
-        let text = std::fs::read_to_string(&playlist).unwrap();
-        let seg = text
-            .lines()
-            .find(|l| !l.is_empty() && !l.starts_with('#'))
-            .unwrap();
-        let name = seg.rsplit("%2F").next().unwrap();
-        let bytes = std::fs::read(playlist.with_file_name(name)).unwrap();
-        println!(
-            "first segment {name}: {} bytes, starts {:02x?}",
-            bytes.len(),
-            &bytes[..4]
-        );
-        assert!(
-            bytes.len() > 10_000 && bytes[0] == 0x47,
-            "an MPEG-TS segment starts with 0x47"
-        );
+        // Case 10 of SPEC-youtube-play: a long video's master, and its first segment in under 2 s.
+        let long = run_tool(
+            &e,
+            &st,
+            &t,
+            &hosts,
+            "ytdlp",
+            "resolve",
+            &[json!("https://www.youtube.com/watch?v=7xTGNNLPyMI")],
+        )
+        .unwrap();
+        for url in [url, long] {
+            let clock = Instant::now();
+            let cache = std::env::temp_dir().join("flick-ytdlp-live-cache");
+            let v = open(&e, &st, &cache, url.as_str().unwrap(), false).unwrap();
+            assert_eq!(v["kind"], "hls", "{v}");
+            let master = v["url"].as_str().unwrap();
+            assert!(master.starts_with("https://manifest.googlevideo.com/"));
+            println!(
+                "master found after {:?}, live {}",
+                clock.elapsed(),
+                v["live"]
+            );
+            let clock = Instant::now();
+            let get = |u: &str| {
+                ureq::get(u)
+                    .call()
+                    .unwrap()
+                    .body_mut()
+                    .read_to_vec()
+                    .unwrap()
+            };
+            let text = |u: &str| String::from_utf8(get(u)).unwrap();
+            let first = |t: &str| {
+                t.lines()
+                    .find(|l| !l.is_empty() && !l.starts_with('#'))
+                    .unwrap()
+                    .to_string()
+            };
+            let variant = first(&text(master));
+            let seg = first(&text(&variant));
+            let bytes = get(&seg);
+            let took = clock.elapsed();
+            println!(
+                "variant, then first segment: {} bytes in {took:?}",
+                bytes.len()
+            );
+            assert!(
+                bytes.len() > 10_000 && took < Duration::from_secs(2),
+                "{took:?}"
+            );
+        }
         stop_job(&st);
     }
 
