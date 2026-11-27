@@ -142,7 +142,9 @@ function upgrade(r: Installed): Installed {
   const m = r.manifest as V.PluginManifest
   // A service installed while prepare() still called every plugin a source gets its kind back.
   const kind = r.kind === 'source' && m.kind === 'service' ? 'service' : r.kind
-  return { ...r, kind, manifest: { ...m, titleActions: m.titleActions ?? [] } }
+  const fill = (x: V.PluginManifest) => ({ ...x, titleActions: x.titleActions ?? [] })
+  const pending = r.pending && { ...r.pending, manifest: fill(r.pending.manifest as V.PluginManifest) }
+  return { ...r, kind, manifest: fill(m), ...(pending ? { pending } : {}) }
 }
 
 export async function loadPlugins() {

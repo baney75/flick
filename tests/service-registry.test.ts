@@ -84,9 +84,11 @@ describe('service records', () => {
     const db = await import('../src/lib/db')
     const src = V.validateManifest({ api: 1, id: 'org.old', name: 'Old', version: '1', catalogs: [{ id: 'a', name: 'A', type: 'movie' }] }, ['catalog', 'meta', 'streams'])
     const { titleActions: _, ...before } = src
-    await db.put('plugins', 'org.old', rec({ id: 'org.old', kind: 'source', manifest: before as V.PluginManifest }))
+    await db.put('plugins', 'org.old', rec({ id: 'org.old', kind: 'source', manifest: before as V.PluginManifest, pending: { code: 'v2', sha256: 'z', manifest: before as V.PluginManifest, added: [] } }))
     await R.loadPlugins()
-    expect((R.installed.value.find((p) => p.id === 'org.old')!.manifest as V.PluginManifest).titleActions).toEqual([])
+    const got = R.installed.value.find((p) => p.id === 'org.old')!
+    expect((got.manifest as V.PluginManifest).titleActions).toEqual([])
+    expect((got.pending!.manifest as V.PluginManifest).titleActions).toEqual([])
     await R.remove('org.old')
   })
 })
