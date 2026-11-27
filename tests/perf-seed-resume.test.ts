@@ -28,25 +28,27 @@ describe('real-app perf seed resumes across launches', () => {
     const spy = vi.spyOn(db, 'putMany').mockImplementation(async (name, rows) => { if (name === 'thumbs') clock += 10; return put(name, rows) })
 
     expect(await seed(20, deps)).toBe(false)
-    expect(await db.get('kv', 'perf.seed.thumbs')).toBe(1000)
+    expect(await db.get('kv', 'perf.seed.thumbs')).toBe(200)
     expect(reg.prepared).toEqual([])
     expect(await seeded()).toBe(false)
+    expect(await db.get('kv', 'perf.seed.probe')).toEqual(all.thumbs.slice(0, 20).map(([id]) => id))
 
-    // A launch already past its deadline writes nothing and is not done.
-    expect(await seed(clock, deps)).toBe(false)
-    expect(await db.get('kv', 'perf.seed.thumbs')).toBe(1000)
+    // Launches that start past their deadline each still write one batch, and stop there.
+    expect(await seed(0, deps)).toBe(false)
+    expect(await seed(0, deps)).toBe(false)
+    expect(await db.get('kv', 'perf.seed.thumbs')).toBe(400)
 
     spy.mockClear()
     expect(await seed(Infinity, deps)).toBe(true)
     // Items were written once, by the first launch; the rest of the thumbnails, each exactly once.
     expect(spy.mock.calls.some(([name]) => name === 'items')).toBe(false)
     const thumbRows = spy.mock.calls.filter(([name]) => name === 'thumbs').flatMap(([, rows]) => rows.map(([id]) => id))
-    expect(thumbRows).toEqual(all.thumbs.slice(1000).map(([id]) => id))
+    expect(thumbRows).toEqual(all.thumbs.slice(400).map(([id]) => id))
     expect(await db.get('kv', 'perf.seed.thumbs')).toBe(all.thumbs.length)
     expect((await db.all('items')).length).toBe(all.items.length)
     expect(await db.get(`thumbs`, all.thumbs.at(-1)![0])).toBeTruthy()
     expect(reg.prepared).toEqual([PLUGIN_ID, SHELF_PLUGIN_ID])
     expect(await db.get('kv', 'perf.seed')).toBe(SEED_VERSION)
     expect(await seeded()).toBe(true)
-  })
+  }, 30_000) // 11,800 items and 8,700 thumbnails through fake-indexeddb: seconds on a busy Mac.
 })

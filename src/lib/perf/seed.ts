@@ -20,7 +20,8 @@ export const seedPlugins = (desktop = isDesktop) => [PLUGIN_ID, SHELF_PLUGIN_ID,
 const pluginsOk = () => seedPlugins().every((id) => installed.value.some((p) => p.id === id))
 /** How many distinct images each kind uses, as in scripts/perf.mjs. */
 export const IMAGES = { thumbs: 48, posters: 16, rowArt: 8 }
-const ROWS = 500
+/** Thumbnails per transaction: small, so a slow one overruns the deadline by little. */
+const ROWS = 100
 /** Page time (ms from page start) after which a launch stops seeding and leaves the rest to the next. */
 export const BUDGET_MS = 15_000
 const ITEMS_KEY = 'perf.seed.items'
@@ -66,8 +67,8 @@ const page: SeedDeps = {
   now: () => performance.now(),
 }
 
-/** The first n ids the seed stores a thumbnail for. */
-export const thumbIds = (n: number) => buildSeed().thumbs.slice(0, n).map(([id]) => id)
+/** kv key for the first 20 ids the seed stores a thumbnail for, which the perf report reads back. */
+export const PROBE_KEY = 'perf.seed.probe'
 
 /** True when this profile already holds the current seed and its plugins. */
 export async function seeded(): Promise<boolean> {
@@ -77,7 +78,8 @@ export async function seeded(): Promise<boolean> {
 /**
  * Seeds the profile until `deadline` (page time) and says whether it finished. WebKit stores each
  * thumbnail Blob as a file, and 8,700 of them can outlast one self-test launch (30 s) on a busy Mac,
- * so a launch past its deadline stops between steps and the next launch goes on from there.
+ * so a launch past its deadline stops between steps and the next launch goes on from there. Each
+ * launch does at least one step, so the seed always moves on.
  */
 export async function seed(deadline = BUDGET_MS, deps: SeedDeps = page): Promise<boolean> {
   const t0 = deps.now()
@@ -89,15 +91,18 @@ export async function seed(deadline = BUDGET_MS, deps: SeedDeps = page): Promise
     await db.putMany('progress', Object.entries(s.progress))
     await db.put('kv', 'folders', s.folders)
     await db.put('kv', 'servers', s.servers)
+    await db.put('kv', PROBE_KEY, s.thumbs.slice(0, 20).map(([id]) => id))
     await db.put('kv', THUMBS_KEY, 0)
     await db.put('kv', ITEMS_KEY, SEED_VERSION)
     step(`${s.items.length} items`)
   }
   let next = (await db.get<number>('kv', THUMBS_KEY)) ?? 0
+  // Every launch writes at least one batch, so a launch that starts late still moves the seed on.
+  let wrote = false
   if (next < s.thumbs.length) {
-    if (late()) return false
     const thumbs = await Promise.all(Array.from({ length: IMAGES.thumbs }, (_, i) => deps.thumb(i)))
-    while (next < s.thumbs.length && !late()) {
+    while (next < s.thumbs.length && (!wrote || !late())) {
+      wrote = true
       await db.putMany('thumbs', s.thumbs.slice(next, next + ROWS).map(([id, v]) => [id, thumbs[v]]))
       next = Math.min(next + ROWS, s.thumbs.length)
       await db.put('kv', THUMBS_KEY, next)
@@ -105,7 +110,7 @@ export async function seed(deadline = BUDGET_MS, deps: SeedDeps = page): Promise
     step(`${next} of ${s.thumbs.length} thumbnails`)
     if (next < s.thumbs.length) return false
   }
-  if (late()) return false
+  if (wrote && late()) return false
   // Posters are data URLs: there is no server here, and an http one would leave this machine.
   const posters = Array.from({ length: IMAGES.posters }, (_, i) => deps.poster(120, 180, i + 100))
   const rowArt = Array.from({ length: IMAGES.rowArt }, (_, i) => deps.poster(320, 180, i + 200))
