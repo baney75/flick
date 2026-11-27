@@ -88,13 +88,16 @@ export function App() {
     installSpatialNav(() => !!nowPlaying.value)
     // Plugins load first so the one-time Stremio move can see them, then progress loads already moved.
     // The one update check (app and plugins) starts once plugins are loaded.
-    startPlugins().then(() => migrateStremio()).catch(() => {}).finally(() => startUpdates())
+    const plugins = startPlugins().then(() => migrateStremio()).catch(() => {})
+    plugins.finally(() => startUpdates())
       .finally(() => { Promise.all([reloadItems(), loadProgress()]).then(startSyncBinding).catch(() => {}).then(startShare) })
     resumeDownloads().catch(() => {})
     startOffline()
     addEventListener('flick:db-stale', () => notify('Flick was updated in another tab. Reload this tab to keep going.', 15000))
     addEventListener('flick:db-blocked', () => notify('Close your other Flick tabs to finish updating.', 15000))
     if (isDesktop) {
+      // scripts/desktop-selftest.mjs: a no-op unless this is the self-test build started for it.
+      plugins.finally(() => import('./lib/plugins/selftest').then((m) => m.selftestIfAsked())).catch(() => {})
       // Files opened from Finder before or after launch.
       invoke<string[]>('take_opened').then((p) => p.length && playPaths(p)).catch(() => {})
       const off = onDesktopEvent<string[]>('open-files', (p) => playPaths(p))

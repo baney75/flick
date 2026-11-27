@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 mod plugins;
+mod selftest;
 mod share;
 // The torrent engine and its checks; the engine and the app's commands join it next in this series.
 #[cfg(desktop)]
@@ -1325,8 +1326,11 @@ fn queue_open(app: &tauri::AppHandle, paths: Vec<String>) {
     if paths.is_empty() {
         return;
     }
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.set_focus();
+    // A self-test run never comes forward.
+    if !selftest::requested() {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.set_focus();
+        }
     }
     // Keep them for a window that has not loaded yet, and tell one that has.
     app.state::<Opened>()
@@ -1345,6 +1349,9 @@ pub fn run() {
     let builder = builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init());
+    // A self-test run starts in the background and stays there (`open -g`).
+    #[cfg(target_os = "macos")]
+    let builder = builder.activate_ignoring_other_apps(!selftest::requested());
     let app = builder
         .manage(Opened::default())
         .manage(KodiProxy::default())
@@ -1377,6 +1384,9 @@ pub fn run() {
             make_default_player,
             plugins::plugin_hosts,
             plugins::plugin_fetch,
+            selftest::selftest_mode,
+            selftest::selftest_note,
+            selftest::selftest_done,
             share::share_start,
             share::share_stop,
             share::share_status,
@@ -1394,6 +1404,9 @@ pub fn run() {
             vpn::watch::vpn_gate_release
         ])
         .setup(|app| {
+            if selftest::requested() {
+                selftest::stay_hidden(app);
+            }
             // Files passed on the command line: `Flick movie.mkv`.
             let args: Vec<String> = std::env::args()
                 .skip(1)
@@ -1421,6 +1434,13 @@ pub fn run() {
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect();
             queue_open(handle, paths);
+        }
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = &event {
+            if selftest::requested() {
+                selftest::stay_hidden(handle);
+                return;
+            }
         }
         if let tauri::RunEvent::Exit = &event {
             share::stop_all(handle);

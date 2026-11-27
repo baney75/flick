@@ -6,6 +6,7 @@ import * as db from '../db'
 import { announce } from '../sync/bus'
 import * as V from './validate'
 import { inspect as sandboxInspect, registerHosts, sha256, stopPlugin, pushSettings, type Installed } from './runtime'
+import { mark } from './trace'
 
 export type { Installed }
 export const OFFICIAL_INDEX = '/plugins/index.json'
@@ -91,6 +92,7 @@ export async function prepare(src: { url?: string; text?: string }, deps: Deps =
   const url = src.url?.trim() || null
   if (url && !/^(https:\/\/|\/)/i.test(url) && !/^http:\/\/(localhost|127\.0\.0\.1)[:/]/i.test(url)) throw new Error('A plugin address must start with https://.')
   const code = src.text ?? (await deps.fetchText(url!))
+  mark('fetch')
   if (code.length > MAX_CODE) throw new Error('That file is over 2 MB, too big for a plugin.')
   let kind: Candidate['kind'] = 'source'
   let manifest: Candidate['manifest']
@@ -106,7 +108,11 @@ export async function prepare(src: { url?: string; text?: string }, deps: Deps =
     manifest = m
   }
   const replaces = installed.value.find((p) => p.id === manifest.id)
-  return { kind, url, code, sha256: await sha256(code), manifest, official: await isOfficial(url), replaces }
+  const sum = await sha256(code)
+  mark('sha')
+  const isOff = await isOfficial(url)
+  mark('official')
+  return { kind, url, code, sha256: sum, manifest, official: isOff, replaces }
 }
 
 async function save(rec: Installed) {
@@ -132,7 +138,9 @@ export async function install(c: Candidate, settings?: Record<string, unknown>):
     checkedAt: Date.now(),
   }
   await save(rec)
+  mark('save')
   await registerHosts(rec).catch(() => {})
+  mark('registerHosts')
   return rec
 }
 

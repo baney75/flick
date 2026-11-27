@@ -7,6 +7,7 @@ import { isDesktop, isMobileApp, invoke, fileUrl } from '../platform'
 import { connect, type Handler, type Rpc } from './rpc'
 import * as V from './validate'
 import { maskUrls } from './debrid-keys'
+import { mark } from './trace'
 
 /** No allow-same-origin, ever: the opaque origin is what keeps a plugin out of Flick's storage. */
 export const SANDBOX = 'allow-scripts'
@@ -173,8 +174,11 @@ function frameFor(rec: Installed): Promise<Frame> {
       if ((await sha256(rec.code)) !== rec.sha256) throw new Error(`${rec.manifest.name} changed on this device since it was installed. Remove it and install it again.`)
       setSecrets(rec.id, rec)
       await registerHosts(rec)
+      mark('start.hosts')
       const fr = await openFrame(ctxHandler(rec.id, isDesktop, invoke, service))
+      mark('start.sandbox')
       await fr.rpc.call('load', [rec.code, platformName(), rec.settings])
+      mark('start.load')
       return fr
     })()
     frames.set(rec.id, f)
@@ -221,6 +225,12 @@ export async function callPlugin<K extends keyof Results>(rec: Installed, fn: K,
   }
 }
 
+/** Start a plugin's sandbox and wait for one round trip; the self-test times this as the first call. */
+export async function startPlugin(rec: Installed): Promise<void> {
+  const fr = await frameFor(rec)
+  await fr.rpc.call('ping')
+}
+
 export function stopPlugin(id: string) {
   const f = frames.get(id)
   if (f) close(f)
@@ -236,8 +246,11 @@ export function pushSettings(rec: Installed) {
 /** Load code in a throwaway sandbox with no ctx access and read its exported object. */
 export async function inspect(code: string): Promise<{ manifest: unknown; fns: string[] }> {
   const fr = await openFrame(async () => { throw new Error('Plugins cannot use ctx while Flick reads them.') })
+  mark('sandbox')
   try {
-    return await fr.rpc.call<{ manifest: unknown; fns: string[] }>('load', [code, platformName(), {}])
+    const r = await fr.rpc.call<{ manifest: unknown; fns: string[] }>('load', [code, platformName(), {}])
+    mark('inspect')
+    return r
   } finally {
     fr.rpc.close()
     fr.iframe.remove()
