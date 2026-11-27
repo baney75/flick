@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
 import { signal } from '@preact/signals'
 import type { ComponentChildren } from 'preact'
-import { go, play, notify, progress, nowPlaying, toast } from '../lib/store'
+import { go, play, notify, progress, nowPlaying } from '../lib/store'
 import { Card, Row } from '../components/Card'
 import { Icon } from '../components/icons'
 import { isDesktop, isMobileApp } from '../lib/platform'
@@ -21,7 +21,8 @@ import { cancelFetch, canStart, serviceTag, wantsGate } from '../lib/debrid-play
 import { DebridWait, playTorrent, useCached } from './Debrid'
 import { viaOf } from '../lib/readout'
 import { checkAgain, ctxNow, current, debridNow, deviceFor, holdGate, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
-import { letGo, playTorrent as fromEngine, playingTorrent, STARTING, wantTorrent } from '../lib/torrent'
+import { cancelStart, letGo, playingTorrent, startTorrent, wantTorrent } from '../lib/torrent'
+import { EngineWait } from './EngineWait'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
 import { langCode } from '../lib/release'
@@ -426,6 +427,9 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   }, [videoId])
   const key = progressKey(rec.id, videoId)
   useEffect(() => { savedId(key).then(setDlId) }, [key])
+  // Leaving the page ends its start: the engine's wait stops, and a tap still on its way never plays.
+  const lastTap = useRef(0)
+  useEffect(() => () => { cancelStart(key); if (current(lastTap.current)) tap() }, [key])
   // On a grid-layout plugin a title opened from the keyboard plays with one more Enter.
   useEffect(() => {
     if (list === null || rec.manifest.layout !== 'grid') return
@@ -481,16 +485,15 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     const hash = !url && s.torrent && r?.c.via === 'p2p' ? s.torrent.infoHash : undefined
     // A stream behind the VPN gate never opens on a tap while the gate fails, nor outside its hold.
     const shut = shutBy(r)
+    lastTap.current = t
     wantTorrent(shut ? undefined : hash)
-    if (toast.value?.text === STARTING) toast.value = null
     if (shut) { notify(shut); return }
     if (hash && s.torrent) {
-      notify(STARTING, 60_000)
-      const got = await fromEngine(s.torrent).then((u) => ({ u }), (e) => ({ e: String(e) }))
-      if (current(t) && toast.value?.text === STARTING) toast.value = null
-      if ('e' in got) { if (current(t)) notify(got.e, 6000); return }
-      if (!current(t)) { letGo(hash, false); return }
-      url = got.u
+      // The wait line under Streams has Cancel; null means it won't play (see startTorrent).
+      let got: string | null
+      try { got = await startTorrent(key, s.torrent, t) } catch (e) { if (current(t)) notify(String(e), 6000); return }
+      if (!got) return
+      url = got
     } else if (!url && r && canStart(r, s)) {
       // A torrent a debrid service takes gets its url from the service.
       try { url = (await playTorrent(key, s, r)) ?? undefined } catch (e) { if (current(t)) notify((e as Error).message); return }
@@ -593,6 +596,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
         {(dl?.state === 'done' || top) && resumeAt > 0 && <button class="btn ghost start-over" onClick={() => (dl?.state === 'done' ? playSaved(dl, { onSave, startAt: 0 }) : start(top!, 0))}>Start over</button>}
       </div>
       <DebridWait streamKey={key} />
+      <EngineWait streamKey={key} />
       {dl && !(dl.state === 'failed' && dl.error === 'Canceled' && !dl.part) && (
         <p class="dl-status small">
           {dl.state === 'done' ? 'Downloaded. Plays offline.' : dl.error === 'Canceled' ? 'Download canceled. Download again to resume.' : dl.state === 'failed' ? `Download failed: ${dl.error}` : dl.state === 'queued' ? 'Waiting to download' : `Downloading ${badgeFor(dl)}`}

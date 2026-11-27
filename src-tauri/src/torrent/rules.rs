@@ -19,7 +19,7 @@ pub const MAX_PEERS: usize = 80;
 pub const UPLOAD_BPS: u32 = 1_000_000;
 pub const CACHE_CAP: u64 = 5 << 30;
 
-pub const NO_PEERS: &str = "No one is sharing this torrent right now. Try another stream.";
+pub const NO_PEERS: &str = "No one is sharing this torrent right now. Try another source.";
 pub const WINDOWS_OFF: &str = "Torrents play on Windows through a debrid service for now";
 pub const DROPPED: &str =
     "Your VPN dropped or isn't hiding you, so playback stopped. Reconnect it and press Play.";

@@ -746,8 +746,8 @@ pub async fn torrent_play(app: tauri::AppHandle, torrent: Want) -> Result<String
     run.await.map_err(|e| e.to_string())?
 }
 
-/// The player stopped the stream of `info_hash`. The player sends it only after `torrent_play`
-/// answered; a stop that ends a start still in progress is `Engine::stop`'s.
+/// The stream of `info_hash` stopped: the player closed it, or its start was canceled, timed out or
+/// lost to another tap. A stop during a start ends that start with `STOPPED` (`Engine::stop`).
 #[tauri::command]
 pub async fn torrent_stop(info_hash: String) -> Result<(), String> {
     let e = ENGINE.lock().unwrap_or_else(|e| e.into_inner()).clone();

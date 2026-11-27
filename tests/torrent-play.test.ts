@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // The store reads the route at import; the shell is a desktop one whose engine the tests answer.
 const shell = vi.hoisted(() => {
   Object.assign(globalThis, { location: { hash: '', href: 'http://localhost/', search: '' }, addEventListener: () => {}, removeEventListener: () => {} })
-  return { calls: [] as [string, unknown][], stats: { downBps: 1_000_000, peers: 3 } as { downBps: number; peers: number } | null, gate: { ok: true } as unknown }
+  return { calls: [] as [string, unknown][], play: null as null | (() => Promise<string>), stats: { downBps: 1_000_000, peers: 3 } as { downBps: number; peers: number } | null, gate: { ok: true } as unknown }
 })
 vi.mock('../src/lib/platform', async (orig) => ({
   ...(await orig<typeof import('../src/lib/platform')>()),
@@ -13,15 +13,15 @@ vi.mock('../src/lib/platform', async (orig) => ({
   invoke: async (cmd: string, args?: unknown) => {
     shell.calls.push([cmd, args])
     if (cmd === 'torrent_stats') return shell.stats
-    if (cmd === 'torrent_play') return 'http://127.0.0.1:5/t/x/0'
+    if (cmd === 'torrent_play') return shell.play ? shell.play() : 'http://127.0.0.1:5/t/x/0'
     return shell.gate
   },
   onDesktopEvent: async () => () => {},
 }))
-const { playingTorrent, letGo, playTorrent, wantTorrent, GRACE_MS, POLL_MS, TORRENT_LOST } = await import('../src/lib/torrent')
+const { playingTorrent, letGo, playTorrent, wantTorrent, startTorrent, cancelStart, engineWait, GRACE_MS, POLL_MS, TORRENT_LOST, NO_ONE, START_LIMIT_MS, STARTING } = await import('../src/lib/torrent')
 const { engineNow, engineLine } = await import('../src/lib/readout')
 const { nowPlaying, toast } = await import('../src/lib/store')
-const { checkAgain, gate } = await import('../src/lib/picking')
+const { checkAgain, gate, tap, current } = await import('../src/lib/picking')
 
 const H = 'DD8255ECDC7CA55FB0BBF81323D87062DB1F6D1C'
 const h = H.toLowerCase()
@@ -148,5 +148,100 @@ describe('Check again (SPEC-torrent rule 28)', () => {
     await tick()
     expect(shell.calls).toEqual([['vpn_gate', { force: true }]])
     expect(gate.value).toEqual({ ok: true, iface: 'utun4' })
+  })
+})
+
+describe('an engine start the user waits on (#129)', () => {
+  // The engine answers when the test says: `answer` gives the url, `fail` the engine's error.
+  let answer: (u: string) => void
+  let fail: (e: string) => void
+  beforeEach(() => {
+    vi.useFakeTimers()
+    shell.calls = []
+    shell.play = () => new Promise<string>((ok, no) => { answer = ok; fail = no })
+  })
+  afterEach(async () => { cancelStart(); shell.play = null; await vi.advanceTimersByTimeAsync(0); vi.useRealTimers() })
+  const U = 'http://127.0.0.1:5/t/x/0'
+  // A tap as Plugin.tsx makes one: its token, then the torrent it wants.
+  const begin = (key = 'k1', infoHash = H) => { const t = tap(); wantTorrent(infoHash); return { t, got: startTorrent(key, { infoHash }, t) } }
+
+  it('shows the wait line with Cancel, then gives the url and clears it', async () => {
+    const { got } = begin()
+    expect(engineWait.value).toMatchObject({ key: 'k1', line: STARTING })
+    expect(engineWait.value?.cancel).toBeTypeOf('function')
+    answer(U)
+    expect(await got).toBe(U)
+    expect(engineWait.value).toBeNull()
+    expect(stops()).toEqual([])
+  })
+
+  it('Cancel stops the start, and its answer never plays', async () => {
+    const { t, got } = begin()
+    engineWait.value!.cancel!()
+    expect(stops()).toEqual([h])
+    expect(engineWait.value).toBeNull()
+    expect(current(t)).toBe(false)
+    answer(U)
+    expect(await got).toBeNull()
+  })
+
+  it('a tap on another stream stops the start; one on the same torrent shares it', async () => {
+    const first = begin('k1')
+    const same = begin('k1')
+    expect(stops()).toEqual([])
+    expect(shell.calls.filter(([c]) => c === 'torrent_play')).toHaveLength(1)
+    tap()
+    wantTorrent(undefined)
+    expect(stops()).toEqual([h])
+    expect(engineWait.value).toBeNull()
+    answer(U)
+    expect(await first.got).toBeNull()
+    expect(await same.got).toBeNull()
+  })
+
+  it('leaving the page (cancelStart with its key) stops it; another page key leaves it alone', async () => {
+    const { got } = begin('k1')
+    cancelStart('k2')
+    expect(stops()).toEqual([])
+    cancelStart('k1')
+    expect(stops()).toEqual([h])
+    answer(U)
+    expect(await got).toBeNull()
+  })
+
+  it('after the 60 s limit it stops and says no one is sharing it, beside the streams', async () => {
+    const { got } = begin()
+    await vi.advanceTimersByTimeAsync(START_LIMIT_MS - 1)
+    expect(stops()).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(stops()).toEqual([h])
+    expect(engineWait.value).toEqual({ key: 'k1', hash: h, line: NO_ONE })
+    fail('Stopped')
+    expect(await got).toBeNull()
+    expect(engineWait.value?.line).toBe(NO_ONE)
+    cancelStart('k1')
+    expect(engineWait.value).toBeNull()
+  })
+
+  it("the engine's own no-peers answer gives the same line, with no stop sent", async () => {
+    const { got } = begin()
+    fail(NO_ONE)
+    expect(await got).toBeNull()
+    expect(engineWait.value).toEqual({ key: 'k1', hash: h, line: NO_ONE })
+    expect(stops()).toEqual([])
+  })
+
+  it('another engine error throws for the page to show, and clears the line', async () => {
+    const { got } = begin()
+    fail('Turn on your VPN')
+    await expect(got).rejects.toBe('Turn on your VPN')
+    expect(engineWait.value).toBeNull()
+  })
+
+  it('a tap after Cancel asks the engine again instead of waiting on the canceled start', async () => {
+    begin()
+    engineWait.value!.cancel!()
+    begin()
+    expect(shell.calls.filter(([c]) => c === 'torrent_play')).toHaveLength(2)
   })
 })
