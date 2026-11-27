@@ -5,7 +5,7 @@ import code from '../plugins/stremio/plugin.js?raw'
 import * as S from '../plugins/stremio/plugin.js'
 import * as db from '../src/lib/db'
 import * as V from '../src/lib/plugins/validate'
-import { installed, type Deps } from '../src/lib/plugins/registry'
+import { installed, prepare, install, checkUpdates, remove, type Deps } from '../src/lib/plugins/registry'
 import { migrateStremio, legacyProgress, STREMIO_ID } from '../src/lib/plugins/migrate'
 import type { Progress } from '../src/lib/store'
 
@@ -49,8 +49,20 @@ describe('Stremio plugin protocol', () => {
   it('never plays a torrent around the VPN gate: no Stremio server URL, no hand-off', () => {
     expect(S.toStream({ infoHash: 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c', fileIdx: 2 }, 'X')).toBeNull()
     expect(S.toStream({ infoHash: 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c' }, 'X')).toBeNull()
-    expect(code).not.toMatch(/127\.0\.0\.1|localhost|:11470|web\.stremio\.com/)
+    expect(code).not.toMatch(/11470|web\.stremio\.com|\/\/127\.0\.0\.1|'127\.0\.0\.1'/)
     expect(S.default.hosts).toEqual(['*'])
+  })
+  it('plays only http(s) URLs on public hosts: no Stremio server, LAN server or magnet', () => {
+    for (const url of [
+      'http://127.0.0.1:11470/dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c/0',
+      'http://127.1:11470/x', 'http://2130706433:11470/x', 'http://localhost:11470/x', 'http://stremio.localhost/x',
+      'http://[::1]:11470/x', 'http://[::ffff:127.0.0.1]:11470/x', 'http://0.0.0.0:11470/x',
+      'http://192.168.1.20:11470/x', 'http://10.0.0.5/x', 'http://172.20.0.1/x', 'http://169.254.1.1/x',
+      'http://100.101.2.3/x', 'http://[fd7a:115c:a1e0::1]/x', 'http://[fe80::1]/x',
+      'magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c', 'file:///etc/passwd', 'not a url',
+    ]) expect(S.toStream({ url }, 'X'), url).toBeNull()
+    for (const url of ['https://cdn.example/a.mp4', 'http://8.8.8.8/a.mp4', 'https://172.32.0.1/a.mp4', 'https://[2606:4700::1]/a.mp4'])
+      expect(S.toStream({ url }, 'X')?.url).toBe(url)
   })
   it('streams() returns no URL on this computer even when the Stremio server answers', async () => {
     const seen: string[] = []
@@ -71,6 +83,23 @@ describe('Stremio plugin protocol', () => {
     expect(out.map((s: { url: string }) => s.url)).toEqual(['https://cdn.example/a.mp4'])
     expect(seen.some((u) => /127\.0\.0\.1|:11470/.test(u))).toBe(false)
   })
+  it('says why an addon with only torrent streams shows none', async () => {
+    const logs: string[] = []
+    const ctx = {
+      log: (m: string) => logs.push(m),
+      fetch: async (u: string) => {
+        const resources = u.startsWith('https://only.example/') ? ['stream'] : []
+        const body = u.endsWith('/manifest.json')
+          ? { id: 'y', name: 'Torrents Only', version: '1', types: ['movie'], idPrefixes: ['tt'], resources, catalogs: [] }
+          : { streams: [{ infoHash: 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c' }] }
+        return new Response(JSON.stringify(body), { status: 200 })
+      },
+      settings: { addons: ['https://only.example/manifest.json'] },
+      store: { get: async () => undefined, set: async () => {} },
+    }
+    expect(await S.default.streams(ctx, { type: 'movie', id: 'tt2', videoId: 'tt2' })).toEqual([])
+    expect(logs.some((m) => /Torrents Only offers only torrent streams/.test(m))).toBe(true)
+  })
 })
 
 describe('Stremio migration', () => {
@@ -90,6 +119,22 @@ describe('Stremio migration', () => {
     for (const s of ['kv', 'progress', 'plugins', 'pluginData'] as const) for (const [k] of await db.entries(s)) await db.del(s, k)
     installed.value = []
     fetched.length = 0
+  })
+
+  it('an installed copy with the Stremio server route updates to this one without a prompt', async () => {
+    const old = code.replace("hosts: ['*']", "hosts: ['*', '127.0.0.1']")
+    expect(old).not.toBe(code)
+    const files: Record<string, string> = { 'https://p.example/stremio.js': old }
+    const up: Deps = { ...deps, fetchText: async (u) => files[u] }
+    const rec = await install(await prepare({ url: 'https://p.example/stremio.js' }, up))
+    expect((rec.manifest as { hosts: string[] }).hosts).toEqual(['*', '127.0.0.1'])
+    files['https://p.example/stremio.js'] = code
+    await checkUpdates(rec.checkedAt + 25 * 3600_000, up)
+    const now = installed.value.find((p) => p.id === rec.id)!
+    expect((now.manifest as { hosts: string[] }).hosts).toEqual(['*'])
+    expect(now.pending).toBeUndefined()
+    expect(now.code).toBe(code)
+    await remove(rec.id)
   })
 
   it('moves a Stremio user into the plugin: sign-in, addons, progress', async () => {

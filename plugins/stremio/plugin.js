@@ -64,11 +64,30 @@ export function toMeta(m) {
   }
 }
 
+/** A stream URL Flick plays from an addon: http(s) on a public host. A loopback or private host
+ * (a Stremio streaming server, a LAN torrent server) or a magnet link would play a torrent around
+ * the VPN gate. */
+export function publicUrl(u) {
+  let url
+  try { url = new URL(u) } catch { return false }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return false
+  const h = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (h === 'localhost' || h.endsWith('.localhost') || h === '0.0.0.0' || h === '::' || h === '::1') return false
+  const v4 = h.replace(/^::ffff:/, '').match(/^(\d+)\.(\d+)\.\d+\.\d+$/)
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])]
+    if (a === 127 || a === 10 || a === 0 || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b < 128)) return false
+  }
+  if (/^::ffff:[0-9a-f]+:[0-9a-f]+$/.test(h)) return false
+  if (/^f[cd][0-9a-f]{2}:/.test(h) || /^fe[89ab][0-9a-f]:/.test(h)) return false
+  return true
+}
+
 /** One Stremio stream as a Flick stream, or null for one Flick doesn't play (a torrent). */
 export function toStream(s, addon) {
   const title = [s.name, s.title ?? s.description ?? s.behaviorHints?.filename].filter(Boolean).join(' · ').replace(/\n/g, ' ')
   const subs = (s.subtitles ?? []).map((x) => ({ url: x.url, lang: x.lang ?? 'und' }))
-  if (s.url) return { url: s.url, title, group: addon, needsDesktop: s.behaviorHints?.notWebReady || undefined, subs }
+  if (s.url) return publicUrl(s.url) ? { url: s.url, title, group: addon, needsDesktop: s.behaviorHints?.notWebReady || undefined, subs } : null
   if (s.ytId) return { url: `https://www.youtube.com/watch?v=${encodeURIComponent(s.ytId)}`, title: title || 'YouTube', group: addon, external: true }
   if (s.externalUrl && /^https:\/\//.test(s.externalUrl)) return { url: s.externalUrl, title: title || 'Opens on another site', group: addon, external: true }
   return null
@@ -125,7 +144,7 @@ export default {
   api: 1,
   id: 'dev.flick.stremio',
   name: 'Stremio',
-  version: '1.1.0',
+  version: '1.1.1',
   author: 'Flick',
   description: 'Your Stremio addons, library and Continue Watching. Sign in, or start with Cinemeta and OpenSubtitles.',
   icon: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0IiByeD0iNSIgZmlsbD0iIzdiNWJmNSIvPjxwYXRoIGQ9Ik0xMiA0bDcgNHY4bC03IDQtNy00Vjh6IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMS42Ii8+PHBhdGggZD0iTTEwLjUgOXY2bDUtM3oiIGZpbGw9IiNmZmYiLz48L3N2Zz4=',
@@ -183,7 +202,7 @@ export default {
     throw new Error('None of your addons describe this title.')
   },
 
-  async streams(ctx, { type, id, videoId }) {
+  async streams(ctx, { type, videoId }) {
     const list = (await addons(ctx)).filter((a) => supports(a, 'stream', type, videoId))
     if (!list.length) {
       ctx.log('None of your addons offer streams for this title. Stream addons come from Stremio\'s addon catalog: sign in to use yours, or add one under Extra addon URLs.')
@@ -192,7 +211,10 @@ export default {
     const batches = await Promise.all(list.map(async (a) => {
       try {
         const r = await getJson(ctx, `${base(a.transportUrl)}/stream/${type}/${encodeURIComponent(videoId)}.json`)
-        return (r.streams ?? []).map((s) => toStream(s, a.manifest.name)).filter(Boolean)
+        const all = r.streams ?? []
+        const out = all.map((s) => toStream(s, a.manifest.name)).filter(Boolean)
+        if (!out.length && all.some((s) => s.infoHash)) ctx.log(`${a.manifest.name} offers only torrent streams. Flick plays torrents with its own engine and a VPN on, which isn't here yet.`)
+        return out
       } catch { return [] }
     }))
     return batches.flat()
