@@ -1307,6 +1307,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tiny_http",
+ "tokio",
  "ureq",
  "walkdir",
  "webpki-roots",
