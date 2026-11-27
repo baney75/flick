@@ -380,6 +380,8 @@ label.toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
   .search { flex: 1 1 100%; order: 3; }
   .toolbar .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-inline: -16px; padding-inline: 16px; scroll-padding-inline: 16px; }
   .toolbar .chips::-webkit-scrollbar { display: none; }
+  .chips[role=tablist] { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-inline: -16px; padding-inline: 16px; }
+  .chips[role=tablist]::-webkit-scrollbar { display: none; }
   .chip { flex: none; }
   h1 { font-size: 24px; }
   .hrow { grid-auto-columns: 200px; }

@@ -82,7 +82,7 @@ export function useTitleKeys(rec: Source | undefined, target: () => { type: stri
 function useSlashSearch(input: { current: HTMLInputElement | null }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey || nowPlaying.value || !input.current) return
+      if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented || nowPlaying.value || !input.current) return
       if ((e.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable]')) return
       e.preventDefault()
       input.current.focus()
@@ -151,6 +151,8 @@ export function PluginPage({ id }: { id: string }) {
   const [q, setQ] = useState('')
   const [results, setResults] = useState<Found[] | null>(null)
   const [searching, setSearching] = useState(false)
+  // A grid shows one list of results: each title once, though two catalogs found it.
+  const flat = [...new Map((results ?? []).flatMap((f) => f.items).map((m) => [`${m.type}|${m.id}`, m])).values()]
   useEffect(() => { if (rec) loadLibrary(rec) }, [rec?.id])
   const rows = useCatalogs(rec)
   useTitleKeys(rec, focusedTitle)
@@ -185,9 +187,9 @@ export function PluginPage({ id }: { id: string }) {
         )}
       </header>
       {results ? (
-        results.length === 0
+        (grid ? !flat.length : results.length === 0)
           ? <p class="dim">{searching ? <><span class="spinner sm" /> Searching</> : `No results for "${q}".`}</p>
-          : grid ? <div class="video-grid">{results.flatMap((f) => f.items).map((m) => <MetaCard rec={rec} m={m} />)}</div>
+          : grid ? <div class="video-grid">{flat.map((m) => <MetaCard rec={rec} m={m} />)}</div>
           : results.map((f) => (
             <section class="row-section">
               <div class="row-head"><h2>{`${f.catalog.name} · ${f.catalog.type}`}</h2><span class="dim small">{f.items.length}</span></div>
@@ -199,7 +201,7 @@ export function PluginPage({ id }: { id: string }) {
           {cont.length > 0 && <Row title="Continue watching">{cont.slice(0, 30).map((m) => <MetaCard rec={rec} m={m} />)}</Row>}
           {lib.length > 0 && <Row title="Library">{lib.slice(0, 60).map((m) => <MetaCard rec={rec} m={m} />)}</Row>}
           {rows === null && <div class="status inline"><span class="spinner" /> Loading</div>}
-          {grid ? rows && <GridTabs rec={rec} rows={rows} /> : (rows ?? []).map((c) => <CatalogRow key={`${rec.sha256}|${c.type}|${c.id}`} rec={rec} c={c} />)}
+          {grid ? rows && <GridTabs key={rec.id} rec={rec} rows={rows} /> : (rows ?? []).map((c) => <CatalogRow key={`${rec.sha256}|${c.type}|${c.id}`} rec={rec} c={c} />)}
         </>
       )}
     </div>
@@ -235,6 +237,9 @@ function CatalogGrid({ rec, c, onEmpty }: { rec: Source; c: CatalogDef; onEmpty?
   const [items, setItems] = useState<Meta[] | null>(null)
   const [more, setMore] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  // Where the next page starts: what the plugin has sent so far, repeats included.
+  const [offset, setOffset] = useState(0)
   const load = async (skip: number) => {
     setBusy(true)
     try {
@@ -242,18 +247,25 @@ function CatalogGrid({ rec, c, onEmpty }: { rec: Source; c: CatalogDef; onEmpty?
       const seen = new Set((skip ? items ?? [] : []).map((m) => m.id))
       const next = [...(skip ? items ?? [] : []), ...r.items.filter((m) => !seen.has(m.id))]
       setItems(next)
-      setMore(r.more && r.items.length > 0)
+      setOffset(skip + r.items.length)
+      // A page of only repeats ends Show more, so a feed that loops never shows it forever.
+      setMore(r.more && next.length > (skip ? items?.length ?? 0 : 0))
+      setErr('')
       if (!next.length) onEmpty?.()
-    } catch { if (!skip) { setItems([]); onEmpty?.() } }
+    } catch (e) {
+      setErr((e as Error).message)
+      if (!skip) setItems([])
+    }
     setBusy(false)
   }
   useEffect(() => { load(0) }, [])
   if (items === null) return <div class="video-grid">{Array.from({ length: 8 }, () => <div class="card wide skeleton"><div class="art" /></div>)}</div>
-  if (!items.length) return <p class="dim">Nothing in {c.name} yet.</p>
+  if (!items.length) return <p class="dim">{err ? `${rec.manifest.name}: ${err}` : `Nothing in ${c.name} yet.`}</p>
   return (
     <>
       <div class="video-grid">{items.map((m) => <MetaCard rec={rec} m={m} />)}</div>
-      {more && <button class="btn more-grid" disabled={busy} onClick={() => load(items.length)}>{busy ? <span class="spinner sm" /> : null} Show more</button>}
+      {err && <p class="dim">{rec.manifest.name}: {err}</p>}
+      {more && <button class="btn more-grid" disabled={busy} onClick={() => load(offset)}>{busy ? <span class="spinner sm" /> : null} Show more</button>}
     </>
   )
 }
