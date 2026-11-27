@@ -273,3 +273,28 @@ describe('plugin isolation', () => {
     await expect(h('fetch', ['https://x'])).rejects.toThrow(/inside the sandbox/)
   })
 })
+
+// SPEC-plugins-hub rule 13: Home search offers Flick's own YouTube plugin on the desktop, installed on a tap.
+describe('Search YouTube too', () => {
+  const yt = { id: 'com.youtube' }
+  it.each([
+    ['desktop, nothing installed', true, [], true],
+    ['desktop, another plugin installed', true, [{ id: 'org.example.films' }], true],
+    ['desktop, YouTube installed', true, [yt], false],
+    ['desktop, YouTube installed and off', true, [{ ...yt, enabled: false }], false],
+    ['web app', false, [], false],
+  ])('%s', (_name, desktop, list, want) => {
+    expect(R.offersYouTube(desktop, list)).toBe(want)
+  })
+  it('a tap installs the bundled plugin from /plugins/youtube.js', async () => {
+    const asked: string[] = []
+    const code = 'export default {}'
+    const ytManifest = manifest({ id: 'com.youtube', name: 'YouTube', hosts: ['www.youtube.com'], catalogs: [{ id: 'search', name: 'Search', type: 'video', search: true }] })
+    const rec = await R.addYouTube({ fetchText: async (u) => { asked.push(u); return code }, inspect: async () => ({ manifest: ytManifest, fns: FNS }) })
+    expect(asked).toEqual(['/plugins/youtube.js'])
+    expect(rec.id).toBe('com.youtube')
+    expect(R.installed.value.some((p) => p.id === 'com.youtube')).toBe(true)
+    expect(R.offersYouTube(true, R.installed.value)).toBe(false)
+    await R.remove('com.youtube')
+  })
+})

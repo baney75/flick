@@ -149,6 +149,19 @@ export async function install(c: Candidate, settings?: Record<string, unknown>):
   return rec
 }
 
+/** Flick's own YouTube plugin, bundled with the app. */
+export const YOUTUBE_PLUGIN = { id: 'com.youtube', url: '/plugins/youtube.js' }
+
+/** SPEC-plugins-hub rule 13: Home search offers YouTube on the desktop until it is installed, on or off. */
+export function offersYouTube(desktop: boolean, list: Pick<Installed, 'id'>[]): boolean {
+  return desktop && !list.some((p) => p.id === YOUTUBE_PLUGIN.id)
+}
+
+/** Installs Flick's own YouTube plugin. Home calls it only from a tap. */
+export async function addYouTube(deps: Deps = live): Promise<Installed> {
+  return install(await prepare({ url: YOUTUBE_PLUGIN.url }, deps))
+}
+
 /** A record an older Flick stored, brought up to today's manifest shape. */
 function upgrade(r: Installed): Installed {
   if (r.kind === 'theme') return r

@@ -826,6 +826,7 @@ try {
   await page.getByLabel('Search your plugins').fill('smoke')
   await page.keyboard.press('Enter')
   check(await page.locator('.row-section', { hasText: 'Smoke Films · Find' }).getByText('Smoke Clip').waitFor({ timeout: 15000 }).then(() => true, () => false), 'Home search finds titles in plugin catalogs')
+  check(await page.getByRole('button', { name: 'Search YouTube too' }).count() === 0, 'website: Home search offers no YouTube row (desktop only)')
 
   // One library: a plugin's library sits beside the server, and the same title is one card with a source choice.
   await page.goto(`${BASE}/#/library`)
