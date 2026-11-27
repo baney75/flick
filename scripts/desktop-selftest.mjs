@@ -430,7 +430,7 @@ async function perfMain(outPath) {
 }
 
 
-/** The case 13 media, made here with ffmpeg (never downloaded): testsrc picture and a sine tone. */
+/** The case 13 media, made here with ffmpeg (never downloaded): testsrc picture and silent audio. */
 export const FIXTURES = {
   'a.mkv': [60, 24, ['-c:v', 'libx264', '-g', '48', '-c:a', 'ac3', '-ac', '6']],
   'b.mp4': [20, 24, ['-c:v', 'libx265', '-tag:v', 'hev1', '-x265-params', 'log-level=error', '-c:a', 'dca', '-strict', '-2', '-ac', '2']],
@@ -441,7 +441,7 @@ export const FIXTURES = {
 
 function makeFixtures(dir) {
   for (const [name, [secs, fps, codecs]] of Object.entries(FIXTURES)) {
-    execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', `testsrc=size=320x180:rate=${fps}`, '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000',
+    execFileSync('ffmpeg', ['-v', 'error', '-y', '-f', 'lavfi', '-i', `testsrc=size=320x180:rate=${fps}`, '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo',
       '-t', String(secs), '-pix_fmt', 'yuv420p', ...codecs, join(dir, name)])
   }
 }
