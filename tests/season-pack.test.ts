@@ -48,10 +48,18 @@ describe.each(services)('$name picks the episode from a 10-episode pack', ({ pic
     const one = [as(files()[0], 'Show/Pilot.mkv'), as(files()[0], 'Show/info.nfo')]
     expect(path(pick(one, { episode: ep(3) }))).toBe(path(one[0]))
   })
+  it('one untagged video and a sample (a daily show, an anime "- 07"): the video, not an error', () => {
+    const two = [as(files()[0], 'The.Daily.Show.2026.11.26.mkv', 2e9), as(files()[0], 'sample.mkv', 9e9)]
+    expect(path(pick(two, { episode: ep(7) }))).toBe(path(two[0]))
+  })
+  it('the tag on the folder (Show.S01/S01E07/video.mkv) when no file name holds it', () => {
+    const dirs = [7, 8, 9].map((n) => as(files()[0], `Show.S01/S01E0${n}/video.mkv`, 2e9 - n))
+    expect(path(pick(dirs, { episode: ep(8) }))).toBe(path(dirs[1]))
+  })
   it('a movie (no episode): the largest video', () => expect(picked({})).toBe('Show.S01E10.1080p.mkv'))
-  it('the tag: S01E07, s1.e7, 1x07 and S01E07E08 match; S01E070, S11E07 and E07 alone do not', () => {
-    for (const n of ['Show.S01E07.mkv', 'show s1.e7 x.mkv', 'Show 1x07.mkv', 'Show.S01E07E08.mkv', 'S1_E07.mkv']) expect(tag(n, ep(7)), n).toBe(true)
-    for (const n of ['Show.S01E070.mkv', 'Show.S11E07.mkv', 'Show.E07.mkv', 'Show 11x07.mkv', 'XS01E07.mkv']) expect(tag(n, ep(7)), n).toBe(false)
+  it('the tag: S01E07, s1.e7, 1x07 and a run like S01E06E07 match; S01E070, S11E07, S01E17 and E07 alone do not', () => {
+    for (const n of ['Show.S01E07.mkv', 'show s1.e7 x.mkv', 'Show 1x07.mkv', 'Show.S01E07E08.mkv', 'S1_E07.mkv', 'Show.S01E06E07.mkv', 'Show.S01E06-E07.mkv']) expect(tag(n, ep(7)), n).toBe(true)
+    for (const n of ['Show.S01E070.mkv', 'Show.S11E07.mkv', 'Show.E07.mkv', 'Show 11x07.mkv', 'XS01E07.mkv', 'Show.S01E17.mkv', 'Show.S01E06E08.mkv']) expect(tag(n, ep(7)), n).toBe(false)
   })
 })
 

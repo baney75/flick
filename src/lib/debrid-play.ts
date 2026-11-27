@@ -123,8 +123,9 @@ const whole = (n: unknown): n is number => Number.isSafeInteger(n) && (n as numb
 export const episodeOf = (type: string, v?: { season?: number; episode?: number }): Episode | undefined =>
   type === 'series' && v && whole(v.season) && whole(v.episode) ? { season: v.season, episode: v.episode } : undefined
 
-/** Rule 8: all a service learns about the torrent: its hash, the file's index and name, and for a
- *  series the episode's numbers. Never the trackers, the title or the show's name. */
+/** Rule 8: all a service learns about the torrent: its hash, the file's index and its name inside the
+ *  torrent (often the show's, as in the torrent itself), and for a series the episode's numbers.
+ *  Never the trackers or the title page's details. */
 export function forService(t: Torrent, ep?: Episode): { infoHash: string; fileIdx?: number; name?: string; episode?: Episode } {
   return {
     infoHash: t.infoHash.toLowerCase(),

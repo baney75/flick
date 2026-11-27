@@ -593,9 +593,8 @@ export function validateResolve(x: unknown, hosts: string[]): ResolveResult {
     let u: URL | null = null
     try { u = typeof x.url === 'string' && x.url.length <= 8000 ? new URL(x.url.trim()) : null } catch { u = null }
     if (!u || u.protocol !== 'https:' || !hostMatches(u.hostname, hosts)) return fail('resolve() returned a link that is not https on the plugin\'s hosts.')
-    if (x.bytes === undefined) return { url: u.href }
-    if (!Number.isSafeInteger(x.bytes) || (x.bytes as number) <= 0) return fail('resolve() bytes must be a whole number above 0.')
-    return { url: u.href, bytes: x.bytes as number }
+    // bytes only feeds the speed readout: a wrong one is dropped, never a reason to stop playing.
+    return Number.isSafeInteger(x.bytes) && (x.bytes as number) > 0 ? { url: u.href, bytes: x.bytes as number } : { url: u.href }
   }
   if (isObj(x.wait)) {
     const wait: { pct?: number; message: string } = { message: str(x.wait.message, 'message', false, 200) ?? 'Fetching' }

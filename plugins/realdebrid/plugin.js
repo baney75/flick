@@ -34,18 +34,20 @@ async function api(ctx, path, init = {}) {
 const base = (p) => String(p ?? '').split('/').pop()
 const isEp = (e) => Number.isSafeInteger(e?.season) && e.season > 0 && Number.isSafeInteger(e?.episode) && e.episode > 0
 const tag = (e) => `S${String(e.season).padStart(2, '0')}E${String(e.episode).padStart(2, '0')}`
-/** Whether a file name holds this episode's tag: S01E02 (any padding, any case, an optional . _ - or
- *  space between) or 1x02, with no digit after it. */
-export function holdsEpisode(fileName, e) {
-  const n = base(fileName)
-  return new RegExp(`(?:^|[^a-z0-9])s0*${e.season}[ ._-]?e0*${e.episode}(?![0-9])`, 'i').test(n) || new RegExp(`(?:^|[^0-9])0*${e.season}x0*${e.episode}(?![0-9])`, 'i').test(n)
+/** Whether a name holds this episode's tag: S01E02 (any padding, any case, an optional . _ - or
+ *  space between, also later in a run like S01E01E02) or 1x02, with no digit after it. */
+export function holdsEpisode(name, e) {
+  const n = base(name)
+  return new RegExp(`(?:^|[^a-z0-9])s0*${e.season}(?:[ ._-]?e\\d+)*[ ._-]?e0*${e.episode}(?![0-9])`, 'i').test(n) || new RegExp(`(?:^|[^0-9])0*${e.season}x0*${e.episode}(?![0-9])`, 'i').test(n)
 }
+const SAMPLE = /(?:^|[^a-z])sample(?:[^a-z]|$)/i
+const folder = (p) => base(String(p ?? '').split('/').slice(0, -1).join('/'))
 const sized = (url, n) => (Number.isSafeInteger(n) && n > 0 ? { url, bytes: n } : { url })
 
 /** The file to play from `want` ({ fileIdx, name, episode }): by fileIdx (Real-Debrid numbers files
  *  from 1 in torrent order, so Stremio's fileIdx is id - 1), then the exact name, then the largest
- *  video holding the episode tag. A series with no tagged file plays only a torrent's one video,
- *  never a pack's first or largest file. */
+ *  video holding the episode tag (on the file, else its folder). A series with no tagged file plays
+ *  only a torrent's one video (samples aside), never a pack's first or largest file. */
 export function pickFile(files, want = {}) {
   if (!Array.isArray(files) || !files.length) return null
   const path = (x) => String(x.path ?? '')
@@ -55,9 +57,13 @@ export function pickFile(files, want = {}) {
   const videos = files.filter((x) => VIDEO.test(path(x)))
   const largest = (l) => l.reduce((a, b) => (size(b) > size(a) ? b : a))
   if (isEp(want.episode)) {
+    // The tag on the file, else on its folder (Show.S01/S01E07/video.mkv).
     const tagged = videos.filter((x) => holdsEpisode(path(x), want.episode))
-    if (tagged.length) return largest(tagged)
-    return videos.length === 1 ? videos[0] : null
+    const inFolder = tagged.length ? tagged : videos.filter((x) => holdsEpisode(folder(path(x)), want.episode))
+    if (inFolder.length) return largest(inFolder)
+    // One untagged video besides any samples is the episode (a daily show, an anime "- 07").
+    const real = videos.filter((x) => !SAMPLE.test(base(path(x))))
+    return real.length === 1 ? real[0] : null
   }
   return largest(videos.length ? videos : files)
 }

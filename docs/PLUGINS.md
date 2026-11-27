@@ -300,14 +300,16 @@ service's first `password` setting.
   `{ wait: { pct?, message } }` while the service fetches a torrent it does not have yet, or `{ error }`. Flick asks
   again every 3 seconds while it gets `wait`, for at most 10 minutes. A `url` that is not https, or not
   on the plugin's `hosts`, is refused. `bytes` is the played file's size (a whole number above 0) for
-  the player's speed readout. `episode` is `{ season, episode }` (whole numbers above 0) and comes
+  the player's speed readout; Flick drops any other value and plays the link. `episode` is `{ season, episode }` (whole numbers above 0) and comes
   only for a series. Pick the file by `fileIdx` only when the service's file list keeps the torrent's
   order, else by a file whose name equals `name`, else the largest video whose name holds the episode
-  tag (`S01E02` or `1x02`). With an `episode` and no such file, return an error unless the torrent
-  has one video: never play the first or largest file of a pack.
-- Flick sends a service only the infoHash, file index, file name and, for a series, the season and
-  episode numbers: never the library, other titles, the show's name or a Stremio account. The service
-  already serves that exact file, so the numbers tell it nothing new. It calls a service only for a torrent stream and only in the desktop app.
+  tag (`S01E02` or `1x02`, on the file or its folder). With an `episode` and no such file, return an
+  error unless the torrent has one video besides samples: never play the first or largest file of a
+  pack.
+- Flick sends a service only the infoHash, file index, the file's name inside the torrent (which often
+  names the show, as the torrent itself does) and, for a series, the season and episode numbers:
+  never the library, other titles, the title page's details or a Stremio account. The service already
+  serves that exact file, so the numbers tell it nothing new. It calls a service only for a torrent stream and only in the desktop app.
 - The VPN: by default Flick calls a service only while a VPN is on and hides this computer, and a
   stream whose link is on a service's `debridHosts` is held to the same rule. A service whose playback
   is only an https download from its own servers (no peer sees the user) may say `vpnOptional: true`;
