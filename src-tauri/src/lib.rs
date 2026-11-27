@@ -700,6 +700,67 @@ fn answer_span(w: &Want, total: u64) -> Option<(u64, u64)> {
 
 type Answer = tauri::http::Response<Vec<u8>>;
 
+/// A Kodi file that ignored Range (it answered 200 to one): its open body and the next byte it
+/// gives. The next span at or past that byte reads on from it, so playing on or seeking forward
+/// never downloads the file again from the start (audit F2).
+struct NoRanges {
+    key: String,
+    total: u64,
+    mime: String,
+    pos: u64,
+    body: ureq::BodyReader<'static>,
+    used: std::time::Instant,
+}
+
+/// At most a few open at once, one per file; one left unused for a minute closes.
+static NO_RANGES: Mutex<Vec<NoRanges>> = Mutex::new(Vec::new());
+const NO_RANGES_MAX: usize = 4;
+const NO_RANGES_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Takes `key`'s open body out of the list, closing any that sat idle too long.
+fn take_no_ranges(key: &str) -> Option<NoRanges> {
+    let mut open = NO_RANGES.lock().unwrap();
+    open.retain(|o| o.used.elapsed() < NO_RANGES_IDLE);
+    let i = open.iter().position(|o| o.key == key)?;
+    Some(open.remove(i))
+}
+
+/// Keeps a body for the next span unless it is used up, in place of any older one for its file.
+fn keep_no_ranges(o: NoRanges) {
+    if o.pos >= o.total {
+        return;
+    }
+    let mut open = NO_RANGES.lock().unwrap();
+    open.retain(|k| k.key != o.key);
+    if open.len() >= NO_RANGES_MAX {
+        open.remove(0);
+    }
+    open.push(o);
+}
+
+/// Answers bytes a..=b from an open body at or before a: skips to a and reads on.
+fn read_on(mut o: NoRanges, a: u64, b: u64) -> Answer {
+    use std::io::Read;
+    let mut buf = vec![];
+    let skipped = std::io::copy(&mut (&mut o.body).take(a - o.pos), &mut std::io::sink());
+    let read = (&mut o.body).take(b - a + 1).read_to_end(&mut buf);
+    if skipped.ok() != Some(a - o.pos) || read.ok() != Some((b - a + 1) as usize) {
+        return plain(502, "Kodi closed the connection early");
+    }
+    let (total, mime) = (o.total, o.mime.clone());
+    o.pos = b + 1;
+    o.used = std::time::Instant::now();
+    keep_no_ranges(o);
+    tauri::http::Response::builder()
+        .status(206)
+        .header("Content-Type", mime)
+        .header("Accept-Ranges", "bytes")
+        .header("Content-Range", format!("bytes {a}-{b}/{total}"))
+        .header("Content-Length", buf.len())
+        .body(buf)
+        .unwrap()
+}
+
 fn plain(status: u16, msg: &str) -> Answer {
     tauri::http::Response::builder()
         .status(status)
@@ -708,13 +769,25 @@ fn plain(status: u16, msg: &str) -> Answer {
         .unwrap()
 }
 
-/// Fetches base/path from Kodi with the login and the capped Range, and builds the answer.
+/// Fetches base/path from Kodi with the login and the capped Range, and builds the answer. A
+/// file Kodi sent whole reads on from its open body when it can (NoRanges).
 fn proxy_fetch(base: &str, auth: Option<&str>, path: &str, range: Option<&str>) -> Answer {
     use std::io::Read;
     let want = parse_range(range);
+    let key = format!("{auth:?} {base}/{path}");
+    if let Some(open) = take_no_ranges(&key) {
+        match answer_span(&want, open.total) {
+            Some((a, b)) if a >= open.pos => return read_on(open, a, b),
+            // Behind the open body: it closes here, before the new request.
+            _ => drop(open),
+        }
+    }
+    // No limit on the whole call: a body Kodi sends whole stays open for the next span.
+    let secs = |s| Some(std::time::Duration::from_secs(s));
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_connect(Some(std::time::Duration::from_secs(10)))
-        .timeout_global(Some(std::time::Duration::from_secs(120)))
+        .timeout_connect(secs(10))
+        .timeout_recv_response(secs(30))
+        .timeout_per_read(secs(60))
         .http_status_as_error(false)
         .build()
         .into();
@@ -741,7 +814,7 @@ fn proxy_fetch(base: &str, auth: Option<&str>, path: &str, range: Option<&str>) 
     let mut body = resp.into_body().into_reader();
     let mut buf = vec![];
     let out = tauri::http::Response::builder()
-        .header("Content-Type", mime)
+        .header("Content-Type", &mime)
         .header("Accept-Ranges", "bytes");
     let out = match status {
         206 => {
@@ -772,9 +845,18 @@ fn proxy_fetch(base: &str, auth: Option<&str>, path: &str, range: Option<&str>) 
                     .unwrap();
             };
             let skipped = std::io::copy(&mut (&mut body).take(a), &mut std::io::sink());
-            if skipped.ok() != Some(a) || body.take(b - a + 1).read_to_end(&mut buf).is_err() {
+            let read = (&mut body).take(b - a + 1).read_to_end(&mut buf);
+            if skipped.ok() != Some(a) || read.ok() != Some((b - a + 1) as usize) {
                 return plain(502, "Kodi closed the connection early");
             }
+            keep_no_ranges(NoRanges {
+                key,
+                total,
+                mime: mime.clone(),
+                pos: b + 1,
+                body,
+                used: std::time::Instant::now(),
+            });
             out.status(206)
                 .header("Content-Range", format!("bytes {a}-{b}/{total}"))
         }
@@ -1772,6 +1854,33 @@ mod tests {
                 401
             );
         }
+    }
+
+    /// Audit F2 (#11 item 2): a Kodi that ignores Range answers a far seek forward from the body
+    /// already open, where main downloaded the file again from the start; a seek back starts over.
+    #[test]
+    fn audit_kodi_200_far_seek_rereads_from_start() {
+        let data: Vec<u8> = (0..(3 * CHUNK as usize + 5000))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let f = Fake::new(data.clone(), false);
+        let log = Arc::clone(&f.log);
+        let base = f.serve();
+        let auth = basic("kodi", "pw");
+        let path = "vfs/%2Fm%2FA.mp4";
+        let r = proxy_fetch(&base, auth.as_deref(), path, None);
+        assert_eq!(r.body()[..], data[..CHUNK as usize]);
+        let far = 2 * CHUNK as usize + 100;
+        let r = proxy_fetch(&base, auth.as_deref(), path, Some(&format!("bytes={far}-")));
+        assert_eq!(r.status(), 206);
+        assert_eq!(r.body()[..], data[far..far + CHUNK as usize]);
+        let cr = format!("bytes {far}-{}/{}", far + CHUNK as usize - 1, data.len());
+        assert_eq!(r.headers()["content-range"], cr.as_str());
+        let gets = log.lock().unwrap().len();
+        assert_eq!(gets, 1, "the far seek read on from the open body");
+        let r = proxy_fetch(&base, auth.as_deref(), path, Some("bytes=0-1023"));
+        assert_eq!(r.body()[..], data[..1024]);
+        assert_eq!(log.lock().unwrap().len(), 2, "a seek back starts over");
     }
 
     #[test]
