@@ -6,7 +6,7 @@ import * as db from '../db'
 import { isDesktop, isMobileApp, invoke, fileUrl } from '../platform'
 import { connect, type Handler, type Rpc } from './rpc'
 import * as V from './validate'
-import { findDebridKeys, maskUrls } from './debrid-keys'
+import { asHttps, findDebridKeys, maskUrls } from './debrid-keys'
 import { mark } from './trace'
 
 /** No allow-same-origin, ever: the opaque origin is what keeps a plugin out of Flick's storage. */
@@ -49,7 +49,7 @@ export function setSecrets(id: string, rec: Pick<Installed, 'kind' | 'manifest' 
   // A secret list (Stremio's addon addresses) is blanked entry by entry, and so is any debrid key inside
   // one, so the key stays hidden even in a line that quotes the address without its scheme.
   const values = fields.flatMap((f) => rec.settings[f.key]).filter((v): v is string => typeof v === 'string' && v.length >= 4)
-  const keys = findDebridKeys(values.map((v) => v.replace(/^(stremio|http):/i, 'https:'))).map((k) => k.key)
+  const keys = findDebridKeys(values.map(asHttps)).map((k) => k.key)
   secretValues.set(id, [...new Set([...values, ...keys])].sort((a, b) => b.length - a.length))
 }
 export function redact(id: string, text: string): string {

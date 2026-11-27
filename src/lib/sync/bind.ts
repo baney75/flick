@@ -58,9 +58,9 @@ export async function startSyncBinding() {
     ...[...prevServers].map(([id, s]) => [`v:${id}`, JSON.parse(s)] as [string, unknown]),
     ...[...prevPlugins].map(([k, v]) => [k, JSON.parse(v)] as [string, unknown]),
   ]
-  await startSync((keys) => { applyRemote(keys).catch(() => {}) }, offer)
-  // A synced copy saved before a field turned secret here is rewritten without it once, so it stops travelling.
-  publish(secretLeaks(installed.value, docValue))
+  // After each merge from another device (never before one, so a stale copy here cannot undo a newer change
+  // there), a synced plugin entry that still holds a field this device keeps secret is rewritten without it.
+  await startSync((keys) => { applyRemote(keys).then(() => publish(secretLeaks(installed.value, docValue))).catch(() => {}) }, offer)
 
   effect(() => {
     const next = progress.value
@@ -180,8 +180,6 @@ async function applyPlugins() {
       if (Object.keys(patch).length) await setPluginSettings(rec.id, patch)
     }
     prevPlugins = pluginSnapshot(installed.value)
-    // A device on an older plugin can send a field this one keeps secret: rewrite the synced copy without it.
-    publish(secretLeaks(installed.value, docValue))
   } finally {
     applying = false
   }

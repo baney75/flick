@@ -91,6 +91,20 @@ describe('the extensions contract', () => {
     expect(V.validateExtensionResult({ ok: true, settings: { addons: [url, 3], token: 'new-token' } }, fields).settings).toEqual({ addons: [url], token: 'new-token' })
     expect(V.validateExtensionResult({ ok: true, settings: { addons: url, token: ['x'], authKey: 'k' } }, fields).settings).toBeUndefined()
   })
+  it('a stored address shows its key masked however it was typed', () => {
+    for (const u of ['stremio://torrentio.strem.fun/torbox=abc123XYZ9/manifest.json', 'http://torrentio.strem.fun/torbox=abc123XYZ9/manifest.json',
+      'torrentio.strem.fun/torbox=abc123XYZ9/manifest.json', '  https://torrentio.strem.fun/torbox=abc123XYZ9/manifest.json ']) {
+      const shown = E.maskAddress(u)
+      expect(shown).not.toContain('abc123XYZ9')
+      expect(shown).toContain('torrentio.strem.fun/torbox=\u2022\u2022\u2022XYZ9/manifest.json')
+    }
+    expect(E.maskAddress('torrentio.strem.fun/manifest.json')).toBe('torrentio.strem.fun/manifest.json')
+  })
+  it('a key in a stored address with no scheme is blanked in the log too', () => {
+    const m = V.validateManifest(manifest({ settings: [{ key: 'addons', label: 'A', type: 'list', secret: true }] }), FNS)
+    setSecrets('org.example.bare', { kind: 'source', manifest: m, settings: { addons: ['torrentio.strem.fun/torbox=abc123XYZ9/manifest.json'] } })
+    expect(redact('org.example.bare', 'key abc123XYZ9 refused')).toBe('key [key] refused')
+  })
   it('a secret list is blanked entry by entry in the log', () => {
     const url = 'torrentio.strem.fun/torbox=abc123XYZ9/manifest.json'
     const m = V.validateManifest(manifest({ settings: [{ key: 'addons', label: 'A', type: 'list', secret: true }] }), FNS)

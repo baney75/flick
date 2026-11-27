@@ -107,6 +107,22 @@ export const keyEnd = (key: string) => key.slice(-4)
 
 const DOTS = '\u2022\u2022\u2022'
 
+/** An address read as https, so findDebridKeys sees it: stremio and http schemes, and none at all. */
+export function asHttps(text: string): string {
+  const t = text.trim()
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t.replace(/^(stremio|http):/i, 'https:') : `https://${t}`
+}
+
+/**
+ * A stored addon address as Flick shows it, typed any way the old text box allowed (stray spaces, no
+ * scheme): masked like maskUrl, any debrid key cut to its last 4.
+ */
+export function maskAddress(text: string): string {
+  const t = text.trim()
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(t)) return maskUrl(t)
+  return maskUrl(`https://${t}`).slice('https://'.length)
+}
+
 /**
  * An addon address as Flick shows it: any debrid key in it cut to its last 4 characters
  * (`torbox=abc123XYZ9` shows as `torbox=•••XYZ9`). A key inside an encoded config hides the whole

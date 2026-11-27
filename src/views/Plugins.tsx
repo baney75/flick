@@ -10,7 +10,7 @@ import { installed, prepare, install, remove, setEnabled, setPluginSettings, acc
 import { callPlugin, logs, type Installed } from '../lib/plugins/runtime'
 import { themes } from '../lib/plugins/use'
 import type { ActionDef, Field, PluginManifest, ThemeManifest } from '../lib/plugins/validate'
-import { maskUrl } from '../lib/plugins/debrid-keys'
+import { maskAddress } from '../lib/plugins/debrid-keys'
 
 const DOCS = 'https://github.com/baney75/flick/blob/main/docs/PLUGINS.md'
 export const PROMPT = `Write a Flick plugin for: <the site, API or service you want in Flick>.
@@ -90,7 +90,7 @@ function FieldInput({ f, value, set }: { f: Field; value: unknown; set: (v: unkn
         {entries.length
           ? <ul class="small" style={{ margin: 0, paddingLeft: '18px' }}>{entries.map((u, i) => (
             <li key={u} style={{ overflowWrap: 'anywhere' }}>
-              {maskUrl(u)} <button type="button" class="link-btn" aria-label={`Remove entry ${i + 1}, ${maskUrl(u)}`} onClick={() => set(entries.filter((x) => x !== u))}>Remove</button>
+              {maskAddress(u)} <button type="button" class="link-btn" aria-label={`Remove entry ${i + 1}, ${maskAddress(u)}`} onClick={() => set(entries.filter((x) => x !== u))}>Remove</button>
             </li>
           ))}</ul>
           : <span class="small dim">None yet.</span>}

@@ -58,4 +58,4 @@ export function hostOf(url: string): string {
   try { return new URL(url.replace(/^stremio:/i, 'https:')).hostname } catch { return '' }
 }
 
-export { maskUrl } from './debrid-keys'
+export { maskAddress, maskUrl } from './debrid-keys'
