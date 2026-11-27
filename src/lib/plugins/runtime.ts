@@ -197,6 +197,7 @@ const CHECKS: Record<string, (x: unknown, m: V.PluginManifest, args: unknown[], 
   inspectExtension: V.validateInspect,
   addExtension: (x, m) => V.validateExtensionResult(x, m.settings),
   removeExtension: (x, m) => V.validateExtensionResult(x, m.settings),
+  titleAction: V.validateTitleAction,
   progress: () => null,
   account: V.validateAccount,
   cached: (x, _m, args) => V.validateCached(x, Array.isArray(args[0]) ? (args[0] as string[]) : []),
@@ -204,7 +205,7 @@ const CHECKS: Record<string, (x: unknown, m: V.PluginManifest, args: unknown[], 
 }
 
 export interface Results {
-  userCatalogs: V.CatalogDef[]; catalog: V.CatalogResult; meta: V.Meta; streams: V.Stream[]; subtitles: V.Sub[]; library: V.Library; action: V.ActionResult; progress: null; addonUrls: string[]
+  userCatalogs: V.CatalogDef[]; catalog: V.CatalogResult; meta: V.Meta; streams: V.Stream[]; subtitles: V.Sub[]; library: V.Library; action: V.ActionResult; titleAction: V.TitleActionResult; progress: null; addonUrls: string[]
   extensions: V.Extension[]; extensionCatalog: V.Extension[]; inspectExtension: V.Extension; addExtension: V.ExtensionResult; removeExtension: V.ExtensionResult
   account: V.AccountResult; cached: string[]; resolve: V.ResolveResult
 }

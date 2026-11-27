@@ -82,7 +82,14 @@ export default {
     if (search && !'smoke clip'.includes(search.toLowerCase())) return { items: [] }
     return { items: [{ id: 'clip', type: 'movie', name: 'Smoke Clip', year: '2024', description: 'From ' + info.name }] }
   },
-  async meta(ctx, { id }) { return { id, type: 'movie', name: 'Smoke Clip', year: '2024', description: 'A test clip.' } },
+  titleActions: [{ id: 'later', label: 'Watch later', key: 'w' }],
+  async titleAction(ctx, { id }) {
+    const l = (await ctx.store.get('later')) ?? []
+    const on = !l.includes(id)
+    await ctx.store.set('later', on ? [...l, id] : l.filter((x) => x !== id))
+    return { ok: true, on, message: on ? 'Added to Watch later' : 'Removed from Watch later' }
+  },
+  async meta(ctx, { id }) { return { id, type: 'movie', name: 'Smoke Clip', year: '2024', description: 'A test clip.', marks: ((await ctx.store.get('later')) ?? []).includes(id) ? ['later'] : [] } },
   // One title the Flick server also has, and one only this plugin has.
   async library() { return [{ id: 'lib-sm', type: 'movie', name: 'Server Movie', year: '2024' }, { id: 'lib-only', type: 'movie', name: 'Plugin Only Film', year: '2023' }] },
   async streams(ctx, { id }) {
@@ -629,6 +636,10 @@ try {
   const vidText = await vid.innerText({ timeout: 15000 }).catch(() => '')
   check(await vid.locator('.card-time').innerText().catch(() => '') === '1:02:05' && /Smoke Channel/.test(vidText) && /1\.2M views · 2 years ago/.test(vidText), `a landscape card shows its length on the thumbnail, the channel, views and age (${vidText.replace(/\n/g, ' | ')})`)
   await page.screenshot({ path: 'test-media/shots/plugin-page.png' })
+  // A title action's key on a focused card acts on that card's title.
+  await page.locator('.card', { hasText: 'Smoke Clip' }).first().focus()
+  await page.keyboard.press('w')
+  check(await page.getByText('Added to Watch later').waitFor({ timeout: 5000 }).then(() => true, () => false), 'pressing W on a focused card runs the plugin\'s Watch later action for it')
   await page.getByText('Smoke Clip').first().click()
   await page.locator('.stream').first().waitFor({ timeout: 15000 })
   check((await page.locator('.stream').first().innerText()).includes('Smoke stream'), 'plugin title page lists a stream')
@@ -638,6 +649,16 @@ try {
   const playLine = await page.locator('.pick-line').innerText().catch(() => '')
   check(/Play/.test(await page.locator('.play-best').innerText().catch(() => '')) && playLine === '720p', `title page offers one Play for the best stream for this screen (${playLine})`)
   check(/HDR/.test(await page.locator('.stream').first().innerText()) && /1\.2 GB/.test(await page.locator('.stream').first().innerText()), 'a stream shows its HDR and size as tags')
+  // A plugin's title action: pressed state from the plugin's marks, its key on the title page.
+  const later = page.getByRole('button', { name: /Watch later/ })
+  check(await later.getAttribute('aria-pressed') === 'true', 'a title action set from a focused card shows pressed on the title page')
+  await page.evaluate(() => document.activeElement?.blur())
+  await page.keyboard.press('w')
+  check(await page.getByText('Removed from Watch later').waitFor({ timeout: 5000 }).then(() => true, () => false) && await later.getAttribute('aria-pressed') === 'false', 'pressing W on a title page runs the plugin\'s Watch later action')
+  await page.keyboard.press('w')
+  await page.getByText('Added to Watch later').waitFor({ timeout: 5000 }).catch(() => {})
+  await page.reload()
+  check(await later.waitFor({ timeout: 15000 }).then(async () => await later.getAttribute('aria-pressed') === 'true', () => false), 'the title page shows the action as on after a reload (the plugin\'s marks)')
   await page.screenshot({ path: 'test-media/shots/plugin-title.png' })
   await page.locator('.stream').first().click()
   await page.locator('.player').waitFor()

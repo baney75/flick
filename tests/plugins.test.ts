@@ -18,7 +18,7 @@ describe('plugin validation', () => {
     const m = V.validateManifest(manifest(), FNS)
     expect(m.platforms).toEqual(['web', 'desktop', 'mobile'])
     expect(m.tools).toEqual([])
-    expect(m.has).toEqual({ library: false, action: false, progress: false, subtitles: false, userCatalogs: false, addonUrls: false, extensions: false })
+    expect(m.has).toEqual({ library: false, action: false, progress: false, subtitles: false, userCatalogs: false, addonUrls: false, extensions: false, titleAction: false })
   })
   it('refuses bad ids, hosts, tools, types, API versions and missing functions', () => {
     expect(() => V.validateManifest(manifest({ id: 'Films' }), FNS)).toThrow(/reverse-DNS/)
@@ -28,6 +28,17 @@ describe('plugin validation', () => {
     expect(() => V.validateManifest(manifest({ api: 2 }), FNS)).toThrow(/API 2/)
     expect(() => V.validateManifest(manifest(), ['catalog', 'meta'])).toThrow(/streams\(\)/)
     expect(() => V.validateManifest(manifest({ actions: [{ id: 'in', label: 'Sign in' }] }), FNS)).toThrow(/action\(\)/)
+  })
+  it('reads title actions: one-letter keys, unique, with a titleAction() function', () => {
+    const acts = [{ id: 'like', label: 'Like', key: 'L' }, { id: 'later', label: 'Watch later', key: 'w' }]
+    expect(V.validateManifest(manifest({ titleActions: acts }), [...FNS, 'titleAction']).titleActions).toEqual([{ id: 'like', label: 'Like', key: 'l' }, { id: 'later', label: 'Watch later', key: 'w' }])
+    expect(() => V.validateManifest(manifest({ titleActions: acts }), FNS)).toThrow(/titleAction\(\)/)
+    expect(() => V.validateManifest(manifest({ titleActions: [{ id: 'a', label: 'A', key: 'ab' }] }), [...FNS, 'titleAction'])).toThrow(/one letter/)
+    expect(() => V.validateManifest(manifest({ titleActions: [{ id: 'a', label: 'A', key: '/' }] }), [...FNS, 'titleAction'])).toThrow(/one letter/)
+    expect(() => V.validateManifest(manifest({ titleActions: [{ id: 'a', label: 'A', key: 'w' }, { id: 'b', label: 'B', key: 'W' }] }), [...FNS, 'titleAction'])).toThrow(/share a key/)
+    expect(V.validateTitleAction({ ok: true, on: true, message: 'Liked' })).toEqual({ ok: true, on: true, message: 'Liked' })
+    expect(() => V.validateTitleAction({ ok: true })).toThrow(/on/)
+    expect(V.validateMeta({ id: 'a', type: 'video', name: 'A', marks: ['like', 'Bad Id', 3] }).marks).toEqual(['like'])
   })
   it('marks password fields secret', () => {
     const m = V.validateManifest(manifest({ actions: [{ id: 'in', label: 'Sign in', fields: [{ key: 'pw', type: 'password' }] }] }), [...FNS, 'action'])

@@ -1,9 +1,9 @@
 // A source plugin's page (catalog rows, search, its library) and title page (details, seasons and
 // episodes, streams). Everything shown came through the sandbox and the validator.
 
-import { useEffect, useState } from 'preact/hooks'
+import { useCallback, useEffect, useState } from 'preact/hooks'
 import type { ComponentChildren } from 'preact'
-import { go, play, notify, progress } from '../lib/store'
+import { go, play, notify, progress, nowPlaying } from '../lib/store'
 import { Card, Row } from '../components/Card'
 import { Icon } from '../components/icons'
 import { isDesktop, isMobileApp } from '../lib/platform'
@@ -12,7 +12,7 @@ import { saveStream, playSaved, badgeFor } from '../lib/offline'
 import { callPlugin } from '../lib/plugins/runtime'
 import { installed } from '../lib/plugins/registry'
 import { sources, sourceById, searchAll, titlePath, progressKey, libraries, loadLibrary, continueOf, type Source, type Found } from '../lib/plugins/use'
-import { isBuiltinType, type CatalogDef, type Meta, type Stream, type Video } from '../lib/plugins/validate'
+import { isBuiltinType, type CatalogDef, type Meta, type Stream, type TitleActionDef, type Video } from '../lib/plugins/validate'
 import { sections, qualityOf, hdrOf, sizeOf, downloadable } from '../lib/plugins/streams'
 import { rank, pickLine, subLangFor, needsGate, type Ranked } from '../lib/pick'
 import { streamCandidates } from '../lib/candidates'
@@ -28,7 +28,48 @@ export function MetaCard({ rec, m }: { rec: Source; m: Meta }) {
   const ep = m.progress?.videoId && m.type === 'series' ? m.progress.videoId : undefined
   const wide = m.posterShape === 'landscape'
   return <Card image={m.poster} title={m.name} sub={m.subtitle ?? m.year} info={m.badges?.join(' · ')} time={wide ? m.runtime : undefined} wrap={wide}
+    target={rec.manifest.titleActions.length ? JSON.stringify({ type: m.type, id: m.id }) : undefined}
     shape={shape(m)} pct={pct} onClick={() => go(titlePath(rec.id, m.type, m.id, ep))} />
+}
+
+/** Run one of a plugin's titleActions on a title; returns whether it is now on, or null when it failed. */
+export async function runTitleAction(rec: Source, t: { type: string; id: string }, a: TitleActionDef): Promise<boolean | null> {
+  try {
+    const r = await callPlugin(rec, 'titleAction', [{ type: t.type, id: t.id, action: a.id }])
+    notify(r.message ?? `${a.label}: ${r.ok ? (r.on ? 'on' : 'off') : 'failed'}`)
+    return r.ok ? r.on : null
+  } catch (e) {
+    notify(`${a.label}: ${(e as Error).message}`)
+    return null
+  }
+}
+
+/**
+ * A plugin's titleActions keys: on a title page they act on that title, on the plugin's page on the
+ * focused card. Never while typing, with a modifier, or while the player is open.
+ */
+export function useTitleKeys(rec: Source | undefined, target: () => { type: string; id: string } | null, done?: (a: TitleActionDef, on: boolean) => void) {
+  useEffect(() => {
+    const acts = rec?.manifest.titleActions.filter((a) => a.key) ?? []
+    if (!rec || !acts.length) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || nowPlaying.value || e.defaultPrevented) return
+      if ((e.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable]')) return
+      const a = acts.find((x) => x.key === e.key.toLowerCase())
+      const t = a && target()
+      if (!a || !t) return
+      e.preventDefault()
+      runTitleAction(rec, t, a).then((on) => { if (on !== null) done?.(a, on) })
+    }
+    addEventListener('keydown', onKey)
+    return () => removeEventListener('keydown', onKey)
+  }, [rec?.sha256, target, done])
+}
+
+/** The title the focused card stands for, when it is one of this plugin's cards. */
+function focusedTitle(): { type: string; id: string } | null {
+  const raw = (document.activeElement as HTMLElement | null)?.closest?.('[data-target]')?.getAttribute('data-target')
+  try { return raw ? JSON.parse(raw) : null } catch { return null }
 }
 
 export function PluginIcon({ rec, size = 20 }: { rec: { manifest: object }; size?: number }) {
@@ -85,6 +126,7 @@ export function PluginPage({ id }: { id: string }) {
   const [searching, setSearching] = useState(false)
   useEffect(() => { if (rec) loadLibrary(rec) }, [rec?.id])
   const rows = useCatalogs(rec)
+  useTitleKeys(rec, focusedTitle)
   if (!rec) return <Missing id={id} />
   const name = rec.manifest.name
   const canSearch = rec.manifest.catalogs.some((c) => c.search)
@@ -154,11 +196,16 @@ export function PluginTitle({ p, type, id, videoId }: { p: string; type: string;
   const [err, setErr] = useState('')
   const [season, setSeason] = useState<number | null>(null)
   const [vid, setVid] = useState<string | null>(videoId ?? null)
+  const [marks, setMarks] = useState<string[]>([])
+  const mark = useCallback((a: TitleActionDef, on: boolean) => setMarks((l) => (on ? [...new Set([...l, a.id])] : l.filter((x) => x !== a.id))), [])
+  const here = useCallback(() => ({ type, id }), [type, id])
+  useTitleKeys(rec, here, mark)
 
   useEffect(() => {
     if (!rec) return
     callPlugin(rec, 'meta', [{ type, id }]).then((m) => {
       setMeta(m)
+      setMarks(m.marks ?? [])
       const vids = m.videos ?? []
       // With no episode asked for, open where the user left off.
       const back = videoId ? null : resumeOf(progress.value, rec.id, id, vids)
@@ -192,6 +239,19 @@ export function PluginTitle({ p, type, id, videoId }: { p: string; type: string;
         <div class="detail-info">
           <h1>{meta.name}</h1>
           <div class="facts">{[meta.year, meta.runtime, ...(meta.badges ?? []), ...(meta.genres ?? []).slice(0, 3)].filter(Boolean).map((f) => <span>{f}</span>)}</div>
+          {rec.manifest.titleActions.length > 0 && (
+            <div class="title-acts">
+              {rec.manifest.titleActions.map((a) => {
+                const on = marks.includes(a.id)
+                return (
+                  <button class={`btn sm${on ? ' on' : ''}`} aria-pressed={on} title={a.key ? `${a.label} (${a.key.toUpperCase()})` : a.label}
+                    onClick={() => runTitleAction(rec, { type, id }, a).then((r) => { if (r !== null) mark(a, r) })}>
+                    {on && <Icon name="check" size={14} />}{a.label}{a.key && <kbd>{a.key.toUpperCase()}</kbd>}
+                  </button>
+                )
+              })}
+            </div>
+          )}
           {meta.description && <p class="desc">{meta.description}</p>}
           {facts && <div class="facts-list title-facts">{facts.map((f) => <div><span class="dim">{f.label}</span> {f.value}</div>)}</div>}
           <p class="small dim"><PluginIcon rec={rec} size={14} /> {rec.manifest.name}</p>

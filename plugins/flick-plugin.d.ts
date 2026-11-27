@@ -18,6 +18,8 @@ export interface Field {
 
 export interface Action { id: string; label: string; fields?: Field[] }
 export interface Catalog { id: string; name: string; type: MetaType; search?: boolean }
+/** A button on each title page, like Like or Watch later. `key` is a one-letter shortcut. */
+export interface TitleAction { id: string; label: string; key?: string }
 
 export interface Video { id: string; title: string; season?: number; episode?: number; released?: string; thumbnail?: string; overview?: string }
 export interface Meta {
@@ -31,6 +33,8 @@ export interface Meta {
   year?: string
   genres?: string[]
   runtime?: string
+  /** Ids of the titleActions that are on for this title, so its buttons show pressed. */
+  marks?: string[]
   /** One line under the name on a card: a channel, an author. */
   subtitle?: string
   /** Up to 4 short facts (40 characters each) on a card and the title page: "1.2M views", "3 years ago". */
@@ -96,6 +100,8 @@ export interface Plugin {
   settings?: Field[]
   actions?: Action[]
   catalogs: Catalog[]
+  /** At most 6 buttons on every title page; each needs titleAction(). */
+  titleActions?: TitleAction[]
   /** Optional: the current catalog rows, when they depend on the user (their addons, their account). */
   userCatalogs?(ctx: Ctx): Promise<Catalog[]>
   catalog(ctx: Ctx, args: { id: string; type: MetaType; search?: string; skip?: number }): Promise<{ items: Meta[]; more?: boolean } | Meta[]>
@@ -115,6 +121,8 @@ export interface Plugin {
   addExtension?(ctx: Ctx, args: { url: string }): Promise<ExtensionResult>
   removeExtension?(ctx: Ctx, args: { id: string }): Promise<ExtensionResult>
   progress?(ctx: Ctx, args: { type: MetaType; id: string; videoId: string; pos: number; dur: number }): Promise<void>
+  /** A titleActions button or key was used on a title: toggle it, and say whether it is now on. */
+  titleAction?(ctx: Ctx, args: { type: MetaType; id: string; action: string }): Promise<{ ok: boolean; on: boolean; message?: string }>
 }
 
 /** One addon. `url` is https:// or stremio://; `removable: false` hides Remove (a protected addon). */

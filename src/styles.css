@@ -223,6 +223,9 @@ label.toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
 .detail-info h1 { font-size: clamp(30px, 4vw, 48px); letter-spacing: -0.03em; margin-bottom: 10px; }
 .detail-logo { max-width: 380px; max-height: 120px; object-fit: contain; margin-bottom: 14px; display: block; }
 .facts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.title-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.title-acts .btn.on { border-color: var(--accent); color: var(--accent); }
+.title-acts kbd { margin-left: 2px; }
 .facts span { font-size: 13px; padding: 3px 10px; border-radius: 99px; background: color-mix(in srgb, var(--surface) 80%, transparent); border: 1px solid var(--line); }
 .desc { font-size: 16px; line-height: 1.55; color: var(--text); opacity: .9; margin-bottom: 12px; }
 .streams { margin-top: 8px; }
