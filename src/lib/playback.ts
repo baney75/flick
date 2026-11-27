@@ -27,6 +27,26 @@ export function isHls(url: string) {
   return /\.m3u8(\?|$)/i.test(url) || /\/hlsv2\//.test(url)
 }
 
+/** What the website shows for a stream its browser cannot open (rule 8): no ffmpeg there. */
+export const DESKTOP_ONLY = 'This file plays in the Flick desktop app.'
+
+const TYPES: Record<string, string> = {
+  mkv: 'video/x-matroska', avi: 'video/x-msvideo', wmv: 'video/x-ms-wmv', flv: 'video/x-flv',
+  ts: 'video/mp2t', m2ts: 'video/mp2t', mov: 'video/quicktime', mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm',
+}
+
+/**
+ * Whether the browser can open `url`, judged without fetching it: the type its extension names and
+ * the element's canPlayType. A link with no known extension is given the chance to play.
+ */
+export function playsHere(url: string, canPlayType: (type: string) => string): boolean {
+  let path = url
+  try { path = new URL(url).pathname } catch { /* a bare path */ }
+  const ext = /\.([a-z0-9]+)$/i.exec(path)?.[1]?.toLowerCase()
+  const type = ext && TYPES[ext]
+  return !type || canPlayType(type) !== ''
+}
+
 /** Streams the desktop probes before play: http(s) links that are not HLS, which the web view plays itself. */
 export function probes(url: string | undefined): url is string {
   return !!url && isDesktop && !isMobileApp && /^https?:\/\//i.test(url) && !isHls(url)

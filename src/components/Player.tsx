@@ -12,7 +12,7 @@ import { openToolStream } from '../lib/plugins/runtime'
 import { Icon } from './icons'
 import { Readout } from './Readout'
 import { Delayed, KEEPS_STALLING, kindOf, OPENING, WAITING, waitLine, Watchdog } from '../lib/stalls'
-import { convertLine, isHls, planSeek, probeStream, probes, Remux, SLOW_SERVER, writtenOf } from '../lib/playback'
+import { convertLine, DESKTOP_ONLY, isHls, playsHere, planSeek, probeStream, probes, Remux, SLOW_SERVER, writtenOf } from '../lib/playback'
 
 const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
 
@@ -106,6 +106,13 @@ function PlayerInner({ req }: { req: PlayRequest }) {
           setStatus(null)
         }
         let startAt = req.startAt
+        // The website has no ffmpeg: a stream its browser cannot open says so before any fetch, with no spinner.
+        if (!isDesktop && !playsHere(url, (t) => v.canPlayType(t))) {
+          setStatus(null)
+          setStuck(true)
+          setError(DESKTOP_ONLY)
+          return
+        }
         if (probes(url)) {
           // Only a server that never answers stops here; any other probe failure plays the link as it is.
           const slow = setTimeout(() => !cancelled && setStatus(WAITING), 3000)
