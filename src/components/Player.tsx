@@ -258,6 +258,19 @@ function PlayerInner({ req }: { req: PlayRequest }) {
       setError(msg)
       return
     }
+    // A plugin stream's address expires and is bound to this IP: look it up again once, at the same spot,
+    // before any remux, which would read the expired address. A later decode error remuxes the new one.
+    const again = tool.current?.retry(tool.current.url, v.currentTime || req.startAt || 0)
+    if (again) {
+      setStatus('Reconnecting')
+      again.then(({ play, at }) => {
+        req.startAt = at
+        setLive(play.live)
+        if (fallback.current) fallback.current = /^https?:\/\//i.test(play.url) ? { input: play.url, user: '', pass: '' } : null
+        return attach(v, play.url)
+      }).catch((e) => { setStatus(null); setError((e as Error).message || msg) })
+      return
+    }
     // The web view cannot decode this stream: the remux at the same spot, the safe profile when the probe failed.
     const fb = onMediaError(code, fallback.current)
     if (fb) {
@@ -270,14 +283,6 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         if (video.current !== v) { remux.current?.stop(); return }
         if (url) await attach(v, url, 0)
       })().catch((e) => { setStatus(null); setError(messageOf(e) || msg) })
-      return
-    }
-    // A plugin stream's address expires and is bound to this IP: look it up again once, at the same spot.
-    const again = tool.current?.retry(tool.current.url, v.currentTime || req.startAt || 0)
-    if (again) {
-      setStatus('Reconnecting')
-      again.then(({ play, at }) => { req.startAt = at; setLive(play.live); return attach(v, play.url) })
-        .catch((e) => { setStatus(null); setError((e as Error).message || msg) })
       return
     }
     const src = req.src

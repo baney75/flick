@@ -131,10 +131,9 @@ impl StreamProbe {
     }
 
     /// The same source with video and audio both transcoded: the one restart after a decode error in a
-    /// remux run (rule 5). HEVC, Dolby Vision and 10-bit sources become HEVC main10, the rest H.264.
+    /// remux run (rule 5). Sources deeper than 8 bits become HEVC main10, the rest H.264.
     pub fn transcoded(mut self) -> Self {
-        let ten = self.deep || self.video.as_deref() == Some("hevc");
-        self.video_out = Some(if ten { VideoOut::Hevc10 } else { VideoOut::H264 });
+        self.video_out = Some(if self.deep { VideoOut::Hevc10 } else { VideoOut::H264 });
         self.converts_video = self.video.is_some();
         self.converts_audio = self.audio.is_some();
         self
@@ -715,7 +714,9 @@ mod tests {
         let t = p("h264", false).transcoded();
         assert_eq!((t.video_out(), t.converts_video, t.converts_audio), (VideoOut::H264, true, true));
         assert_eq!(p("h264", true).transcoded().video_out(), VideoOut::Hevc10);
-        assert_eq!(p("hevc", false).transcoded().video_out(), VideoOut::Hevc10);
+        // 8-bit HEVC the web view rejected goes to H.264, never back to HEVC.
+        assert_eq!(p("hevc", false).transcoded().video_out(), VideoOut::H264);
+        assert_eq!(p("hevc", true).transcoded().video_out(), VideoOut::Hevc10);
         let audio = StreamProbe { audio: Some("aac".into()), ..Default::default() }.transcoded();
         assert!(!audio.converts_video && audio.converts_audio);
     }
