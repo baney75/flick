@@ -10,15 +10,18 @@ import { badgeFor } from '../lib/offline'
 
 export function useThumb(it: Item | undefined) {
   const plain = it?.poster && !it.poster.startsWith(KODI_IMG) ? it.poster : null
-  const [url, setUrl] = useState<string | null>(null)
+  // The URL is kept with the id it is for: a card given another item shows nothing until that item's
+  // own image is found, never the image of the item it showed before.
+  const [got, setGot] = useState<{ id: string; url: string } | null>(null)
   const tick = thumbTick.value
   useEffect(() => {
     if (!it || plain) return
     let live = true
-    ;(it.poster ? kodiPoster(it) : thumbUrl(it.id)).then((u) => live && u && setUrl(u))
+    const id = it.id
+    ;(it.poster ? kodiPoster(it) : thumbUrl(id)).then((u) => live && u && setGot({ id, url: u }))
     return () => { live = false }
   }, [it?.id, tick])
-  return plain ?? url
+  return plain ?? (got && got.id === it?.id ? got.url : null)
 }
 
 export function Card(props: {
@@ -176,11 +179,13 @@ export function VirtualList<T>({ list, gap = 4, class: cls, keyOf, render }: {
   )
 }
 
-export function VirtualGrid<T>({ list, min = 220, ratio = 9 / 16, extra = 54, render }: {
+export function VirtualGrid<T>({ list, min = 220, ratio = 9 / 16, extra = 54, keyOf, render }: {
   list: T[]
   min?: number
   ratio?: number
   extra?: number
+  /** Each cell's key: a scroll then moves the cards it keeps instead of giving each one another item. */
+  keyOf: (t: T) => string
   render: (t: T) => ComponentChildren
 }) {
   const box = useRef<HTMLDivElement>(null)
@@ -244,7 +249,7 @@ export function VirtualGrid<T>({ list, min = 220, ratio = 9 / 16, extra = 54, re
   return (
     <div ref={box} class="vgrid" style={{ height: `${rows * rowH}px`, '--art-h': `${cardW * ratio}px` }}>
       <div ref={inner} class="vgrid-inner" style={{ transform: `translateY(${range[0] * rowH}px)`, gridTemplateColumns: `repeat(${cols}, 1fr)` }}>
-        {slice.map((t) => render(t))}
+        {slice.map((t) => <Fragment key={keyOf(t)}>{render(t)}</Fragment>)}
       </div>
     </div>
   )

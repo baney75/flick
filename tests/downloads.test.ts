@@ -38,7 +38,6 @@ vi.mock('../src/lib/platform', async (orig) => ({
     }
     if (cmd === 'download_exists') return shell.exists
     if (cmd === 'probe') return { playable: shell.playable }
-    if (cmd === 'prepare') throw 'ffmpeg not found'
     if (cmd === 'ffmpeg_status') return { ffmpeg: shell.ffmpeg }
     if (cmd === 'sidecar_subs') return []
     return null
