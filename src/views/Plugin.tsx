@@ -19,6 +19,7 @@ import { rank, pickLine, subLangFor, needsGate, type Ranked } from '../lib/pick'
 import { streamCandidates } from '../lib/candidates'
 import { cancelFetch, canStart, serviceTag, wantsGate } from '../lib/debrid-play'
 import { DebridWait, playTorrent, useCached } from './Debrid'
+import { viaOf } from '../lib/readout'
 import { ctxNow, current, debridNow, deviceFor, holdGate, NO_ENGINE_YET, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
@@ -499,6 +500,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       if (!current(t)) return
       releaseGate()
     }
+    const via = r && viaOf(r, serviceName)
     play({
       key,
       title: meta.name,
@@ -507,6 +509,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       url,
       // A service's link is a plain https file: an MKV takes the desktop's convert path (SPEC-debrid rule 5).
       ...(s.torrent ? { src: { t: 'url' as const, url } } : {}),
+      ...(via ? { via } : {}),
       poster: video?.thumbnail ?? meta.background ?? meta.poster,
       subs: subs.slice(0, 12).map((x) => ({ label: x.label ?? x.lang, lang: x.lang, url: x.url })),
       ref,
