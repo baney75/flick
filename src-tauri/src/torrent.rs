@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, SeekFrom};
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeekExt};
@@ -387,21 +387,18 @@ impl Engine {
         (token, cancel): (u64, &Notify),
     ) -> Result<Running, String> {
         let deadline = Instant::now() + self.cfg.wait;
-        let (dir, mut keep) = {
+        let dir = {
             let t = self.table();
             let home = self.cfg.cache.join(hash);
-            let dir = match t.abandoned.get(hash) {
+            match t.abandoned.get(hash) {
                 Some(n) => home.join(format!(".flick-{n}")),
                 None => home,
-            };
-            let held = t.slots.keys().chain(&t.closing).chain(t.abandoned.keys());
-            (dir, held.cloned().collect::<Vec<String>>())
+            }
         };
         let disk = |e: io::Error| format!("Flick can't write the torrent cache: {e}");
         std::fs::create_dir_all(&dir).map_err(disk)?;
         rules::touch(&self.cfg.cache.join(hash)).map_err(disk)?;
-        keep.push(hash.to_string());
-        rules::trim(&self.cfg.cache, self.cfg.cap, &keep).map_err(disk)?;
+        trim(&self.table, &self.cfg.cache, self.cfg.cap, Some(hash)).map_err(disk)?;
         let opts = self.session_options(iface);
         let session = Session::new_with_opts(dir.clone(), opts)
             .await
@@ -579,13 +576,18 @@ impl Engine {
     /// the session has closed, so no new session opens its cache folder before then. A close that
     /// passes `close_limit`, panics or is cancelled is given up on: the mark goes too, so the
     /// torrent can play again, and its next session opens a fresh folder.
+    /// Once the session has closed, the cache trims back under its cap in a task of its own (a
+    /// torrent that grew while it played may have pushed it over). The trim keeps this torrent,
+    /// and no wait on the close waits for it.
     fn close(&self, hash: &str, session: Arc<Session>) -> JoinHandle<()> {
+        let table = Arc::clone(&self.table);
         let mark = Unmark {
-            table: Arc::clone(&self.table),
+            table: Arc::clone(&table),
             hash: hash.to_string(),
             closed: false,
         };
         let limit = self.cfg.close_limit;
+        let (cache, cap, own) = (self.cfg.cache.clone(), self.cfg.cap, hash.to_string());
         #[cfg(test)]
         let how = *self.stall.lock().unwrap();
         self.rt.spawn(async move {
@@ -600,6 +602,12 @@ impl Engine {
                 Ok(()) => mark.closed = true,
                 Err(_) => eprintln!("torrent: a session took over {limit:?} to close; given up"),
             }
+            drop(mark);
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = trim(&table, &cache, cap, Some(&own)) {
+                    eprintln!("torrent: trimming the cache failed: {e}");
+                }
+            });
         })
     }
 
@@ -700,6 +708,20 @@ impl Engine {
             self.end(&hash, r, false);
         }
     }
+}
+
+/// Trims the cache under `cap`, never deleting the folder of a torrent that is starting, playing,
+/// closing or was given up on, nor `also`'s. It asks the table just before each delete and never
+/// holds it while deleting, so the gate's hooks never wait on the disk.
+fn trim(table: &Mutex<Table>, cache: &Path, cap: u64, also: Option<&str>) -> io::Result<()> {
+    let held = |name: &str| {
+        let t = lock(table);
+        also == Some(name)
+            || t.slots.contains_key(name)
+            || t.closing.contains(name)
+            || t.abandoned.contains_key(name)
+    };
+    rules::trim(cache, cap, held).map(drop)
 }
 
 /// Removes a torrent's closing mark when its close task ends, however it ends. A close that
@@ -825,15 +847,13 @@ static ENGINE: Mutex<Option<Arc<Engine>>> = Mutex::new(None);
 
 /// The app's engine, started on first use (rule 4) and told about every gate answer.
 fn engine(app: &tauri::AppHandle) -> Result<Arc<Engine>, String> {
-    use tauri::Manager;
     let mut e = ENGINE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(e) = e.as_ref() {
         return Ok(Arc::clone(e));
     }
     let watch = crate::vpn::watch::get()?;
-    let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?;
     let cfg = Config {
-        cache: cache.join("torrents"),
+        cache: cache_dir(app)?,
         cap: rules::CACHE_CAP,
         wait: Duration::from_secs(45),
         dht: true,
@@ -846,6 +866,33 @@ fn engine(app: &tauri::AppHandle) -> Result<Arc<Engine>, String> {
     listen(watch, &started);
     *e = Some(Arc::clone(&started));
     Ok(started)
+}
+
+fn cache_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    use tauri::Manager;
+    let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    Ok(cache.join("torrents"))
+}
+
+/// At launch: trims a cache an earlier run left over its cap, before any torrent plays. It holds
+/// the engine's lock, so a first play waits for it; once a torrent has played, start() trims.
+pub fn trim_at_launch(app: &tauri::AppHandle) {
+    let Ok(cache) = cache_dir(app) else { return };
+    std::thread::spawn(move || {
+        let e = ENGINE.lock().unwrap_or_else(|e| e.into_inner());
+        if e.is_none() {
+            trim_idle(&cache, rules::CACHE_CAP);
+        }
+    });
+}
+
+/// Trims a cache no torrent is using. A cache that was never made has nothing to trim.
+fn trim_idle(cache: &Path, cap: u64) {
+    match rules::trim(cache, cap, |_| false) {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => eprintln!("torrent: trimming the cache failed: {e}"),
+    }
 }
 
 /// The engine hears every gate answer the app hears, so a drop stops its torrents.
