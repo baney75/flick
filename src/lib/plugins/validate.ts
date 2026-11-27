@@ -40,7 +40,7 @@ export interface PluginManifest {
   /** A service whose downloads come over https from its own servers, so no peer sees the user: it may play with no VPN. */
   vpnOptional: boolean
   /** Optional functions the plugin has. */
-  has: { library: boolean; action: boolean; progress: boolean; subtitles: boolean; userCatalogs: boolean; addonUrls: boolean }
+  has: { library: boolean; action: boolean; progress: boolean; subtitles: boolean; userCatalogs: boolean; addonUrls: boolean; extensions: boolean }
 }
 export interface Video { id: string; title: string; season?: number; episode?: number; released?: string; thumbnail?: string; overview?: string }
 export interface Meta {
@@ -61,6 +61,10 @@ export interface Sub { url: string; lang: string; label?: string }
 export interface Stream { url: string; title?: string; quality?: string; kind?: 'video' | 'audio' | 'book'; subs?: Sub[]; needsDesktop?: boolean; external?: boolean; group?: string }
 export interface CatalogResult { items: Meta[]; more: boolean }
 export interface ActionResult { ok: boolean; message?: string }
+/** One addon inside a source (a Stremio addon): what extensions() and extensionCatalog() list. */
+export interface Extension { id: string; name: string; description?: string; logo?: string; url: string; types?: string[]; removable: boolean; installed?: boolean }
+/** addExtension() and removeExtension(): new values for the plugin's own non-secret settings may come back. */
+export interface ExtensionResult extends ActionResult { settings?: Record<string, unknown> }
 export type AccountResult = { ok: true; name: string; plan?: string; expires?: string } | { ok: false; message: string }
 export type ResolveResult = { url: string } | { wait: { pct?: number; message: string } } | { error: string }
 
@@ -157,6 +161,7 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
     if (!hosts.length) fail('A service plugin must list the hosts it reaches.')
     if (hosts.some((h) => h === '*')) fail('A service plugin must name its hosts; "*" is not allowed.')
     if (tools.length) fail('A service plugin cannot use desktop tools.')
+    if (EXTENSION_FNS.some((f) => fns.includes(f))) fail('A service plugin cannot host addons.')
     debridHosts = list(x.debridHosts, 'debridHosts', 50).map((h) => str(h, 'A debridHosts entry', true, 253).toLowerCase())
     for (const h of debridHosts) if (!hosts.includes(h)) fail(`debridHosts entry "${h}" must also be in hosts.`)
   } else {
@@ -170,6 +175,8 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
     return { id: str(a.id, 'An action id', true, 64), label: str(a.label, 'An action label', true, 100), fields: list(a.fields, 'Action fields', 20).map((f) => field(f, 'action')) }
   })
   if (actions.length && !fns.includes('action')) fail('The plugin lists actions but has no action() function.')
+  const extFns = EXTENSION_FNS.filter((f) => fns.includes(f))
+  if (extFns.length && extFns.length < EXTENSION_FNS.length) fail(`A plugin with addons needs all of ${EXTENSION_FNS.map((f) => `${f}()`).join(', ')}.`)
   const m: PluginManifest = {
     api: 1,
     kind: kind as PluginManifest['kind'],
@@ -187,7 +194,7 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
     provides,
     debridHosts: [...new Set(debridHosts)],
     vpnOptional: x.vpnOptional === true,
-    has: { library: fns.includes('library'), action: fns.includes('action'), progress: fns.includes('progress'), subtitles: fns.includes('subtitles'), userCatalogs: fns.includes('userCatalogs'), addonUrls: fns.includes('addonUrls') },
+    has: { library: fns.includes('library'), action: fns.includes('action'), progress: fns.includes('progress'), subtitles: fns.includes('subtitles'), userCatalogs: fns.includes('userCatalogs'), addonUrls: fns.includes('addonUrls'), extensions: fns.includes('extensions') },
   }
   const icon = imgUrl(x.icon)
   if (icon) m.icon = icon
@@ -323,6 +330,67 @@ export function validateAction(x: unknown): ActionResult {
 export function validateAddonUrls(x: unknown): string[] {
   if (!Array.isArray(x)) throw new Error('addonUrls() must return a list of URLs.')
   return [...new Set((x as unknown[]).filter((u): u is string => typeof u === 'string' && u.length <= 4000 && /^https:\/\//i.test(u)))].slice(0, 200)
+}
+
+// ---------- extensions (addons inside a source) ----------
+
+/** The functions a plugin with addons exports, all or none. */
+export const EXTENSION_FNS = ['extensions', 'extensionCatalog', 'inspectExtension', 'addExtension', 'removeExtension'] as const
+const EXT_URL = /^(https|stremio):\/\//i
+
+/** An addon address the user typed or tapped: https:// or stremio:// with a host, else a plain-words error. */
+export function extensionUrl(x: unknown): string {
+  const u = typeof x === 'string' ? x.trim() : ''
+  let host = ''
+  try { host = EXT_URL.test(u) && u.length <= 4000 ? new URL(u.replace(/^stremio:/i, 'https:')).hostname : '' } catch { host = '' }
+  if (!host) return fail('An addon address must start with https:// or stremio://.')
+  return u
+}
+
+function extension(x: unknown, catalog: boolean): Extension | null {
+  if (!isObj(x)) return null
+  let url: string
+  try { url = extensionUrl(x.url) } catch { return null }
+  const id = str(x.id, 'Addon id', false, 200), name = str(x.name, 'Addon name', false, 200)
+  if (!id || !name) return null
+  const e: Extension = { id, name, url, removable: x.removable === true }
+  const description = str(x.description, 'description', false, 500), logo = imgUrl(x.logo)
+  if (description) e.description = description
+  if (logo && !/^http:/i.test(logo)) e.logo = logo
+  const types = list(x.types, 'types', 20).filter((t): t is string => typeof t === 'string' && !!t.trim()).map((t) => t.trim().slice(0, 40))
+  if (types.length) e.types = types
+  if (catalog) e.installed = x.installed === true
+  return e
+}
+
+/** extensions() and extensionCatalog(): at most 500 rows; a row with a bad URL or no id or name is skipped. */
+export function validateExtensions(x: unknown, catalog = false): Extension[] {
+  if (!Array.isArray(x)) return fail('The addon list must be a list.')
+  if (x.length > MAX_LIST) return fail(`The addon list has ${x.length} rows; at most ${MAX_LIST} are allowed.`)
+  const out: Extension[] = []
+  for (const e of x) { try { const r = extension(e, catalog); if (r) out.push(r) } catch { /* skip one bad row */ } }
+  return out
+}
+
+/** inspectExtension(): the one addon at an address, read before the user confirms adding it. */
+export function validateInspect(x: unknown): Extension {
+  return extension(x, true) ?? fail('inspectExtension() must return one addon with id, name and an https or stremio:// url.')
+}
+
+/** addExtension() and removeExtension(). Only the plugin's own declared, non-secret settings may change, each in its own type. */
+export function validateExtensionResult(x: unknown, fields: Field[]): ExtensionResult {
+  const r: ExtensionResult = validateAction(x)
+  if (!isObj(x) || x.ok !== true || !isObj(x.settings)) return r
+  const patch: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(x.settings)) {
+    const f = fields.find((d) => d.key === k)
+    if (!f || f.secret) continue
+    if (f.type === 'list') { if (Array.isArray(v)) patch[k] = list(v, k).filter((s): s is string => typeof s === 'string').map((s) => s.slice(0, MAX_STR)) }
+    else if (f.type === 'toggle') { if (typeof v === 'boolean') patch[k] = v }
+    else if (typeof v === 'string' && (f.type !== 'select' || f.options?.includes(v))) patch[k] = v.slice(0, MAX_STR)
+  }
+  if (Object.keys(patch).length) r.settings = patch
+  return r
 }
 
 // ---------- service results ----------

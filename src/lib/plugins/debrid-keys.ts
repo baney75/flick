@@ -104,3 +104,28 @@ export function findDebridKeys(urls: string[]): FoundKey[] {
 
 /** What the panel shows of a key: its last 4 characters. */
 export const keyEnd = (key: string) => key.slice(-4)
+
+const DOTS = '\u2022\u2022\u2022'
+
+/**
+ * An addon address as Flick shows it: any debrid key in it cut to its last 4 characters
+ * (`torbox=abc123XYZ9` shows as `torbox=•••XYZ9`). A key inside an encoded config hides every long
+ * path segment. The scheme and host always stay as they are.
+ */
+export function maskUrl(url: string): string {
+  const keys = findDebridKeys([url.replace(/^stremio:/i, 'https:')]).map((f) => f.key)
+  if (!keys.length) return url
+  const m = /^([a-z]+:\/\/[^/?#]*)(.*)$/i.exec(url)
+  if (!m) return url
+  let rest = m[2]
+  for (const k of keys) {
+    const shown = DOTS + keyEnd(k)
+    if (rest.includes(k)) rest = rest.split(k).join(shown)
+    else if (rest.includes(encodeURIComponent(k))) rest = rest.split(encodeURIComponent(k)).join(shown)
+    else rest = rest.replace(/\/([^/?#]{16,})/g, (_, seg: string) => `/${DOTS}${seg.slice(-4)}`)
+  }
+  return m[1] + rest
+}
+
+/** Every addon address in a line of text, masked the same way (for plugin logs). */
+export const maskUrls = (text: string) => text.replace(/\b(https?|stremio):\/\/[^\s"'<>]+/gi, maskUrl)

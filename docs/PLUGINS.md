@@ -91,8 +91,37 @@ export default {
   async action(ctx, id, values) { return { ok: true, message: 'Signed in' } },  // an `actions` button was tapped
   async progress(ctx, { type, id, videoId, pos, dur }) {},                      // play position, to sync back
   async addonUrls(ctx) { return [/* https addon URLs */] },                     // bundled Stremio plugin only: Flick looks for debrid keys in them
+  // optional, all five or none: addons inside this source, see "Addons" below
+  async extensions(ctx) { return [/* Extension */] },
+  async extensionCatalog(ctx, { search }) { return [/* Extension with installed */] },
+  async inspectExtension(ctx, { url }) { return { /* Extension with installed */ } },
+  async addExtension(ctx, { url }) { return { ok: true, message: 'Added Torrentio' } },
+  async removeExtension(ctx, { id }) { return { ok: true, message: 'Removed' } },
 }
 ```
+
+### Addons
+
+A source that hosts its own addons (Stremio does) exports all five extension functions, and its
+plugin page in Settings gets an Addons section: the installed list with Remove, Add by address, and
+Browse with search. Flick calls them only when the user opens that section or taps.
+
+- `Extension`: `{ id, name, description?, logo?, url, types?: string[], removable: boolean }`. `url`
+  is `https://` or `stremio://`; a row with any other address, or no `id` or `name`, is skipped.
+  `removable: false` (a protected addon such as Cinemeta) shows no Remove button. `logo` is https or
+  an image `data:` URI. Names and ids are trimmed to 200 characters, `description` to 500, `types`
+  to 20 entries.
+- `extensions(ctx)`: what is installed now. `extensionCatalog(ctx, { search? })`: what can be added,
+  each row with `installed: true` or `false`. Either list may hold at most 500 rows; more is refused
+  as a whole.
+- `inspectExtension(ctx, { url })`: the one addon at an address, read before the user confirms it.
+  It must not save anything. Flick shows its name, types and host, and adds it only on a second tap.
+- `addExtension(ctx, { url })` and `removeExtension(ctx, { id })` return `{ ok, message?, settings? }`.
+  `settings` sets the plugin's own declared, non-secret settings when `ok` is true, each in its own
+  type (a `list` gets a list of strings): that is how a plugin keeps an addon list in a setting the
+  user can also edit. Anything else in it is dropped.
+- Flick checks the address the user typed before the plugin sees it (`https://` or `stremio://`
+  only), and shows any debrid key in an addon address by its last 4 characters.
 
 ### Settings and actions
 
@@ -229,7 +258,8 @@ tokens.
   publish one.
 - `plugins/template/plugin.js` is a working starting point.
 - `npm run plugin:check -- <file or URL>` loads a plugin the way Flick does, validates the manifest,
-  calls every catalog, a search, one `meta` and its `streams` against the real source, and prints
+  calls every catalog, a search, one `meta` and its `streams` against the real source, `extensions()`
+  and `extensionCatalog()` when the plugin has addons (it never adds or removes one), and prints
   PASS or FAIL for each. `npm run plugin:check -- theme.json` checks a theme, contrast included.
   Flags: `--search <term>` (default `the`), `--set key=value` for a setting. It also fails when an
   entry would be dropped by the validator, or when `ctx.fetch` goes to a host missing from `hosts`.

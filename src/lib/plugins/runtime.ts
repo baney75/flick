@@ -6,6 +6,7 @@ import * as db from '../db'
 import { isDesktop, isMobileApp, invoke, fileUrl } from '../platform'
 import { connect, type Handler, type Rpc } from './rpc'
 import * as V from './validate'
+import { maskUrls } from './debrid-keys'
 
 /** No allow-same-origin, ever: the opaque origin is what keeps a plugin out of Flick's storage. */
 export const SANDBOX = 'allow-scripts'
@@ -47,7 +48,8 @@ export function setSecrets(id: string, rec: Pick<Installed, 'kind' | 'manifest' 
   secretValues.set(id, fields.map((f) => rec.settings[f.key]).filter((v): v is string => typeof v === 'string' && v.length >= 4))
 }
 export function redact(id: string, text: string): string {
-  let out = text
+  // A debrid key inside an addon address (Torrentio's torbox=...) shows only by its last 4.
+  let out = maskUrls(text)
   for (const v of secretValues.get(id) ?? []) out = out.split(v).join('[key]')
   return out
 }
@@ -190,6 +192,11 @@ const CHECKS: Record<string, (x: unknown, m: V.PluginManifest, args: unknown[]) 
   library: V.validateLibrary,
   addonUrls: V.validateAddonUrls,
   action: V.validateAction,
+  extensions: (x) => V.validateExtensions(x),
+  extensionCatalog: (x) => V.validateExtensions(x, true),
+  inspectExtension: V.validateInspect,
+  addExtension: (x, m) => V.validateExtensionResult(x, m.settings),
+  removeExtension: (x, m) => V.validateExtensionResult(x, m.settings),
   progress: () => null,
   account: V.validateAccount,
   cached: (x, _m, args) => V.validateCached(x, Array.isArray(args[0]) ? (args[0] as string[]) : []),
@@ -198,6 +205,7 @@ const CHECKS: Record<string, (x: unknown, m: V.PluginManifest, args: unknown[]) 
 
 export interface Results {
   userCatalogs: V.CatalogDef[]; catalog: V.CatalogResult; meta: V.Meta; streams: V.Stream[]; subtitles: V.Sub[]; library: V.Meta[]; action: V.ActionResult; progress: null; addonUrls: string[]
+  extensions: V.Extension[]; extensionCatalog: V.Extension[]; inspectExtension: V.Extension; addExtension: V.ExtensionResult; removeExtension: V.ExtensionResult
   account: V.AccountResult; cached: string[]; resolve: V.ResolveResult
 }
 
