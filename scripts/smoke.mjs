@@ -285,7 +285,7 @@ try {
   // An older setup link with Stremio addons offers the Stremio plugin in the review, and installs nothing before the tap.
   const oldCode = Buffer.from(JSON.stringify({ v: 1, stremioAddons: ['stremio://v3-cinemeta.strem.io/manifest.json'] })).toString('base64url')
   await page.goto(`${BASE}/#/setup?c=${oldCode}`)
-  check(await page.getByText(/Plugin: Stremio .*reaches any public website, 127\.0\.0\.1$/).waitFor({ timeout: 15000 }).then(() => true, () => false)
+  check(await page.getByText(/Plugin: Stremio .*reaches any public website$/).waitFor({ timeout: 15000 }).then(() => true, () => false)
     && await page.getByText('Stremio addon in the Stremio plugin: https://v3-cinemeta.strem.io/manifest.json').isVisible(), 'old setup link with Stremio addons offers the Stremio plugin')
   check(await page.evaluate(() => new Promise((res) => { const r = indexedDB.open('flick'); r.onsuccess = () => { const q = r.result.transaction('plugins').objectStore('plugins').count(); q.onsuccess = () => res(q.result === 0) } })), 'and installs nothing before the tap')
 

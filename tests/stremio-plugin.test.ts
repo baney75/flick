@@ -37,17 +37,39 @@ describe('Stremio plugin protocol', () => {
     expect(S.searchable(a).map((c: { id: string }) => c.id)).toEqual(['search'])
     expect(S.catalogUrl(a, a.manifest.catalogs[1], { search: 'dune part two' })).toBe('https://addon.example/abc/catalog/movie/search/search=dune%20part%20two.json')
   })
-  it('plays direct and torrent streams, hands off YouTube and external links, all valid for Flick', () => {
+  it('plays direct streams, hands off YouTube and external links, all valid for Flick', () => {
     const out = [
-      S.toStream({ url: 'https://cdn/x.mp4', name: 'A' }, 'X', 'movie', 'tt1', false),
-      S.toStream({ infoHash: 'abc', fileIdx: 2 }, 'X', 'movie', 'tt1', true),
-      S.toStream({ infoHash: 'abc' }, 'X', 'movie', 'tt1', false),
-      S.toStream({ ytId: 'yt1' }, 'X', 'movie', 'tt1', false),
-      S.toStream({ externalUrl: 'https://site.example/x' }, 'X', 'movie', 'tt1', false),
+      S.toStream({ url: 'https://cdn/x.mp4', name: 'A' }, 'X'),
+      S.toStream({ ytId: 'yt1' }, 'X'),
+      S.toStream({ externalUrl: 'https://site.example/x' }, 'X'),
     ]
-    expect(out[1].url).toBe('http://127.0.0.1:11470/abc/2')
-    expect(out.slice(2).every((s) => s.external)).toBe(true)
-    expect(V.validateStreams(out)).toHaveLength(5)
+    expect(out.slice(1).every((s) => s.external)).toBe(true)
+    expect(V.validateStreams(out)).toHaveLength(3)
+  })
+  it('never plays a torrent around the VPN gate: no Stremio server URL, no hand-off', () => {
+    expect(S.toStream({ infoHash: 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c', fileIdx: 2 }, 'X')).toBeNull()
+    expect(S.toStream({ infoHash: 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c' }, 'X')).toBeNull()
+    expect(code).not.toMatch(/127\.0\.0\.1|localhost|:11470|web\.stremio\.com/)
+    expect(S.default.hosts).toEqual(['*'])
+  })
+  it('streams() returns no URL on this computer even when the Stremio server answers', async () => {
+    const seen: string[] = []
+    const ctx = {
+      log: () => {},
+      fetch: async (u: string) => {
+        seen.push(u)
+        const resources = u.startsWith('https://addon.example/') ? ['stream'] : []
+        const body = u.endsWith('/manifest.json')
+          ? { id: 'x', name: 'X', version: '1', types: ['movie'], idPrefixes: ['tt'], resources, catalogs: [] }
+          : { streams: [{ infoHash: 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c', fileIdx: 0 }, { url: 'https://cdn.example/a.mp4' }] }
+        return new Response(JSON.stringify(body), { status: 200 })
+      },
+      settings: { addons: ['https://addon.example/abc/manifest.json'] },
+      store: { get: async () => undefined, set: async () => {} },
+    }
+    const out = await S.default.streams(ctx, { type: 'movie', id: 'tt1', videoId: 'tt1' })
+    expect(out.map((s: { url: string }) => s.url)).toEqual(['https://cdn.example/a.mp4'])
+    expect(seen.some((u) => /127\.0\.0\.1|:11470/.test(u))).toBe(false)
   })
 })
 

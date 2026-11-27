@@ -1,12 +1,12 @@
 // Stremio for Flick: sign in to bring your installed addons and library, browse and search their
 // catalogs, open titles, and pick streams. Without an account it starts with Cinemeta and OpenSubtitles.
-// Torrent streams play through the Stremio streaming server when it runs on the same computer.
+// Torrent streams (infoHash) are left out: Flick plays a torrent only through its own engine, behind
+// the VPN gate, and never through the Stremio streaming server.
 // Addon protocol: https://github.com/Stremio/stremio-addon-sdk/blob/master/docs/protocol.md
 
 const API = 'https://api.strem.io/api'
 const CINEMETA = 'https://v3-cinemeta.strem.io/manifest.json'
 const OPENSUBS = 'https://opensubtitles-v3.strem.io/manifest.json'
-const LOCAL_SERVER = 'http://127.0.0.1:11470'
 const TYPES = ['movie', 'series', 'channel', 'tv']
 
 // ---------- the addon protocol ----------
@@ -64,15 +64,11 @@ export function toMeta(m) {
   }
 }
 
-/** One Stremio stream as a Flick stream. */
-export function toStream(s, addon, type, id, serverUp) {
+/** One Stremio stream as a Flick stream, or null for one Flick doesn't play (a torrent). */
+export function toStream(s, addon) {
   const title = [s.name, s.title ?? s.description ?? s.behaviorHints?.filename].filter(Boolean).join(' · ').replace(/\n/g, ' ')
   const subs = (s.subtitles ?? []).map((x) => ({ url: x.url, lang: x.lang ?? 'und' }))
   if (s.url) return { url: s.url, title, group: addon, needsDesktop: s.behaviorHints?.notWebReady || undefined, subs }
-  if (s.infoHash) {
-    if (serverUp) return { url: `${LOCAL_SERVER}/${s.infoHash}/${s.fileIdx ?? -1}`, title: `${title} · via Stremio server`, group: addon, subs }
-    return { url: `https://web.stremio.com/#/detail/${type}/${encodeURIComponent(id)}`, title: `${title} · needs Stremio running on this computer`, group: addon, external: true }
-  }
   if (s.ytId) return { url: `https://www.youtube.com/watch?v=${encodeURIComponent(s.ytId)}`, title: title || 'YouTube', group: addon, external: true }
   if (s.externalUrl && /^https:\/\//.test(s.externalUrl)) return { url: s.externalUrl, title: title || 'Opens on another site', group: addon, external: true }
   return null
@@ -119,15 +115,6 @@ async function addons(ctx) {
   return list
 }
 
-let server = { up: false, at: 0 }
-async function serverUp(ctx) {
-  if (Date.now() - server.at < 15_000) return server.up
-  let up = false
-  try { up = (await ctx.fetch(`${LOCAL_SERVER}/settings`)).ok } catch { up = false }
-  server = { up, at: Date.now() }
-  return up
-}
-
 /** Catalog ids carry the addon and catalog, so a fresh sandbox can find them again. */
 const catId = (a, c) => `${base(a.transportUrl)}|${c.type}|${c.id}`
 
@@ -140,10 +127,10 @@ export default {
   name: 'Stremio',
   version: '1.1.0',
   author: 'Flick',
-  description: 'Your Stremio addons, library and Continue Watching. Sign in, or start with Cinemeta and OpenSubtitles. Torrent streams play through the Stremio server on this computer.',
+  description: 'Your Stremio addons, library and Continue Watching. Sign in, or start with Cinemeta and OpenSubtitles.',
   icon: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHJlY3Qgd2lkdGg9IjI0IiBoZWlnaHQ9IjI0IiByeD0iNSIgZmlsbD0iIzdiNWJmNSIvPjxwYXRoIGQ9Ik0xMiA0bDcgNHY4bC03IDQtNy00Vjh6IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMS42Ii8+PHBhdGggZD0iTTEwLjUgOXY2bDUtM3oiIGZpbGw9IiNmZmYiLz48L3N2Zz4=',
-  // Addons live on any host the user adds; the local server is listed by name.
-  hosts: ['*', '127.0.0.1'],
+  // Addons live on any host the user adds. Not this computer: no local streaming server.
+  hosts: ['*'],
   tools: [],
   settings: [
     { key: 'addons', label: 'Extra addon URLs', type: 'list', default: [], help: 'One manifest URL per line (https://.../manifest.json or stremio://...). Use only addons you chose.' },
@@ -202,11 +189,10 @@ export default {
       ctx.log('None of your addons offer streams for this title. Stream addons come from Stremio\'s addon catalog: sign in to use yours, or add one under Extra addon URLs.')
       return []
     }
-    const up = await serverUp(ctx)
     const batches = await Promise.all(list.map(async (a) => {
       try {
         const r = await getJson(ctx, `${base(a.transportUrl)}/stream/${type}/${encodeURIComponent(videoId)}.json`)
-        return (r.streams ?? []).map((s) => toStream(s, a.manifest.name, type, id, up)).filter(Boolean)
+        return (r.streams ?? []).map((s) => toStream(s, a.manifest.name)).filter(Boolean)
       } catch { return [] }
     }))
     return batches.flat()
