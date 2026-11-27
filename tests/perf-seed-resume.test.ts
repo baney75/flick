@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 // The registry, faked: prepare() names the plugin in the code, install() records it.
 const reg = vi.hoisted(() => ({ installed: { value: [] as { id: string }[] }, prepared: [] as string[] }))
 vi.mock('../src/lib/plugins/registry', () => ({
+  YOUTUBE_PLUGIN: { id: 'com.youtube', url: '/plugins/youtube.js' },
   installed: reg.installed,
   prepare: async (src: { text?: string; url?: string }) => {
     const id = src.url ? 'com.youtube' : /api: 1, id: '([^']+)'/.exec(src.text!)![1]
