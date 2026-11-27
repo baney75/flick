@@ -1,7 +1,8 @@
 // Media servers: Jellyfin (and Emby, same API), Plex, Kodi and flick-server. Items come back as library Items.
 
 import type { Item, Source } from './library'
-import { hash, named, prepared, thumbUrl, KODI_IMG } from './library'
+import { hash, named, thumbUrl, KODI_IMG } from './library'
+import type { Live } from './playback'
 import { groupAudiobooks } from './audiobook'
 import { ext, isArtwork } from './parse'
 import { stem, isPosterOf } from './photos'
@@ -466,28 +467,28 @@ async function kodiProxyUrl(s: Server, url: string): Promise<string> {
   return protocolUrl(`${s.id}/${url.slice(s.url.length + 1)}`, 'kodi')
 }
 
-/** A playable URL for a Kodi file: the plain URL or the kodi:// proxy when it can, else a local MP4 from prepare. */
-export async function kodiResolve(src: Extract<Source, { t: 'kodi' }>, onStatus?: (s: string) => void): Promise<string> {
+/** How to play a Kodi file: the plain URL or the kodi:// proxy when the web view can, else the live remux of it. */
+export async function kodiResolve(src: Extract<Source, { t: 'kodi' }>): Promise<{ url: string; live?: Live }> {
   const s = await kodiServer(src.server)
   // Phone apps block plain http media loads, so they always stream through the proxy.
-  if (playsNatively(decodeURIComponent(src.url))) return s && (s.token || isMobileApp) ? kodiProxyUrl(s, src.url) : src.url
-  return kodiConvert(src, onStatus)
+  if (playsNatively(decodeURIComponent(src.url))) return { url: s && (s.token || isMobileApp) ? await kodiProxyUrl(s, src.url) : src.url }
+  return { url: src.url, live: await kodiLive(src) }
 }
 
-/** A local MP4 of a Kodi file, converted with ffmpeg on a computer. Also the retry when a file the web view
- *  should play fails, such as an MP4 with AC-3 or DTS audio. */
-export async function kodiConvert(src: Extract<Source, { t: 'kodi' }>, onStatus?: (s: string) => void): Promise<string> {
+/** The live remux of a Kodi file, with the server's login, on a computer. Also the retry when a file the
+ *  web view should play fails, such as an MP4 with AC-3 or DTS audio. */
+export async function kodiLive(src: Extract<Source, { t: 'kodi' }>): Promise<Live> {
   if (isMobileApp) throw new Error(KODI_DESKTOP_ONLY)
   const s = await kodiServer(src.server)
   const [user, pass] = s ? kodiLogin(s) : ['', '']
-  return convertUrl(src.url, onStatus, user, pass, 'Kodi')
+  return urlLive(src.url, user, pass, 'Kodi')
 }
 
-/** A local MP4 of a media URL (a flick-server MKV, say), converted with ffmpeg on a computer. */
-export async function convertUrl(url: string, onStatus?: (s: string) => void, user = '', pass = '', from = 'a server'): Promise<string> {
+/** The live remux of a media URL (a flick-server MKV, say), on a computer with ffmpeg. */
+export async function urlLive(url: string, user = '', pass = '', from = 'a server'): Promise<Live> {
   const ff = await invoke<{ ffmpeg: string | null }>('ffmpeg_status').catch(() => ({ ffmpeg: null }))
   if (!ff.ffmpeg) throw new Error(kodiNeedsFfmpeg(from))
-  return fileUrl(await prepared(url, onStatus, user, pass))
+  return { input: url, user, pass }
 }
 
 export const KODI_DESKTOP_ONLY = 'This format needs the desktop app (Mac, Windows or Linux). Phones and TVs play MP4, M4V, MOV, WebM and common audio from Kodi.'

@@ -27,6 +27,9 @@ export function isHls(url: string) {
   return /\.m3u8(\?|$)/i.test(url) || /\/hlsv2\//.test(url)
 }
 
+/** A source the live remux reads (rule 5): a URL or a file path, with the server's login. */
+export interface Live { input: string; user: string; pass: string }
+
 /** What the website shows for a stream its browser cannot open (rule 8): no ffmpeg there. */
 export const DESKTOP_ONLY = 'This file plays in the Flick desktop app.'
 

@@ -7,12 +7,12 @@ import { resolve, storeFile, type Resolved } from '../lib/library'
 import { formatTime } from '../lib/parse'
 import { vttUrl, toVtt } from '../lib/subs'
 import { isDesktop, isMobileApp, hasOpfs, invoke } from '../lib/platform'
-import { kodiConvert, convertUrl } from '../lib/servers'
+import { kodiLive, urlLive } from '../lib/servers'
 import { barFor, oneRetry, openToolStream } from '../lib/plugins/runtime'
 import { Icon } from './icons'
 import { Readout } from './Readout'
 import { Delayed, KEEPS_STALLING, kindOf, OPENING, WAITING, waitLine, Watchdog } from '../lib/stalls'
-import { convertLine, DESKTOP_ONLY, isHls, playsHere, planSeek, probeStream, probes, Remux, SLOW_SERVER, writtenOf } from '../lib/playback'
+import { convertLine, DESKTOP_ONLY, isHls, playsHere, planSeek, probeStream, probes, Remux, SLOW_SERVER, writtenOf, type Live, type StreamProbe } from '../lib/playback'
 
 const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
 
@@ -89,11 +89,13 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     ;(async () => {
       try {
         let url = req.url
+        let live: Live | undefined
         if (!url && req.src) {
           const r = await resolve(req.src, (s) => !cancelled && setStatus(s), req.ref.t === 'item' && !req.stream ? req.ref.id : undefined)
           if (cancelled) { r.revoke?.(); return }
           resolved.current = r
           url = r.url
+          live = r.live
           if (r.file) setFile(r.file)
           if (r.sidecarSubs?.length) {
             setSubs((s) => [...s, ...r.sidecarSubs!.map((x) => ({ label: x.name, url: vttUrl(x.name, x.text) }))])
@@ -118,20 +120,19 @@ function PlayerInner({ req }: { req: PlayRequest }) {
           setError(DESKTOP_ONLY)
           return
         }
-        if (probes(url)) {
-          // Only a server that never answers stops here; any other probe failure plays the link as it is.
+        // A link the desktop probes, or a source resolve() says needs the remux (a library MKV, a Kodi AVI).
+        const input: Live | null = live ?? (probes(url) ? { input: url, user: '', pass: '' } : null)
+        if (input) {
+          // Only a server that never answers stops here; any other probe failure plays the link as it is,
+          // unless it can only play through the remux.
           const slow = setTimeout(() => !cancelled && setStatus(WAITING), 3000)
-          const p = await probeStream(url).catch((e) => {
-            if (String((e as Error)?.message ?? e) === SLOW_SERVER) throw new Error(SLOW_SERVER)
+          const p = await probeStream(input.input, input.user, input.pass).catch((e) => {
+            if (live || String((e as Error)?.message ?? e) === SLOW_SERVER) throw e
             return null
           }).finally(() => clearTimeout(slow))
           if (cancelled) return
-          if (p && !p.direct) {
-            const r = new Remux(url, p)
-            remux.current = r
-            setDur(p.duration)
-            setStatus(convertLine(p))
-            const local = await r.open(req.startAt ?? 0)
+          if (p && (live || !p.direct)) {
+            const local = await openLive(input, p, req.startAt ?? 0)
             if (cancelled || !local) return
             url = local
             startAt = 0
@@ -194,6 +195,15 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     v.play().catch(() => setPlaying(false))
   }
 
+  /** Starts the live remux of `input` at source time `at`; its playlist URL, or null when replaced. */
+  function openLive(input: Live, p: StreamProbe, at: number) {
+    const r = new Remux(input.input, p, input.user, input.pass)
+    remux.current = r
+    setDur(p.duration)
+    setStatus(convertLine(p))
+    return r.open(at)
+  }
+
   function onFail(msg: string, unsupported = false) {
     const v = video.current!
     // A run being replaced loses its folder; the new run plays instead.
@@ -213,13 +223,16 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     // A URL with a server-side fallback stream (Jellyfin, Plex) uses that instead.
     const convertible = src?.t === 'kodi' || (src?.t === 'url' && !src.fallback)
     if (unsupported && convertible && isDesktop && !isMobileApp && !triedConvert.current) {
-      // The web view cannot decode this file (an MKV, or AC-3 or DTS audio in an MP4): convert it and pick up where it stopped.
+      // The web view cannot decode this file (an MKV, or AC-3 or DTS audio in an MP4): stream it through
+      // the live remux and pick up where it stopped.
       triedConvert.current = true
-      const at = v.currentTime
-      setStatus('Converting for playback')
-      ;(src.t === 'kodi' ? kodiConvert(src, setStatus) : convertUrl(src.url, setStatus))
-        .then((url) => { req.startAt = at || req.startAt; return attach(v, url) })
-        .catch((e) => { setStatus(null); setError((e as Error).message || msg) })
+      const at = v.currentTime || req.startAt || 0
+      setStatus(OPENING)
+      ;(async () => {
+        const input = src.t === 'kodi' ? await kodiLive(src) : await urlLive(src.url)
+        const url = await openLive(input, await probeStream(input.input, input.user, input.pass), at)
+        if (url && video.current === v) await attach(v, url, 0)
+      })().catch((e) => { setStatus(null); setError((e as Error).message || msg) })
       return
     }
     if (req.fallbackUrl && !triedFallback.current) {

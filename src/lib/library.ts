@@ -2,7 +2,8 @@
 
 import * as db from './db'
 import { itemKindOf, parseName, parseBook, isCameraName, type Kind, SUB_EXT, ext } from './parse'
-import { isDesktop, invoke, fileUrl, onDesktopEvent, type ScanEntry, type Probe } from './platform'
+import { isDesktop, invoke, fileUrl, type ScanEntry, type Probe } from './platform'
+import type { Live } from './playback'
 import { kodiResolve } from './servers'
 import { localFor } from './downloads'
 import { groupAudiobooks } from './audiobook'
@@ -252,7 +253,8 @@ export async function sourceFile(src: Source): Promise<File | null> {
   return null
 }
 
-export interface Resolved { url: string; revoke?: () => void; file?: File; sidecarSubs?: { name: string; text: string }[] }
+/** `live`: the web view cannot play `url` itself; the player streams it through the live remux. */
+export interface Resolved { url: string; revoke?: () => void; file?: File; sidecarSubs?: { name: string; text: string }[]; live?: Live }
 
 /** `itemId` names the library item, so a finished download plays from the device instead.
  *  `raw` hands back the file as it is, with no probe, convert or subtitle search (books). */
@@ -263,13 +265,18 @@ export async function resolve(src: Source, onStatus?: (s: string) => void, itemI
     try { return await resolve(local, onStatus, undefined, raw) } catch { /* play from the server instead */ }
   }
   if (src.t === 'url') return { url: src.url }
-  if (src.t === 'kodi') return { url: await kodiResolve(src, onStatus) }
+  if (src.t === 'kodi') return kodiResolve(src)
   if (src.t === 'path' && raw) return { url: await fileUrl(src.path) }
   if (src.t === 'path') {
     const probe = await invoke<Probe>('probe', { path: src.path }).catch(() => null)
-    const path = probe && !probe.playable ? await prepared(src.path, onStatus) : src.path
     const subs = await invoke<{ name: string; text: string }[]>('sidecar_subs', { path: src.path }).catch(() => [])
-    return { url: await fileUrl(path), sidecarSubs: subs }
+    // A file the web view cannot play streams through the live remux, playing in seconds (rule 5).
+    if (probe && !probe.playable) {
+      const ff = await invoke<{ ffmpeg: string | null }>('ffmpeg_status').catch(() => ({ ffmpeg: null }))
+      if (!ff?.ffmpeg) throw new Error(NEEDS_FFMPEG)
+      return { url: src.path, live: { input: src.path, user: '', pass: '' }, sidecarSubs: subs }
+    }
+    return { url: await fileUrl(src.path), sidecarSubs: subs }
   }
   const file = await sourceFile(src)
   if (!file) throw new Error('This file was opened in an earlier session. Open it again, or store it in Flick to keep it.')
@@ -279,14 +286,7 @@ export async function resolve(src: Source, onStatus?: (s: string) => void, itemI
   return { url, file, revoke: () => URL.revokeObjectURL(url), sidecarSubs }
 }
 
-/** Remuxes a file or http(s) URL to a cached MP4 with ffmpeg and returns the cache path. */
-export async function prepared(input: string, onStatus?: (s: string) => void, user = '', pass = ''): Promise<string> {
-  onStatus?.('Converting for playback')
-  const off = await onDesktopEvent<{ path: string; pct: number }>('prepare-progress', (p) => {
-    if (p.path === input) onStatus?.(`Converting for playback ${Math.round(p.pct)}%`)
-  })
-  try { return await invoke<string>('prepare', { path: input, user, pass }) } finally { off() }
-}
+export const NEEDS_FFMPEG = 'This file needs ffmpeg to play. Install it with: brew install ffmpeg'
 
 async function findHandleSubs(src: Extract<Source, { t: 'handle' }>) {
   const folders = await getFolders()

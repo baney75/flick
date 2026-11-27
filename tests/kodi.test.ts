@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { kodiConvert, kodiMap, kodiNeedsFfmpeg, kodiResolve, kodiItems, saveServer, KODI_DESKTOP_ONLY, type Server, type KodiLibrary } from '../src/lib/servers'
+import { kodiLive, kodiMap, kodiNeedsFfmpeg, kodiResolve, kodiItems, saveServer, KODI_DESKTOP_ONLY, type Server, type KodiLibrary } from '../src/lib/servers'
 import { hash, KODI_IMG } from '../src/lib/library'
 
 // The shell, faked: invoke answers per command; protocolUrl builds the macOS form of convertFileSrc.
@@ -107,12 +107,12 @@ describe('kodi playback', () => {
 
   it('plays a native file straight from a Kodi without a password', async () => {
     const s = src(open, '/m/A.mp4')
-    expect(await kodiResolve(s)).toBe(s.url)
+    expect((await kodiResolve(s)).url).toBe(s.url)
     expect(shell.calls).toEqual([])
   })
 
   it('streams a native file through the kodi:// proxy when Kodi has a password', async () => {
-    const url = await kodiResolve(src(lockedB, '/m/A.mp4'))
+    const { url } = await kodiResolve(src(lockedB, '/m/A.mp4'))
     expect(url).toBe(`kodi://localhost/${encodeURIComponent('kodi-b/vfs/%2Fm%2FA.mp4')}`)
     expect(url).not.toContain('p%40ss')
     expect(shell.calls).toEqual([['kodi_proxy_register', { id: 'kodi-b', base: lockedB.url, user: 'kodi', pass: 'p@ss word' }]])
@@ -122,45 +122,44 @@ describe('kodi playback', () => {
     // Works on a phone too: no ffmpeg needed.
     shell.mobile = true
     shell.ffmpeg = null
-    expect(await kodiResolve(src(lockedB, '/m/C.webm'))).toMatch(/^kodi:\/\/localhost\/kodi-b%2Fvfs%2F/)
+    expect((await kodiResolve(src(lockedB, '/m/C.webm'))).url).toMatch(/^kodi:\/\/localhost\/kodi-b%2Fvfs%2F/)
   })
 
   it('plays OGG and Opus as they are off Apple, and still converts MKV', async () => {
     shell.apple = false
-    expect(await kodiResolve(src(open, '/m/a.ogg'))).toBe(src(open, '/m/a.ogg').url)
-    expect(await kodiResolve(src(lockedB, '/m/a.opus'))).toMatch(/^kodi:\/\/localhost\/kodi-b%2Fvfs%2F/)
+    expect((await kodiResolve(src(open, '/m/a.ogg'))).url).toBe(src(open, '/m/a.ogg').url)
+    expect((await kodiResolve(src(lockedB, '/m/a.opus'))).url).toMatch(/^kodi:\/\/localhost\/kodi-b%2Fvfs%2F/)
     shell.mobile = true
     shell.ffmpeg = null
-    expect(await kodiResolve(src(lockedB, '/m/a.oga'))).toMatch(/^kodi:\/\/localhost\/kodi-b%2Fvfs%2F/)
+    expect((await kodiResolve(src(lockedB, '/m/a.oga'))).url).toMatch(/^kodi:\/\/localhost\/kodi-b%2Fvfs%2F/)
     await expect(kodiResolve(src(open, '/m/A.mkv'))).rejects.toThrow(KODI_DESKTOP_ONLY)
     expect(shell.calls.filter(([c]) => c === 'prepare')).toEqual([])
   })
 
-  it('converts MKV, OGG and Opus through prepare on the Mac', async () => {
+  it('streams MKV, OGG and Opus through the live remux on the Mac, with the server login', async () => {
     for (const f of ['/m/A.mkv', '/m/a.ogg', '/m/a.opus']) {
       shell.calls = []
-      expect(await kodiResolve(src(lockedB, f))).toBe(`asset://localhost/${encodeURIComponent('/cache/remux/x.mp4')}`)
-      const prep = shell.calls.find(([c]) => c === 'prepare')!
-      expect(prep[1]).toEqual({ path: src(lockedB, f).url, user: 'kodi', pass: 'p@ss word' })
+      expect(await kodiResolve(src(lockedB, f))).toEqual({ url: src(lockedB, f).url, live: { input: src(lockedB, f).url, user: 'kodi', pass: 'p@ss word' } })
+      expect(shell.calls.some(([c]) => c === 'prepare')).toBe(false)
     }
     shell.ffmpeg = null
     await expect(kodiResolve(src(open, '/m/A.mkv'))).rejects.toThrow(/install ffmpeg/i)
   })
 
-  it('converts an MP4 the web view could not play, with the server login', async () => {
-    // kodiResolve plays this MP4 as it is; the player calls kodiConvert when the web view rejects it.
-    expect(await kodiResolve(src(lockedB, '/m/ac3.mp4'))).toMatch(/^kodi:\/\//)
+  it('streams an MP4 the web view could not play through the live remux, with the server login', async () => {
+    // kodiResolve plays this MP4 as it is; the player calls kodiLive when the web view rejects it.
+    expect((await kodiResolve(src(lockedB, '/m/ac3.mp4'))).url).toMatch(/^kodi:\/\//)
     shell.calls = []
-    expect(await kodiConvert(src(lockedB, '/m/ac3.mp4'))).toBe(`asset://localhost/${encodeURIComponent('/cache/remux/x.mp4')}`)
-    expect(shell.calls.find(([c]) => c === 'prepare')![1]).toEqual({ path: src(lockedB, '/m/ac3.mp4').url, user: 'kodi', pass: 'p@ss word' })
+    expect(await kodiLive(src(lockedB, '/m/ac3.mp4'))).toEqual({ input: src(lockedB, '/m/ac3.mp4').url, user: 'kodi', pass: 'p@ss word' })
+    expect(shell.calls.some(([c]) => c === 'prepare')).toBe(false)
     shell.mobile = true
-    await expect(kodiConvert(src(lockedB, '/m/ac3.mp4'))).rejects.toThrow(KODI_DESKTOP_ONLY)
+    await expect(kodiLive(src(lockedB, '/m/ac3.mp4'))).rejects.toThrow(KODI_DESKTOP_ONLY)
   })
 
   it('streams through the proxy on a phone even without a password', async () => {
     shell.mobile = true
     shell.ffmpeg = null
-    expect(await kodiResolve(src(open, '/m/A.mp4'))).toBe(`kodi://localhost/${encodeURIComponent('kodi-a/vfs/%2Fm%2FA.mp4')}`)
+    expect((await kodiResolve(src(open, '/m/A.mp4'))).url).toBe(`kodi://localhost/${encodeURIComponent('kodi-a/vfs/%2Fm%2FA.mp4')}`)
     expect(shell.calls).toEqual([['kodi_proxy_register', { id: 'kodi-a', base: open.url, user: '', pass: '' }]])
     const [m] = kodiMap(open, lib)
     expect(m.poster?.startsWith(KODI_IMG)).toBe(true)

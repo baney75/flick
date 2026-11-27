@@ -12,6 +12,7 @@ const shell = vi.hoisted(() => ({
   // The store (playSaved) reads the route at import.
   _: Object.assign(globalThis, { location: { hash: '', href: 'http://localhost/', search: '' }, addEventListener: () => {}, removeEventListener: () => {} }),
   desktop: false,
+  ffmpeg: null as string | null,
   calls: [] as [string, any][],
   listeners: new Map<string, (p: any) => void>(),
   exists: true,
@@ -38,6 +39,7 @@ vi.mock('../src/lib/platform', async (orig) => ({
     if (cmd === 'download_exists') return shell.exists
     if (cmd === 'probe') return { playable: shell.playable }
     if (cmd === 'prepare') throw 'ffmpeg not found'
+    if (cmd === 'ffmpeg_status') return { ffmpeg: shell.ffmpeg }
     if (cmd === 'sidecar_subs') return []
     return null
   },
@@ -124,6 +126,7 @@ const item = (id: string, src: Item['src']): Item => ({ id, title: id, kind: 'vi
 
 beforeEach(() => {
   shell.desktop = false
+  shell.ffmpeg = null
   shell.calls = []
   shell.exists = true
   shell.playable = true
@@ -272,9 +275,22 @@ describe('downloads in the apps', () => {
     const it = item('kf', { t: 'url', url: 'https://plex.example/library/parts/1/3/file.mkv?X-Plex-Token=t' })
     await download(it)
     await _test.idle()
-    // Desktop without ffmpeg: the probe says not playable and prepare rejects.
+    // Desktop without ffmpeg: the probe says not playable and there is nothing to remux with.
     shell.playable = false
     expect((await resolve(it.src, undefined, it.id)).url).toBe((it.src as { url: string }).url)
+  })
+
+  it('SPEC-playback rule 5: a local file the web view cannot play streams through the live remux, not prepare', async () => {
+    shell.desktop = true
+    shell.playable = false
+    shell.ffmpeg = '/opt/homebrew/bin/ffmpeg'
+    const r = await resolve({ t: 'path', path: '/Movies/Big.mkv' })
+    expect(r.live).toEqual({ input: '/Movies/Big.mkv', user: '', pass: '' })
+    expect(shell.calls.some(([c]) => c === 'prepare')).toBe(false)
+    shell.playable = true
+    const plain = await resolve({ t: 'path', path: '/Movies/a.mp4' })
+    expect(plain.live).toBeUndefined()
+    expect(plain.url).toBe(`asset://localhost/${encodeURIComponent('/Movies/a.mp4')}`)
   })
 })
 

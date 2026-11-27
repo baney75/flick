@@ -655,6 +655,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    // Rule 5: a library file the web view cannot play streams from its path, not a whole-file convert.
+    #[test]
+    fn a_library_file_streams_from_its_path_and_seeks() {
+        let Some((ffmpeg, ffprobe)) = tools() else {
+            return eprintln!("skipped: needs ffmpeg");
+        };
+        let dir = scratch("library");
+        let file = dir.join("Movie (2024).mkv");
+        fixture(
+            &ffmpeg,
+            &file,
+            600,
+            1,
+            &[
+                "-c:v",
+                "libx264",
+                "-g",
+                "4",
+                "-preset",
+                "ultrafast",
+                "-c:a",
+                "ac3",
+                "-b:a",
+                "64k",
+                "-ac",
+                "1",
+            ],
+        );
+        let path = file.to_string_lossy().into_owned();
+        let p = probe(&ffprobe, &path, None, LIMIT).unwrap();
+        assert!(!p.direct && (p.duration - 600.0).abs() < 2.0, "{p:?}");
+        assert!(!run_args(&path, None, &p, 0.0, &dir).contains(&"-reconnect".to_string()));
+        let st = Live::default();
+        let t0 = Instant::now();
+        let s = start(&st, &ffmpeg, &dir.join("runs"), &path, None, &p, 300.0).unwrap();
+        assert!(
+            t0.elapsed() < Duration::from_secs(3),
+            "took {:?}",
+            t0.elapsed()
+        );
+        assert_eq!(s.at, 300.0);
+        assert!(ready_to_play(
+            &std::fs::read_to_string(&s.playlist).unwrap()
+        ));
+        stop(&st);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn a_run_that_cannot_read_its_input_says_why() {
         let Some((ffmpeg, _)) = tools() else {
