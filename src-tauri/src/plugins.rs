@@ -62,8 +62,10 @@ fn is_private_ip(ip: IpAddr) -> bool {
 }
 
 /// A name only an explicit entry may reach: a private address, `localhost`, `.local`.
-fn is_private(host: &str) -> bool {
+pub(crate) fn is_private(host: &str) -> bool {
     let h = host.trim_start_matches('[').trim_end_matches(']');
+    // `localhost.` and `nas.local.` resolve like `localhost` and `nas.local`.
+    let h = h.strip_suffix('.').unwrap_or(h);
     if let Ok(ip) = h.parse::<IpAddr>() {
         return is_private_ip(ip);
     }
@@ -342,6 +344,8 @@ mod tests {
             "http://10.0.0.2/",
             "http://[::1]/",
             "http://nas.local/",
+            "http://localhost./",
+            "http://nas.local./",
             "http://169.254.169.254/latest/meta-data",
         ] {
             assert!(!ok(&["*"], u), "{u} should need an explicit entry");
