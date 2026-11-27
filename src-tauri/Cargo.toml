@@ -41,6 +41,9 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 # The token-guarded 127.0.0.1 server the player reads a torrent from (src/torrent_http.rs).
 tiny_http = "0.12"
+# Plays torrent streams from source plugins (src/torrent.rs): rustls, not OpenSSL, no UPnP. Exact
+# pin; its tree is pinned in Cargo.lock.
+librqbit = { version = "=9.1.0", default-features = false, features = ["rust-tls"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
@@ -52,3 +55,9 @@ opt-level = 3
 [profile.release.build-override]
 strip = "none"
 debug = false
+
+# librqbit-utp 0.7.0 needs ringbuf 0.4, which has RUSTSEC-2026-0293. Upstream's fix is merged but
+# not released: it changes only the ringbuf version and skips one Windows receive error. Pinned
+# to that commit until a release carries it.
+[patch.crates-io]
+librqbit-utp = { git = "https://github.com/ikatson/librqbit-utp", rev = "06e1c53c8df6edb2830d6aab64a6d4bed8479908" }

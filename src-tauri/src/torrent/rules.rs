@@ -1,5 +1,5 @@
-// The torrent engine's checks, as pure functions: what a stream may ask for (rule 2), which file
-// plays (rule 4), and the cache trim (rule 6).
+// The torrent engine's checks, as pure functions: what a stream may ask for (rule 2), what a
+// torrent may hold (rules 15 and 16), which file plays (rule 4), and the cache trim (rule 6).
 
 #[cfg(test)]
 pub mod tests;
@@ -9,6 +9,9 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+pub const MAX_INFO: usize = 10 << 20;
+pub const MAX_FILES: usize = 10_000;
+pub const MAX_PIECE: u32 = 16 << 20;
 pub const MAX_TRACKERS: usize = 50;
 
 /// A torrent stream from a plugin: `{ infoHash, fileIdx?, trackers? }`.
@@ -79,6 +82,63 @@ pub fn magnet(hash: &str, trackers: &[String]) -> String {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Vetted {
     pub files: Vec<(String, u64)>,
+}
+
+/// One part of a stored path: never empty, `.` or `..`, no separator, drive or stream colon, or
+/// NUL, and at most 255 bytes.
+fn safe_part(b: &[u8]) -> bool {
+    let bad = |c: &u8| matches!(c, b'/' | b'\\' | b':' | 0);
+    !b.is_empty() && b != b"." && b != b".." && b.len() <= 255 && !b.iter().any(bad)
+}
+
+/// Parses a .torrent and applies rules 15 and 16: every name stays inside the torrent's folder,
+/// no symlinks, and the size limits.
+pub fn vet(torrent: &[u8]) -> Result<Vetted, String> {
+    if torrent.len() > MAX_INFO {
+        return Err("This torrent's file list is over 10 MB, so Flick won't open it.".into());
+    }
+    let unreadable = |e: &dyn std::fmt::Display| format!("This torrent can't be read: {e}");
+    let meta = librqbit::torrent_from_bytes(torrent).map_err(|e| unreadable(&e))?;
+    let info = meta.info.data.validate().map_err(|e| unreadable(&e))?;
+    if info.info().piece_length > MAX_PIECE {
+        return Err("This torrent's pieces are over 16 MB, so Flick won't open it.".into());
+    }
+    if let Some(name) = &info.info().name {
+        if !safe_part(name.as_ref()) {
+            return Err(unsafe_name(name.as_ref()));
+        }
+    }
+    let mut files = vec![];
+    for f in info.iter_file_details() {
+        if files.len() == MAX_FILES {
+            return Err("This torrent has over 10,000 files, so Flick won't open it.".into());
+        }
+        let parts: Vec<&[u8]> = f.filename.iter_components_bytes().collect();
+        if let Some(bad) = parts.iter().find(|p| !safe_part(p)) {
+            return Err(unsafe_name(bad));
+        }
+        let attrs = f.attrs();
+        if attrs.symlink || f.symlink_path.is_some() {
+            return Err(
+                "This torrent holds a link to another file, so Flick won't open it.".into(),
+            );
+        }
+        let name = parts
+            .last()
+            .map(|p| String::from_utf8_lossy(p).into_owned());
+        let name = if attrs.padding {
+            String::new()
+        } else {
+            name.unwrap_or_default()
+        };
+        files.push((name, f.len));
+    }
+    Ok(Vetted { files })
+}
+
+fn unsafe_name(b: &[u8]) -> String {
+    let shown: String = String::from_utf8_lossy(b).chars().take(80).collect();
+    format!("This torrent has a file name Flick won't write: {shown:?}")
 }
 
 /// The file to play: `file_idx` when given, which must be video or audio, else the largest video.

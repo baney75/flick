@@ -1,4 +1,4 @@
-// The engine's checks (rules 2, 4 and 6).
+// The engine's checks (rules 2, 4, 6, 15 and 16) on crafted input.
 
 use super::{Vetted, Want};
 use crate::torrent::rules;
@@ -118,6 +118,178 @@ fn the_magnet_carries_only_the_stream_trackers_percent_encoded() {
         rules::magnet(HASH, &[]),
         format!("magnet:?xt=urn:btih:{HASH}")
     );
+}
+
+// A bencoded .torrent: `files` as (path parts, length, attr), or one file named `name`.
+fn ben(b: &[u8]) -> Vec<u8> {
+    let mut v = format!("{}:", b.len()).into_bytes();
+    v.extend_from_slice(b);
+    v
+}
+
+fn int(n: u64) -> Vec<u8> {
+    format!("i{n}e").into_bytes()
+}
+
+struct Entry<'a> {
+    path: Vec<&'a [u8]>,
+    len: u64,
+    attr: Option<&'a [u8]>,
+}
+
+fn entry(path: &[&'static str], len: u64) -> Entry<'static> {
+    let path = path.iter().map(|p| p.as_bytes()).collect();
+    Entry {
+        path,
+        len,
+        attr: None,
+    }
+}
+
+fn torrent(name: &[u8], files: &[Entry], piece: u64) -> Vec<u8> {
+    let total: u64 = files.iter().map(|f| f.len).sum();
+    let pieces = total.div_ceil(piece).max(1) as usize;
+    let mut info = b"d".to_vec();
+    if let [one] = files {
+        if one.path.is_empty() {
+            info.extend(ben(b"length"));
+            info.extend(int(one.len));
+        }
+    }
+    if files.len() != 1 || !files[0].path.is_empty() {
+        info.extend(ben(b"files"));
+        info.push(b'l');
+        for f in files {
+            info.push(b'd');
+            if let Some(a) = f.attr {
+                info.extend(ben(b"attr"));
+                info.extend(ben(a));
+            }
+            info.extend(ben(b"length"));
+            info.extend(int(f.len));
+            info.extend(ben(b"path"));
+            info.push(b'l');
+            for p in &f.path {
+                info.extend(ben(p));
+            }
+            info.push(b'e');
+            if f.attr == Some(b"l") {
+                info.extend(ben(b"symlink path"));
+                info.extend(b"l6:targete");
+            }
+            info.push(b'e');
+        }
+        info.push(b'e');
+    }
+    info.extend(ben(b"name"));
+    info.extend(ben(name));
+    info.extend(ben(b"piece length"));
+    info.extend(int(piece));
+    info.extend(ben(b"pieces"));
+    info.extend(ben(&vec![7u8; pieces * 20]));
+    info.push(b'e');
+    let mut t = b"d".to_vec();
+    t.extend(ben(b"info"));
+    t.extend(info);
+    t.push(b'e');
+    t
+}
+
+pub const PIECE: u64 = 1 << 16;
+
+#[test]
+fn a_torrent_lists_its_files_by_last_name_with_padding_unnamed() {
+    let mut pad = entry(&[".pad", "1"], 50);
+    pad.attr = Some(b"p");
+    let files = [
+        entry(&["extras", "sample.mkv"], 100),
+        pad,
+        entry(&["movie.mp4"], 5000),
+        entry(&["readme.txt"], 10),
+    ];
+    let v = rules::vet(&torrent(b"Movie", &files, PIECE)).unwrap();
+    let names: Vec<(&str, u64)> = v.files.iter().map(|(n, l)| (n.as_str(), *l)).collect();
+    assert_eq!(
+        names,
+        [
+            ("sample.mkv", 100),
+            ("", 50),
+            ("movie.mp4", 5000),
+            ("readme.txt", 10)
+        ]
+    );
+    let one = rules::vet(&torrent(b"movie.mp4", &[entry(&[], 3000)], PIECE)).unwrap();
+    assert_eq!(
+        one,
+        Vetted {
+            files: vec![("movie.mp4".into(), 3000)]
+        }
+    );
+}
+
+#[test]
+fn a_file_name_that_would_leave_the_cache_is_refused() {
+    let long = "a".repeat(256);
+    let long: &'static str = Box::leak(long.into_boxed_str());
+    let cases: [(&[u8], &[&'static str]); 8] = [
+        (b"Movie", &["..", "..", "evil.mp4"]),
+        (b"Movie", &["../../evil.mp4"]),
+        (b"Movie", &["/etc", "x"]),
+        (b"Movie", &["a\\..\\evil.mp4"]),
+        (b"Movie", &["C:", "evil.mp4"]),
+        (b"Movie", &["evil\0.mp4"]),
+        (b"Movie", &[long]),
+        (b"Movie", &[".", "evil.mp4"]),
+    ];
+    for (name, path) in cases {
+        let t = torrent(name, &[entry(path, 10), entry(&["ok.mp4"], 10)], PIECE);
+        assert!(rules::vet(&t).is_err(), "{path:?} passed");
+    }
+    for name in [&b"/etc/x"[..], b"..", b"C:", b"a\0b"] {
+        let t = torrent(name, &[entry(&[], 10)], PIECE);
+        assert!(rules::vet(&t).is_err(), "name {name:?} passed");
+    }
+    // A name librqbit itself accepts still meets Flick's own check.
+    let t = torrent(b"Movie", &[entry(&["C:evil.mp4"], 10)], PIECE);
+    let e = rules::vet(&t).unwrap_err();
+    assert!(e.contains("won't write"), "{e}");
+    let t = torrent(b"Movie", &[entry(&[long], 10)], PIECE);
+    assert!(rules::vet(&t).unwrap_err().contains("won't write"));
+    let fits: &'static str = Box::leak("a".repeat(255).into_boxed_str());
+    assert!(rules::vet(&torrent(b"Movie", &[entry(&[fits], 10)], PIECE)).is_ok());
+}
+
+#[test]
+fn a_torrent_with_a_symlink_is_refused() {
+    let mut link = entry(&["movie.mp4"], 0);
+    link.attr = Some(b"l");
+    let t = torrent(b"Movie", &[link, entry(&["b.mp4"], 10)], PIECE);
+    assert!(rules::vet(&t).unwrap_err().contains("link to another file"));
+}
+
+#[test]
+fn a_torrent_over_the_size_limits_is_refused() {
+    let big = vec![b'd'; rules::MAX_INFO + 1];
+    assert!(rules::vet(&big).unwrap_err().contains("over 10 MB"));
+
+    let names: Vec<String> = (0..=rules::MAX_FILES)
+        .map(|i| format!("f{i}.mp4"))
+        .collect();
+    let names: Vec<&'static str> = names
+        .into_iter()
+        .map(|n| &*Box::leak(n.into_boxed_str()))
+        .collect();
+    let files: Vec<Entry> = names.iter().map(|n| entry(&[n], 1)).collect();
+    let e = rules::vet(&torrent(b"Many", &files, PIECE)).unwrap_err();
+    assert!(e.contains("10,000 files"), "{e}");
+    let at_cap = rules::vet(&torrent(b"Many", &files[..rules::MAX_FILES], PIECE));
+    assert_eq!(at_cap.unwrap().files.len(), rules::MAX_FILES);
+
+    let huge = u64::from(rules::MAX_PIECE) * 2;
+    let e = rules::vet(&torrent(b"movie.mp4", &[entry(&[], 1)], huge)).unwrap_err();
+    assert!(e.contains("over 16 MB"), "{e}");
+    let max = u64::from(rules::MAX_PIECE);
+    assert!(rules::vet(&torrent(b"movie.mp4", &[entry(&[], 1)], max)).is_ok());
 }
 
 #[test]
