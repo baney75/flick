@@ -148,10 +148,14 @@ export function VirtualGrid<T>({ list, min = 220, ratio = 9 / 16, extra = 54, re
   const rows = Math.ceil(list.length / cols)
 
   useEffect(() => {
-    const scroller = box.current!.closest('.main') as HTMLElement | null
+    const el = box.current!
+    const scroller = el.closest('.main') as HTMLElement | null
     if (!scroller) return
+    // Preact runs a closed screen's effect cleanups after the next paint, so this listener can still hear
+    // a pane scroll once the grid is gone. Then there is nothing to window.
     const update = () => {
-      const top = box.current!.getBoundingClientRect().top - scroller.getBoundingClientRect().top
+      if (!el.isConnected) return
+      const top = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top
       const start = Math.max(0, Math.floor(-top / rowH) - 3)
       const end = Math.min(rows, Math.ceil((-top + scroller.clientHeight) / rowH) + 3)
       setRange((r) => (r[0] === start && r[1] === end ? r : [start, end]))

@@ -1034,6 +1034,23 @@ try {
   const chipsWrap = await page.evaluate(() => { const c = [...document.querySelectorAll('.toolbar .chip')].map((e) => e.getBoundingClientRect().top); return new Set(c.map(Math.round)).size })
   check(chipsWrap === 1, `filter chips stay on one scrolling line (${chipsWrap} lines)`)
   await page.screenshot({ path: 'test-media/shots/phone-library.png' })
+  // Preact runs a closed screen's effect cleanups after the next paint, so the grid's scroll listener outlives
+  // the grid for a moment. A pane scroll in that moment must not reach the grid that is gone.
+  const lateScroll = await page.evaluate(async () => {
+    const errs = []
+    const on = (e) => errs.push(e.message)
+    addEventListener('error', on)
+    const moved = new Promise((r) => addEventListener('hashchange', r, { once: true }))
+    location.hash = '#/settings'
+    await moved
+    for (let i = 0; i < 50 && document.querySelector('.vgrid'); i++) await Promise.resolve()
+    const gone = !document.querySelector('.vgrid')
+    document.querySelector('.main')?.dispatchEvent(new Event('scroll'))
+    await new Promise((r) => setTimeout(r, 50))
+    removeEventListener('error', on)
+    return { gone, errs }
+  })
+  check(lateScroll.gone && lateScroll.errs.length === 0, `a pane scroll as Library closes does not reach the closed grid (${lateScroll.gone ? lateScroll.errs.join(' | ') || 'no error' : 'grid still shown'})`)
   await page.goto(stremioPage)
   await page.locator('.row-section .card:not(.skeleton)').first().waitFor({ timeout: 20000 })
   await page.screenshot({ path: 'test-media/shots/phone-stremio.png' })
