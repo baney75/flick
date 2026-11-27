@@ -879,6 +879,21 @@ try {
   await page.keyboard.press('Enter')
   check(await page.locator('.row-section', { hasText: 'Smoke Films · Find' }).getByText('Smoke Clip').waitFor({ timeout: 15000 }).then(() => true, () => false), 'Home search finds titles in plugin catalogs')
   check(await page.getByRole('button', { name: 'Search YouTube too' }).count() === 0, 'website: Home search offers no YouTube row (desktop only)')
+  // The results come back after Back and after a reload, and a cleared box keeps nothing.
+  {
+    const found = () => page.locator('.row-section', { hasText: 'Smoke Films · Find' }).getByText('Smoke Clip').waitFor({ timeout: 15000 }).then(() => true, () => false)
+    await page.goto(`${BASE}/#/library`)
+    await page.goBack()
+    const afterBack = await found() && await page.getByLabel('Search your plugins').inputValue() === 'smoke'
+    await page.reload()
+    const afterReload = await found()
+    await page.getByLabel('Search your plugins').fill('')
+    await page.reload()
+    await page.locator('.page-head h1', { hasText: 'Home' }).waitFor()
+    await page.waitForTimeout(1000)
+    const cleared = await page.locator('.home-search .row-section').count() === 0 && await page.getByLabel('Search your plugins').inputValue() === ''
+    check(afterBack && afterReload && cleared, `Home search results stay after Back and a reload, and a cleared box stays clear (back ${afterBack}, reload ${afterReload}, cleared ${cleared})`)
+  }
 
   // One library: a plugin's library sits beside the server, and the same title is one card with a source choice.
   await page.goto(`${BASE}/#/library`)
