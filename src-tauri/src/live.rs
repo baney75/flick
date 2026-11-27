@@ -1,5 +1,5 @@
 // The live remux (SPEC-playback rules 2 to 4): ffmpeg reads a stream the web view cannot open and
-// writes a local fMP4 HLS event playlist in a fresh folder, which plays from its first segment. A seek
+// writes a local fMP4 HLS event playlist in a fresh folder, which plays once it lists 3 segments. A seek
 // outside what a run wrote starts a new run there with -ss; the player adds the run's start to its clock.
 // One run plays at a time: a new run, remux_stop (the player closing) or the app's exit stops it.
 
@@ -82,6 +82,20 @@ pub fn run_args(
 }
 
 /// Segments the playlist lists so far.
+/// WebKit starts a growing playlist only once it lists 3 segments. Given fewer, it waits a whole
+/// target duration (up to 10 s with long keyframe gaps) before it reads the playlist again, so a run
+/// answers at 3 segments, or sooner when ffmpeg has written the whole stream.
+pub const READY_SEGMENTS: usize = 3;
+
+/// Whether a playlist's text is ready to hand to the web view.
+pub fn ready_to_play(text: &str) -> bool {
+    let n = text
+        .lines()
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .count();
+    n >= READY_SEGMENTS || (n > 0 && text.contains("#EXT-X-ENDLIST"))
+}
+
 pub fn segments(playlist: &Path) -> usize {
     std::fs::read_to_string(playlist)
         .map(|t| {
@@ -259,7 +273,7 @@ pub fn run(
     let playlist = dir.join("index.m3u8");
     let t0 = Instant::now();
     while t0.elapsed() < FIRST_SEGMENT {
-        if segments(&playlist) > 0 {
+        if ready_to_play(&std::fs::read_to_string(&playlist).unwrap_or_default()) {
             return Ok(Started { id, at, playlist });
         }
         let ended = {
@@ -272,12 +286,19 @@ pub fn run(
                 Some(c) => !matches!(c.try_wait(), Ok(None)),
             }
         };
-        if ended && segments(&playlist) == 0 {
+        if ended && segments(&playlist) > 0 {
+            return Ok(Started { id, at, playlist });
+        }
+        if ended {
             let why = last_line(&dir.join("ffmpeg.log"));
             stop_if(st, id);
             return Err(format!("ffmpeg could not convert this stream: {why}"));
         }
         std::thread::sleep(Duration::from_millis(40));
+    }
+    // A slow stream with a segment or two still plays; WebKit reads the playlist again as it grows.
+    if segments(&playlist) > 0 {
+        return Ok(Started { id, at, playlist });
     }
     stop_if(st, id);
     Err("The stream sent nothing to convert within 30 seconds.".into())
@@ -666,6 +687,22 @@ mod tests {
     // Case 8, while starting: the player closes before the first segment; the start gives up at once.
     // Review F1: a player that closes while the probe is still running (before ffmpeg starts) leaves
     // no ffmpeg behind and no folder.
+    #[test]
+    fn a_run_answers_at_three_segments_or_at_the_end() {
+        let seg = |n: usize| {
+            (0..n)
+                .map(|i| format!("#EXTINF:4.0,\nindex{i}.m4s\n"))
+                .collect::<String>()
+        };
+        let head = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MAP:URI=\"init.mp4\"\n";
+        assert!(!ready_to_play(head));
+        assert!(!ready_to_play(&format!("{head}{}", seg(1))));
+        assert!(!ready_to_play(&format!("{head}{}", seg(2))));
+        assert!(ready_to_play(&format!("{head}{}", seg(3))));
+        assert!(ready_to_play(&format!("{head}{}#EXT-X-ENDLIST\n", seg(1))));
+        assert!(!ready_to_play(&format!("{head}#EXT-X-ENDLIST\n")));
+    }
+
     #[test]
     fn a_close_before_ffmpeg_starts_leaves_nothing_running() {
         let Some((ffmpeg, _)) = tools() else {
