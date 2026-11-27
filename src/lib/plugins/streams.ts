@@ -42,9 +42,9 @@ export function sections(list: Stream[]): Section[] {
     .filter((x) => x.streams.length)
 }
 
-/** The stream "Play" starts: the best quality that plays inside Flick, or null when every one is external. */
+/** The stream "Play" starts: the best quality with a url that plays inside Flick, or null when there is none. */
 export function best(list: Stream[]): Stream | null {
-  for (const x of sections(list)) { const s = x.streams.find((s) => !s.external); if (s) return s }
+  for (const x of sections(list)) { const s = x.streams.find((s) => !s.external && !!s.url); if (s) return s }
   return null
 }
 

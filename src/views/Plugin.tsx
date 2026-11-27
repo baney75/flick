@@ -252,8 +252,8 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     callPlugin(rec, 'progress', [{ type: meta.type, id: meta.id, videoId, pos, dur }]).catch(() => {})
   } : undefined
 
-  const save = (s: Stream, url: string) => {
-    const saved: Saved = { key, plugin: rec.id, title: meta.name, subtitle: label, poster: video?.thumbnail ?? meta.background ?? meta.poster, kind: s.kind === 'audio' ? 'audio' : 'video', url, ref }
+  const save = (s: Stream) => {
+    const saved: Saved = { key, plugin: rec.id, title: meta.name, subtitle: label, poster: video?.thumbnail ?? meta.background ?? meta.poster, kind: s.kind === 'audio' ? 'audio' : 'video', url: s.url!, ref }
     saveStream(saved)
   }
 
@@ -270,7 +270,8 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   const streamOf = (r: Ranked) => shown[Number(r.c.id.slice(r.c.id.lastIndexOf('#') + 1))]
   const rowOf = new Map(rows.map((r) => [streamOf(r), r]))
   const shutBy = (r?: Ranked) => shutFor(r, ctx.vpnForDebrid)
-  const best = rows.find((r) => !r.blocked && !shutBy(r)) ?? null
+  // Play starts a stream with a url; a torrent waits for the engine or a debrid service to give it one.
+  const best = rows.find((r) => !r.blocked && !shutBy(r) && !!streamOf(r).url) ?? null
   const top = best ? streamOf(best) : null
 
   const start = async (s: Stream, startAt?: number) => {
@@ -327,7 +328,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     // On the website no stream host is contacted before a tap (a debrid link acts on the account);
     // a host that refuses the browser fails the download with the message to use the Flick app.
     // Downloading a gated stream would fetch it outside the gate's hold, so those rows play only.
-    const canSave = free && how !== null && !!s.url && !gated(rowOf.get(s))
+    const canSave = free && how !== null && !gated(rowOf.get(s))
     const shut = shutBy(rowOf.get(s))
     const why = shut ?? rowOf.get(s)?.blocked
     return (
@@ -345,7 +346,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
             </div>
           <Icon name={s.external ? 'external' : 'play'} size={18} class="stream-go" />
         </button>
-      {canSave && <button class="btn ghost sm stream-dl" onClick={() => save(s, s.url!)} aria-label={`Download ${s.title ?? meta.name}`}><Icon name="download" size={16} /> Download</button>}
+      {canSave && <button class="btn ghost sm stream-dl" onClick={() => save(s)} aria-label={`Download ${s.title ?? meta.name}`}><Icon name="download" size={16} /> Download</button>}
       </div>
     )
   }

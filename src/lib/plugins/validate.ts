@@ -332,8 +332,10 @@ export function validateStreams(x: unknown): Stream[] {
   for (const s of x.slice(0, MAX_LIST)) {
     if (!isObj(s)) continue
     // A url stream is never a torrent; a torrent stream plays in the player, never a browser or the reader.
-    const torrent = typeof s.url !== 'string' && s.torrent !== undefined ? torrentOf(s.torrent) : undefined
-    if (!torrent && typeof s.url !== 'string') continue
+    // An empty url and a null torrent count as absent.
+    const hasUrl = typeof s.url === 'string' && s.url.trim() !== ''
+    const torrent = !hasUrl && s.torrent != null ? torrentOf(s.torrent) : undefined
+    if (!torrent && !hasUrl) continue
     const url = torrent ? '' : (s.url as string).trim()
     if (url.length > 8000) continue
     const external = !torrent && s.external === true

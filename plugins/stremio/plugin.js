@@ -81,7 +81,7 @@ export function publicUrl(u) {
   let url
   try { url = new URL(u) } catch { return false }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return false
-  const h = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  const h = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '')
   if (h === 'localhost' || h.endsWith('.localhost') || h === '0.0.0.0' || h === '::' || h === '::1') return false
   const v4 = h.replace(/^::ffff:/, '').match(/^(\d+)\.(\d+)\.\d+\.\d+$/)
   if (v4) {

@@ -48,7 +48,7 @@ describe('Stremio plugin protocol', () => {
   })
   it('turns an infoHash stream into a torrent, trackers from its tracker: sources (SPEC-torrent rule 3)', () => {
     const H = 'dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c'
-    const s = { infoHash: H.toUpperCase(), fileIdx: 2, name: 'Addon', title: '1080p', sources: ['tracker:udp://t.example:80', 'dht:x', 'tracker:udp://t.example:80', 'tracker:http://192.168.1.1/announce', 'tracker:udp://127.1:80', 'tracker:ws://t.example', 'tracker:https://t.example/a'] }
+    const s = { infoHash: H.toUpperCase(), fileIdx: 2, name: 'Addon', title: '1080p', sources: ['tracker:udp://t.example:80', 'dht:x', 'tracker:udp://t.example:80', 'tracker:http://192.168.1.1/announce', 'tracker:udp://127.1:80', 'tracker:http://localhost./announce', 'tracker:udp://stremio.localhost.:80', 'tracker:ws://t.example', 'tracker:https://t.example/a'] }
     expect(S.toStream(s, 'X')).toEqual({ torrent: { infoHash: H, fileIdx: 2, trackers: ['udp://t.example:80', 'https://t.example/a'] }, title: 'Addon · 1080p', group: 'X', subs: [] })
     expect(S.toStream({ infoHash: H }, 'X')?.torrent).toEqual({ infoHash: H })
     expect(S.toStream({ infoHash: H, fileIdx: -1 }, 'X')?.torrent).toEqual({ infoHash: H })

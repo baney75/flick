@@ -54,6 +54,9 @@ describe('plugin validation', () => {
     ])
     expect(s[0]).toEqual({ torrent: { infoHash: H, fileIdx: 2, trackers: ['udp://t.example:80', 'https://t.example/a'] }, title: 'T', group: 'G' })
     expect(s[1]).toEqual({ torrent: { infoHash: H } })
+    // A null torrent is an absent one, and an empty url is no url.
+    expect(V.validateStreams([{ url: 'https://cdn.example/a.mp4', torrent: null }, { url: undefined, torrent: null }])).toEqual([{ url: 'https://cdn.example/a.mp4' }])
+    expect(V.validateStreams([{ url: ' ', torrent: { infoHash: H } }])).toEqual([{ torrent: { infoHash: H } }])
     expect(s[2]).toEqual({ url: 'https://cdn.example/a.mp4' })
     const bad = (torrent: unknown) => () => V.validateStreams([{ torrent }])
     expect(bad({ infoHash: H.slice(0, 39) })).toThrow('torrent.infoHash must be 40 hex characters.')
