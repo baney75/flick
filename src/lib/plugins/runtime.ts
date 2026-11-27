@@ -214,12 +214,19 @@ export interface Results {
   account: V.AccountResult; cached: string[]; resolve: V.ResolveResult
 }
 
+/** Calls after which a plugin's library may have changed: an action, a saved position, a title action (a Like). */
+const CHANGES = new Set(['action', 'progress', 'titleAction'])
+/** Told the plugin id after each of those calls succeeds; use.ts reloads that plugin's library. */
+export const onChange = new Set<(id: string) => void>()
+
 /** Call one plugin function and check what it returns. A bad result is dropped with a log line. */
 export async function callPlugin<K extends keyof Results>(rec: Installed, fn: K, args: unknown[]): Promise<Results[K]> {
   const fr = await frameFor(rec)
   const raw = await fr.rpc.call('call', [fn, args]).catch((e: Error) => { logLine(rec.id, `${fn}() failed: ${e.message}`); throw e })
   try {
-    return CHECKS[fn](raw, rec.manifest as V.PluginManifest, args, (t) => logLine(rec.id, `${fn}(): ${t}`)) as Results[K]
+    const out = CHECKS[fn](raw, rec.manifest as V.PluginManifest, args, (t) => logLine(rec.id, `${fn}(): ${t}`)) as Results[K]
+    if (CHANGES.has(fn)) for (const f of onChange) f(rec.id)
+    return out
   } catch (e) {
     logLine(rec.id, `Dropped a bad ${fn}() result: ${(e as Error).message}`)
     throw e

@@ -3,7 +3,7 @@
 import { computed, signal } from '@preact/signals'
 import { go } from '../store'
 import { installed, loadPlugins } from './registry'
-import { callPlugin, platformName, type Installed } from './runtime'
+import { callPlugin, onChange, platformName, type Installed } from './runtime'
 import { PluginError, type CatalogDef, type Library, type Meta, type PluginManifest, type ThemeManifest } from './validate'
 
 export type Source = Installed & { manifest: PluginManifest }
@@ -46,6 +46,8 @@ export async function loadLibrary(rec: Source, force = false) {
     if (e instanceof PluginError) libraries.value = { ...libraries.value, [rec.id]: { shelves: [], items: [] } }
   }
 }
+// After a Like or a saved position, that plugin's library reloads at once, not after the 5 minute cache.
+onChange.add((id) => { const rec = sourceById(id); if (rec) loadLibrary(rec, true) })
 /** Library items with a saved position, newest first. */
 export const continueOf = (list: Meta[]) => list.filter((m) => (m.progress?.pos ?? 0) > 0).sort((a, b) => (b.progress!.at ?? 0) - (a.progress!.at ?? 0))
 

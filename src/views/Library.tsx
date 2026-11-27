@@ -4,6 +4,8 @@ import { ItemCard, VirtualGrid, useThumb } from '../components/Card'
 import { TitleCard } from '../components/Titles'
 import { buildTitles, type Title } from '../lib/titles'
 import { sources, libraries, loadLibrary } from '../lib/plugins/use'
+import { shelfChips, shelfOrder, isShelfKey, metaText, typeChip, type ShelfChip, type ShelfKey } from '../lib/shelves'
+import { MetaCard, ShelfRow } from './Plugin'
 import { Icon } from '../components/icons'
 import { addFolder, rescanAll, storeFiles, openFiles } from '../lib/actions'
 import { getFolders, removeFolder, deleteStored, removeItems, type Folder, type Item } from '../lib/library'
@@ -15,7 +17,7 @@ import { photoSet } from '../lib/photos'
 import { Photos } from './Photos'
 import { ContinueGrid, useContinue } from './Continue'
 
-type Tab = 'continue' | 'all' | 'movies' | 'shows' | 'music' | 'books' | 'audiobooks' | 'photos' | 'stored' | 'downloads'
+type Tab = 'continue' | 'all' | 'movies' | 'shows' | 'music' | 'books' | 'audiobooks' | 'videos' | 'photos' | 'stored' | 'downloads' | ShelfKey
 type Sort = 'added' | 'title' | 'year'
 
 const norm = (s: string) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
@@ -39,6 +41,8 @@ export function Library({ start }: { start?: Tab } = {}) {
   useEffect(() => { if (start) setTab(start) }, [start])
   const [q, setQ] = useState('')
   const [sort, setSort] = useState<Sort>('added')
+  // A shelf keeps its own order until the Sort menu is used.
+  const [sorted, setSorted] = useState(false)
   const [folders, setFolders] = useState<Folder[]>([])
   const [showFolders, setShowFolders] = useState(false)
   const [menu, setMenu] = useState<{ it: Item; x: number; y: number } | null>(null)
@@ -63,22 +67,33 @@ export function Library({ start }: { start?: Tab } = {}) {
   const dl = downloads.value
   const libs = useMemo(() => sources.value.filter((r) => r.manifest.has.library)
     .map((r) => ({ p: r.id, pname: r.manifest.name, list: libraries.value[r.id]?.items ?? [] })), [sources.value, libraries.value])
+  const shelves = useMemo(() => shelfChips(sources.value.filter((r) => libraries.value[r.id]).map((r) => ({ p: r.id, lib: libraries.value[r.id] }))), [sources.value, libraries.value])
+  const recs = useMemo(() => new Map(sources.value.map((r) => [r.id, r])), [sources.value])
+  const shelf: ShelfChip | undefined = isShelfKey(tab) ? shelves.find((c) => c.key === tab) : undefined
   const titles = useMemo(() => buildTitles(all.filter((i) => i.kind === 'video' && !i.show), shows.value, libs, (id) => isSaved(dl.get(id))),
     [all, shows.value, libs, dl])
+  const byType = (k: ReturnType<typeof typeChip>) => titles.filter((t) => typeChip(t) === k)
+  const shelfList = useMemo(() => {
+    if (!shelf) return []
+    const needle = norm(q.trim())
+    return shelfOrder(shelf, sorted ? sort : undefined).filter((x) => !needle || norm(metaText(x.m)).includes(needle))
+  }, [shelf, q, sort, sorted])
   const list = useMemo(() => {
     const needle = norm(q.trim())
-    let l: Entry[] = tab === 'all' ? [...titles, ...all.filter((i) => i.kind !== 'video')]
+    const typed = tab === 'music' || tab === 'books' || tab === 'audiobooks' || tab === 'videos' ? byType(tab) : []
+    let l: Entry[] = isShelfKey(tab) ? [] : tab === 'all' ? [...titles, ...all.filter((i) => i.kind !== 'video')]
       : tab === 'movies' ? titles.filter((t) => t.type === 'movie')
       : tab === 'shows' ? titles.filter((t) => t.type === 'show')
-      : all.filter((i) => {
+      : tab === 'videos' ? typed
+      : [...typed, ...all.filter((i) => {
         if (tab === 'music' && i.kind !== 'audio') return false
         if (tab === 'books' && i.kind !== 'book') return false
         if (tab === 'audiobooks' && i.kind !== 'audiobook') return false
         if (tab === 'stored' && i.origin !== 'stored') return false
         if (tab === 'downloads' && !isSaved(dl.get(i.id))) return false
         return true
-      })
-    if (needle) l = l.filter((x) => norm(isTitle(x) ? `${x.name} ${x.year ?? ''} ${x.srcs.map((s) => s.t === 'item' ? s.it.folder ?? '' : '').join(' ')}` : `${x.title} ${x.show ?? ''} ${x.author ?? ''} ${x.year ?? ''} ${x.folder ?? ''}`).includes(needle))
+      })]
+    if (needle) l = l.filter((x) => norm(isTitle(x) ? `${x.name} ${x.year ?? ''} ${x.srcs.map((s) => s.t === 'item' ? s.it.folder ?? '' : s.t === 'plugin' ? metaText(s.m) : '').join(' ')}` : `${x.title} ${x.show ?? ''} ${x.author ?? ''} ${x.year ?? ''} ${x.folder ?? ''}`).includes(needle))
     const ep = (x: Entry) => isTitle(x) ? [0, 0] : [x.season ?? 0, x.episode ?? 0]
     const by: Record<Sort, (a: Entry, b: Entry) => number> = {
       added: (a, b) => b.addedAt - a.addedAt,
@@ -95,9 +110,10 @@ export function Library({ start }: { start?: Tab } = {}) {
     all: titles.length + all.filter((i) => i.kind !== 'video').length,
     movies: movieCount,
     shows: showCount,
-    music: all.filter((i) => i.kind === 'audio').length,
-    books: all.filter((i) => i.kind === 'book').length,
-    audiobooks: all.filter((i) => i.kind === 'audiobook').length,
+    music: all.filter((i) => i.kind === 'audio').length + byType('music').length,
+    books: all.filter((i) => i.kind === 'book').length + byType('books').length,
+    audiobooks: all.filter((i) => i.kind === 'audiobook').length + byType('audiobooks').length,
+    videos: byType('videos').length,
     photos: photos.length,
     stored: all.filter((i) => i.origin === 'stored').length,
     downloads: all.filter((i) => isSaved(dl.get(i.id))).length,
@@ -116,6 +132,8 @@ export function Library({ start }: { start?: Tab } = {}) {
 
   // Books are tall like posters even without a cover, so they share the poster grid.
   const posterMode = list.length > 0 && (list.every((i) => !isTitle(i) && i.kind === 'book') || list.filter(posterOf).length > list.length / 2)
+
+  const pick = (t: Tab) => { picked.current = true; setTab(t); try { sessionStorage.setItem('flick.tab', t) } catch { /* private mode */ } }
 
   const remove = async (it: Item) => {
     setMenu(null)
@@ -166,14 +184,17 @@ export function Library({ start }: { start?: Tab } = {}) {
 
       <div class="toolbar">
         <div class="chips" role="tablist">
-          {(['continue', 'all', 'movies', 'shows', 'music', 'books', 'audiobooks', 'photos', 'stored', 'downloads'] as Tab[]).filter((t) => !['continue', 'books', 'audiobooks', 'photos', 'stored', 'downloads'].includes(t) || (t === 'continue' ? cont.length : counts[t]) || tab === t).map((t) => (
-            <button role="tab" aria-selected={tab === t} class={`chip ${tab === t ? 'on' : ''}`} onClick={() => { picked.current = true; setTab(t); try { sessionStorage.setItem('flick.tab', t) } catch { /* private mode */ } }}>
+          {(['continue', 'all', 'movies', 'shows', 'music', 'books', 'audiobooks', 'videos', 'photos', 'stored', 'downloads'] as const).filter((t) => !['continue', 'books', 'audiobooks', 'videos', 'photos', 'stored', 'downloads'].includes(t) || (t === 'continue' ? cont.length : counts[t]) || tab === t).map((t) => (
+            <button role="tab" aria-selected={tab === t} class={`chip ${tab === t ? 'on' : ''}`} onClick={() => pick(t)}>
               {t === 'all' ? 'All' : t[0].toUpperCase() + t.slice(1)} <span>{t === 'continue' ? cont.length : counts[t]}</span>
             </button>
           ))}
+          {shelves.map((c) => (
+            <button role="tab" aria-selected={tab === c.key} class={`chip ${tab === c.key ? 'on' : ''}`} onClick={() => pick(c.key as ShelfKey)}>{c.name} <span>{c.items.length}</span></button>
+          ))}
         </div>
         {tab !== 'shows' && tab !== 'photos' && tab !== 'continue' && (
-          <select value={sort} onChange={(e) => setSort((e.target as HTMLSelectElement).value as Sort)} aria-label="Sort">
+          <select value={sort} onChange={(e) => { setSort((e.target as HTMLSelectElement).value as Sort); setSorted(true) }} aria-label="Sort">
             <option value="added">Recently added</option>
             <option value="title">Title</option>
             <option value="year">Year</option>
@@ -183,6 +204,12 @@ export function Library({ start }: { start?: Tab } = {}) {
 
       {tab === 'continue' ? (
         <ContinueGrid list={cont} />
+      ) : isShelfKey(tab) ? (
+        !shelf ? <p class="dim center">Nothing on this shelf yet.</p>
+          : !shelfList.length ? <p class="dim center">Nothing matches “{q}”.</p>
+          : shelf.layout === 'list' ? <div class="shelf-list">{shelfList.map((x) => recs.get(x.p) && <ShelfRow rec={recs.get(x.p)!} m={x.m} />)}</div>
+          : <VirtualGrid list={shelfList} min={shelf.layout === 'landscape' ? 230 : 160} ratio={shelf.layout === 'landscape' ? 9 / 16 : shelf.layout === 'square' ? 1 : 1.5}
+              render={(x) => recs.get(x.p) && <MetaCard rec={recs.get(x.p)!} m={x.m} shape={shelf.layout as 'poster' | 'square' | 'landscape'} />} />
       ) : counts.all === 0 && !photos.length ? (
         <div class="empty">
           <Icon name="library" size={40} />

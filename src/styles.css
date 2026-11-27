@@ -140,6 +140,14 @@ label.toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
 .panel-head { display: flex; align-items: center; justify-content: space-between; }
 .list-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
 .list-row:first-of-type { border-top: 0; }
+/* A Library shelf with the list layout: one row per plugin item. */
+.shelf-list { display: grid; gap: 4px; }
+.shelf-row { all: unset; display: flex; align-items: center; gap: 14px; padding: 8px; border-radius: 12px; cursor: pointer; min-width: 0; }
+.shelf-row:hover, .shelf-row:focus-visible { background: var(--surface); }
+.shelf-row .art { position: relative; width: 120px; flex: none; aspect-ratio: 16/9; border-radius: 8px; overflow: hidden; background: var(--surface-2); }
+.shelf-row .art img { width: 100%; height: 100%; object-fit: cover; }
+.shelf-row .grow { min-width: 0; }
+.shelf-row .t1 { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lang-list { margin: 6px 0 14px; }
 .lang-list h4 { margin-bottom: 4px; }
 .lang-list .list-row { padding: 6px 0; }

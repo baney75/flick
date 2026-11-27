@@ -78,10 +78,10 @@ export function buildTitles(movies: Item[], shows: Map<string, Item[]>, libs: Pl
   for (const eps of shows.values()) {
     entries.push({ type: 'show', name: eps[0].show!, srcs: [{ t: 'show', name: eps[0].show!, eps }], addedAt: Math.max(...eps.map((e) => e.addedAt)) })
   }
-  // A plugin says nothing about when a title was added, so plugin titles sort after dated ones.
+  // A plugin item with no `added` sorts after dated titles.
   for (const { p, pname, list } of libs) for (const m of list) {
     const type = m.type === 'movie' ? 'movie' : m.type === 'series' ? 'show' : 'other'
-    entries.push({ type, name: m.name, year: type === 'movie' ? yearOf(m.year) : undefined, srcs: [{ t: 'plugin', p, pname, m }], addedAt: 0 })
+    entries.push({ type, name: m.name, year: type === 'movie' ? yearOf(m.year) : undefined, srcs: [{ t: 'plugin', p, pname, m }], addedAt: m.added ?? 0 })
   }
 
   const groups = new Map<string, Title[]>()
