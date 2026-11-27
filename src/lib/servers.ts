@@ -44,6 +44,7 @@ export async function saveServer(s: Server) {
 
 export async function removeServer(s: Server) {
   await db.put('kv', 'servers', (await getServers()).filter((x) => x.id !== s.id))
+  await db.del('kv', loadingKey(s.id))
   const items = await db.all<Item>('items')
   await db.delMany('items', items.filter((i) => i.server === s.id).map((i) => i.id))
   announce('servers')
@@ -394,7 +395,8 @@ export async function flickConnect(url: string, code: string): Promise<Server> {
   code = code.trim()
   const info = await flickInfo(url).catch(() => { throw unreachable(url) })
   if (!info) throw new Error('That address answered, but it is not a Flick server.')
-  const r = await fetch(`${url}/api/library`, { headers: { Authorization: `Bearer ${code}` } }).catch(() => null)
+  // HEAD checks the code without sending the library, which takes a while when it is large.
+  const r = await fetch(`${url}/api/library`, { method: 'HEAD', headers: { Authorization: `Bearer ${code}` } }).catch(() => null)
   if (!r) throw unreachable(url)
   if (r.status === 401 || r.status === 403) throw new Error('That access code is wrong. Copy it again from flick-server.')
   if (!r.ok) throw new Error(`${info.name || 'The Flick server'} said ${r.status}`)
@@ -513,11 +515,31 @@ export async function kodiPoster(it: Item): Promise<string | null> {
   return thumbUrl(it.id)
 }
 
+// A server stays marked while its library loads. A page closed partway leaves the mark, and the next
+// start loads that server again, so a server added just before the page closed never stays empty.
+const loadingKey = (id: string) => `server.loading:${id}`
+
 export async function syncServer(s: Server): Promise<number> {
-  const items = s.type === 'jellyfin' ? await jellyfinItems(s) : s.type === 'kodi' ? await kodiItems(s) : s.type === 'flick' ? await flickItems(s) : await plexItems(s)
-  const existing = await db.all<Item>('items')
-  const keep = new Set(items.map((i) => i.id))
-  await db.delMany('items', existing.filter((i) => i.server === s.id && !keep.has(i.id)).map((i) => i.id))
-  await db.putMany('items', items.map((i) => [i.id, i]))
-  return items.length
+  await db.put('kv', loadingKey(s.id), Date.now())
+  try {
+    const items = s.type === 'jellyfin' ? await jellyfinItems(s) : s.type === 'kodi' ? await kodiItems(s) : s.type === 'flick' ? await flickItems(s) : await plexItems(s)
+    const existing = await db.all<Item>('items')
+    const keep = new Set(items.map((i) => i.id))
+    await db.delMany('items', existing.filter((i) => i.server === s.id && !keep.has(i.id)).map((i) => i.id))
+    await db.putMany('items', items.map((i) => [i.id, i]))
+    return items.length
+  } finally {
+    // An error (a wrong code, a server that is off) ends the load too; only an unfinished one resumes.
+    await db.del('kv', loadingKey(s.id))
+  }
+}
+
+/** Loads again every saved server whose last load never finished. Returns the servers that loaded. */
+export async function resumeServerLoads(): Promise<Server[]> {
+  const out: Server[] = []
+  for (const s of await getServers()) {
+    if ((await db.get('kv', loadingKey(s.id))) === undefined) continue
+    if (await syncServer(s).then(() => true, () => false)) out.push(s)
+  }
+  return out
 }

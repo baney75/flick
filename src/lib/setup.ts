@@ -1,7 +1,7 @@
 // Setup links: one payload that adds addons, servers, folders and settings after the user taps Connect.
 // Link form: https://flick-player.pages.dev/#/setup?c=<base64url(JSON)>
 
-import { settings, setSettings, reloadItems, type Settings } from './store'
+import { settings, setSettings, reloadItems, notify, type Settings } from './store'
 import { getServers, saveServer, syncServer, plexManual, flickConnect, type Server } from './servers'
 import { isDesktop } from './platform'
 import { addFolderPath } from './actions'
@@ -140,6 +140,12 @@ export function describeSettings(s: Partial<Settings>): string {
   return parts.join(', ')
 }
 
+function loadServer(s: Server) {
+  syncServer(s)
+    .then(async (n) => { await reloadItems(); notify(`${s.name}: ${n} items in your library.`) })
+    .catch((e) => notify(`${s.name}: ${(e as Error).message}`))
+}
+
 async function toServer(s: SetupServer): Promise<Server> {
   if (s.type === 'plex') return { ...(await plexManual(s.url, s.token)), name: s.name ?? 'Plex' }
   if (s.type === 'flick') return flickConnect(s.url, s.token)
@@ -180,8 +186,10 @@ export async function applySetup(p: Setup, reviewed: Record<string, Candidate> =
     try {
       const srv = await toServer(s)
       await saveServer(srv)
-      const n = await syncServer(srv)
-      out.push({ label, ok: true, detail: `${n} items` })
+      // A large library takes a while to load, so the setup does not wait for it. A load cut off by
+      // the page closing resumes on the next start (resumeServerLoads).
+      loadServer(srv)
+      out.push({ label, ok: true, detail: 'Connected. Its titles are loading into your library.' })
     } catch (e) {
       out.push({ label, ok: false, detail: (e as Error).message })
     }

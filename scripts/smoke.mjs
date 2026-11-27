@@ -637,7 +637,8 @@ try {
   await page.goto(`${BASE}/#/setup?c=${flickSetup}`)
   await page.getByRole('button', { name: 'Connect all' }).click()
   await page.getByText('Done').waitFor()
-  check(await page.locator('.list-row', { hasText: `Flick server at ${FLICK_URL}` }).getByText('5 items').isVisible(), 'setup link with a Flick server connects it')
+  check(await page.locator('.list-row', { hasText: `Flick server at ${FLICK_URL}` }).getByText('Connected.').isVisible(), 'setup link with a Flick server connects it')
+  check(await page.getByText('Smoke NAS: 5 items in your library.').waitFor({ timeout: 8000 }).then(() => true, () => false), 'and its library loads after the setup shows it')
 
   // Each server has its own page under Settings > Plugins; a new one starts as its connect form.
   const kvServers = () => page.evaluate(() => new Promise((res) => { const r = indexedDB.open('flick'); r.onsuccess = () => { const q = r.result.transaction('kv').objectStore('kv').get('servers'); q.onsuccess = () => res(q.result ?? []) } }))

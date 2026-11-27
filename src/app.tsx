@@ -19,6 +19,7 @@ import { installSpatialNav } from './lib/spatial'
 import { resumeDownloads } from './lib/downloads'
 import { startOffline } from './lib/offline'
 import { startShare } from './lib/share'
+import { resumeServerLoads } from './lib/servers'
 import { PluginPage, PluginTitle, SourcesPage } from './views/Plugin'
 import { Manage } from './views/Manage'
 import { themes, startPlugins } from './lib/plugins/use'
@@ -91,6 +92,8 @@ export function App() {
     const plugins = startPlugins().then(() => migrateStremio()).catch(() => {})
     plugins.finally(() => startUpdates())
       .finally(() => { Promise.all([reloadItems(), loadProgress()]).then(startSyncBinding).catch(() => {}).then(startShare) })
+    // A server whose first load was cut off (the page closed while it loaded) finishes loading now.
+    resumeServerLoads().then((done) => (done.length ? reloadItems() : undefined)).catch(() => {})
     resumeDownloads().catch(() => {})
     startOffline()
     addEventListener('flick:db-stale', () => notify('Flick was updated in another tab. Reload this tab to keep going.', 15000))
