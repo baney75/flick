@@ -2,6 +2,7 @@
 // episodes, streams). Everything shown came through the sandbox and the validator.
 
 import { useCallback, useEffect, useState } from 'preact/hooks'
+import { signal } from '@preact/signals'
 import type { ComponentChildren } from 'preact'
 import { go, play, notify, progress, nowPlaying } from '../lib/store'
 import { Card, Row } from '../components/Card'
@@ -32,8 +33,15 @@ export function MetaCard({ rec, m }: { rec: Source; m: Meta }) {
     shape={shape(m)} pct={pct} onClick={() => go(titlePath(rec.id, m.type, m.id, ep))} />
 }
 
-/** Run one of a plugin's titleActions on a title; returns whether it is now on, or null when it failed. */
+/** The title actions running now, by actionKey(): a second press waits for the first to finish. */
+export const acting = signal<ReadonlySet<string>>(new Set())
+export const actionKey = (rec: Source, t: { type: string; id: string }, a: TitleActionDef) => JSON.stringify([rec.id, t.type, t.id, a.id])
+
+/** Run one of a plugin's titleActions on a title; returns whether it is now on, or null when it failed or was already running. */
 export async function runTitleAction(rec: Source, t: { type: string; id: string }, a: TitleActionDef): Promise<boolean | null> {
+  const k = actionKey(rec, t, a)
+  if (acting.value.has(k)) return null
+  acting.value = new Set([...acting.value, k])
   try {
     const r = await callPlugin(rec, 'titleAction', [{ type: t.type, id: t.id, action: a.id }])
     notify(r.message ?? `${a.label}: ${r.ok ? (r.on ? 'on' : 'off') : 'failed'}`)
@@ -41,6 +49,10 @@ export async function runTitleAction(rec: Source, t: { type: string; id: string 
   } catch (e) {
     notify(`${a.label}: ${(e as Error).message}`)
     return null
+  } finally {
+    const next = new Set(acting.value)
+    next.delete(k)
+    acting.value = next
   }
 }
 
@@ -53,7 +65,7 @@ export function useTitleKeys(rec: Source | undefined, target: () => { type: stri
     const acts = rec?.manifest.titleActions.filter((a) => a.key) ?? []
     if (!rec || !acts.length) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || nowPlaying.value || e.defaultPrevented) return
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || e.repeat || nowPlaying.value || e.defaultPrevented) return
       if ((e.target as HTMLElement | null)?.closest?.('input, textarea, select, [contenteditable]')) return
       const a = acts.find((x) => x.key === e.key.toLowerCase())
       const t = a && target()
@@ -198,7 +210,8 @@ export function PluginTitle({ p, type, id, videoId }: { p: string; type: string;
   const [vid, setVid] = useState<string | null>(videoId ?? null)
   const [marks, setMarks] = useState<string[]>([])
   const mark = useCallback((a: TitleActionDef, on: boolean) => setMarks((l) => (on ? [...new Set([...l, a.id])] : l.filter((x) => x !== a.id))), [])
-  const here = useCallback(() => ({ type, id }), [type, id])
+  // No title for the keys until its meta (and so its marks) has loaded.
+  const here = useCallback(() => (meta ? { type, id } : null), [type, id, meta])
   useTitleKeys(rec, here, mark)
 
   useEffect(() => {
@@ -244,7 +257,7 @@ export function PluginTitle({ p, type, id, videoId }: { p: string; type: string;
               {rec.manifest.titleActions.map((a) => {
                 const on = marks.includes(a.id)
                 return (
-                  <button class={`btn sm${on ? ' on' : ''}`} aria-pressed={on} title={a.key ? `${a.label} (${a.key.toUpperCase()})` : a.label}
+                  <button class={`btn sm${on ? ' on' : ''}`} aria-pressed={on} disabled={acting.value.has(actionKey(rec, { type, id }, a))} title={a.key ? `${a.label} (${a.key.toUpperCase()})` : a.label}
                     onClick={() => runTitleAction(rec, { type, id }, a).then((r) => { if (r !== null) mark(a, r) })}>
                     {on && <Icon name="check" size={14} />}{a.label}{a.key && <kbd>{a.key.toUpperCase()}</kbd>}
                   </button>

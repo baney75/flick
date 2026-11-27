@@ -18,7 +18,7 @@ describe('plugin validation', () => {
     const m = V.validateManifest(manifest(), FNS)
     expect(m.platforms).toEqual(['web', 'desktop', 'mobile'])
     expect(m.tools).toEqual([])
-    expect(m.has).toEqual({ library: false, action: false, progress: false, subtitles: false, userCatalogs: false, addonUrls: false, extensions: false, titleAction: false })
+    expect(m.has).toEqual({ library: false, action: false, progress: false, subtitles: false, userCatalogs: false, addonUrls: false, extensions: false })
   })
   it('refuses bad ids, hosts, tools, types, API versions and missing functions', () => {
     expect(() => V.validateManifest(manifest({ id: 'Films' }), FNS)).toThrow(/reverse-DNS/)
@@ -38,6 +38,9 @@ describe('plugin validation', () => {
     expect(() => V.validateManifest(manifest({ titleActions: [{ id: 'a', label: 'A', key: 'w' }, { id: 'b', label: 'B', key: 'W' }] }), [...FNS, 'titleAction'])).toThrow(/share a key/)
     expect(V.validateTitleAction({ ok: true, on: true, message: 'Liked' })).toEqual({ ok: true, on: true, message: 'Liked' })
     expect(() => V.validateTitleAction({ ok: true })).toThrow(/on/)
+    expect(V.validateTitleAction({ ok: false, message: 'Offline' })).toEqual({ ok: false, on: false, message: 'Offline' })
+    const seven = Array.from({ length: 7 }, (_, i) => ({ id: `a${i}`, label: `A${i}` }))
+    expect(() => V.validateManifest(manifest({ titleActions: seven }), [...FNS, 'titleAction'])).toThrow(/at most 6/)
     expect(V.validateMeta({ id: 'a', type: 'video', name: 'A', marks: ['like', 'Bad Id', 3] }).marks).toEqual(['like'])
   })
   it('marks password fields secret', () => {

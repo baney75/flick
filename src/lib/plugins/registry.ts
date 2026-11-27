@@ -136,11 +136,19 @@ export async function install(c: Candidate, settings?: Record<string, unknown>):
   return rec
 }
 
-export async function loadPlugins() {
+/** A record an older Flick stored, brought up to today's manifest shape. */
+function upgrade(r: Installed): Installed {
+  if (r.kind === 'theme') return r
+  const m = r.manifest as V.PluginManifest
   // A service installed while prepare() still called every plugin a source gets its kind back.
+  const kind = r.kind === 'source' && m.kind === 'service' ? 'service' : r.kind
+  return { ...r, kind, manifest: { ...m, titleActions: m.titleActions ?? [] } }
+}
+
+export async function loadPlugins() {
   let rows: Installed[]
   try {
-    rows = (await db.all<Installed>('plugins')).map((r) => (r.kind === 'source' && (r.manifest as V.PluginManifest).kind === 'service' ? { ...r, kind: 'service' as const } : r))
+    rows = (await db.all<Installed>('plugins')).map(upgrade)
     installed.value = rows.sort((a, b) => a.manifest.name.localeCompare(b.manifest.name))
   } finally {
     pluginsLoaded.value = true

@@ -48,7 +48,7 @@ export interface PluginManifest {
   /** A service whose downloads come over https from its own servers, so no peer sees the user: it may play with no VPN. */
   vpnOptional: boolean
   /** Optional functions the plugin has. */
-  has: { library: boolean; action: boolean; progress: boolean; subtitles: boolean; userCatalogs: boolean; addonUrls: boolean; extensions: boolean; titleAction: boolean }
+  has: { library: boolean; action: boolean; progress: boolean; subtitles: boolean; userCatalogs: boolean; addonUrls: boolean; extensions: boolean }
 }
 export interface Video { id: string; title: string; season?: number; episode?: number; released?: string; thumbnail?: string; overview?: string }
 export interface Meta {
@@ -219,6 +219,7 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
   if (actions.length && !fns.includes('action')) fail('The plugin lists actions but has no action() function.')
   const extFns = EXTENSION_FNS.filter((f) => fns.includes(f))
   if (extFns.length && extFns.length < EXTENSION_FNS.length) fail(`A plugin with addons needs all of ${EXTENSION_FNS.map((f) => `${f}()`).join(', ')}.`)
+  if (Array.isArray(x.titleActions) && x.titleActions.length > 6) fail(`The plugin lists ${x.titleActions.length} title actions; at most 6 are allowed.`)
   const titleActions = kind === 'service' ? [] : list(x.titleActions, 'titleActions', 6).map((a): TitleActionDef => {
     if (!isObj(a)) return fail('Each title action must be an object.')
     const t: TitleActionDef = { id: str(a.id, 'A title action id', true, 32), label: str(a.label, 'A title action label', true, 40) }
@@ -250,7 +251,7 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
     provides,
     debridHosts: [...new Set(debridHosts)],
     vpnOptional: x.vpnOptional === true,
-    has: { library: fns.includes('library'), action: fns.includes('action'), progress: fns.includes('progress'), subtitles: fns.includes('subtitles'), userCatalogs: fns.includes('userCatalogs'), addonUrls: fns.includes('addonUrls'), extensions: fns.includes('extensions'), titleAction: fns.includes('titleAction') },
+    has: { library: fns.includes('library'), action: fns.includes('action'), progress: fns.includes('progress'), subtitles: fns.includes('subtitles'), userCatalogs: fns.includes('userCatalogs'), addonUrls: fns.includes('addonUrls'), extensions: fns.includes('extensions') },
   }
   const icon = imgUrl(x.icon)
   if (icon) m.icon = icon
@@ -477,8 +478,10 @@ export function validateAction(x: unknown): ActionResult {
 
 /** A titleAction() result: whether that action is now on for the title. */
 export function validateTitleAction(x: unknown): TitleActionResult {
-  if (!isObj(x) || typeof x.on !== 'boolean') return fail('titleAction() must return { ok, on }.')
-  const r: TitleActionResult = { ok: x.ok !== false, on: x.on }
+  if (!isObj(x)) return fail('titleAction() must return { ok, on }.')
+  const ok = x.ok !== false
+  if (ok && typeof x.on !== 'boolean') return fail('titleAction() must return { ok, on }.')
+  const r: TitleActionResult = { ok, on: ok && x.on === true }
   const m = str(x.message, 'message', false, 200)
   if (m) r.message = m
   return r

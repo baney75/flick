@@ -183,8 +183,9 @@ values go only to that one `action()` call and are not saved; keep what you need
 `titleActions` puts a button on each of the plugin's title pages; the plugin keeps what they mean (a
 Liked list, Watch later) in `ctx.store` and can show them as `userCatalogs`. A title's `marks` lists the
 action ids that are on for it, so its buttons show pressed. With a `key`, the letter works on the title
-page and on a focused card on the plugin's page, but not while typing or while the player is open.
-`titleAction()` returns `{ ok, on, message? }`; Flick shows `message`.
+page and on a focused card on the plugin's page, but not while typing, with Shift, Ctrl, Alt or Cmd
+held, or while the player is open; a held key fires once. `titleAction()` returns `{ ok, on, message? }`;
+Flick shows `message`. A failed action may return `{ ok: false, message }` with no `on`.
 
 ### Shapes
 
