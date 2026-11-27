@@ -20,6 +20,7 @@ import { streamCandidates } from '../lib/candidates'
 import { cancelFetch, canStart, episodeOf, serviceTag, wantsGate } from '../lib/debrid-play'
 import { DebridWait, playTorrent, useCached } from './Debrid'
 import { viaOf } from '../lib/readout'
+import { intent, warmProbe } from '../lib/playback'
 import { checkAgain, ctxNow, current, debridNow, deviceFor, holdGate, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
 import { leavePage, letGo, playingTorrent, startTorrent, wantTorrent } from '../lib/torrent'
 import { EngineWait } from './EngineWait'
@@ -474,6 +475,8 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   const playable = (r: Ranked) => canStart(r, streamOf(r)) || (r.c.via === 'p2p' && !!streamOf(r).torrent)
   const best = rows.find((r) => !r.blocked && !shutBy(r) && playable(r)) ?? null
   const top = best ? streamOf(best) : null
+  // Probing a stream early (SPEC-playback rule 1) fetches it, so never one behind a shut or held gate.
+  const warmOf = (s: Stream) => intent(() => { const r = rowOf.get(s); if (s.url && !gated(r) && !shutBy(r)) warmProbe(s.url) })
 
   const start = async (s: Stream, startAt?: number) => {
     const t = tap()
@@ -566,7 +569,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     const tag = why || !cached ? undefined : serviceTag(s, rowOf.get(s)?.c, serviceName)
     return (
       <div class={`stream-item${why ? ' blocked' : ''}`}>
-        <button class="stream" aria-disabled={shut ? 'true' : undefined} onClick={() => start(s)}>
+        <button class="stream" aria-disabled={shut ? 'true' : undefined} onClick={() => start(s)} {...warmOf(s)}>
           <div class="stream-name">{s.group ?? rec.manifest.name}</div>
           <div class="stream-detail">{s.title ?? ''}</div>
           <div class="stream-tags">
@@ -595,7 +598,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
         {list === null && <span class="spinner sm" />}
         {dl?.state === 'done'
           ? <button class="btn primary play-best" onClick={() => playSaved(dl, { onSave })}><Icon name="play" size={16} /> {resumeAt ? `Resume downloaded ${formatTime(resumeAt)}` : 'Play downloaded'}</button>
-          : top ? <><button class="btn primary play-best" onClick={() => start(top)}><Icon name="play" size={16} /> {resumeAt ? `Resume ${formatTime(resumeAt)}` : 'Play'}</button><span class="pick-line small dim">{pickLine(best!, serviceName)}</span></>
+          : top ? <><button class="btn primary play-best" onClick={() => start(top)} {...warmOf(top)}><Icon name="play" size={16} /> {resumeAt ? `Resume ${formatTime(resumeAt)}` : 'Play'}</button><span class="pick-line small dim">{pickLine(best!, serviceName)}</span></>
             : rows[0] && <p class="pick-why small">{shutBy(rows[0]) ?? rows[0].blocked ?? NOTHING_YET}</p>}
         {(dl?.state === 'done' || top) && resumeAt > 0 && <button class="btn ghost start-over" onClick={() => (dl?.state === 'done' ? playSaved(dl, { onSave, startAt: 0 }) : start(top!, 0))}>Start over</button>}
       </div>
