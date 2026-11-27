@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import index from '../plugins/index.json'
 import { anchorOf, reachLine } from '../src/lib/hub'
+import { OFFICIAL_INDEX } from '../src/lib/plugins/registry'
 
 const mods = import.meta.glob('../plugins/*/plugin.js', { eager: true }) as Record<string, { default: { hosts: string[] } }>
 
@@ -9,6 +10,16 @@ describe("Flick's plugin list", () => {
     for (const e of index.plugins) {
       const dir = e.url.match(/^\/plugins\/(.+)\.js$/)![1]
       expect(e.hosts, e.name).toEqual(mods[`../plugins/${dir}/plugin.js`].default.hosts)
+    }
+  })
+})
+
+describe('bundled plugins come from the app (rule 20)', () => {
+  it('lists every plugin by a path in the app, never a network address, with its file shipped', () => {
+    expect(OFFICIAL_INDEX).toBe('/plugins/index.json')
+    for (const e of index.plugins) {
+      expect(e.url, e.name).toMatch(/^\/plugins\/[\w-]+\.js$/)
+      expect(mods[`../plugins/${e.url.slice(9, -3)}/plugin.js`], e.url).toBeDefined()
     }
   })
 })
