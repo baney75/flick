@@ -298,6 +298,47 @@ fn stop_returns_while_a_client_holds_a_large_stream_open() {
     drop(s);
 }
 
+/// A shared folder on a drive that mounts after the server started is served once a rescan finds it,
+/// and a folder already resolved stays pinned: swapping it for a link later serves nothing new.
+#[cfg(unix)]
+#[test]
+fn a_folder_that_appears_after_start_is_served_after_a_rescan() {
+    let base = std::env::temp_dir().join(format!("flick-server-http-late-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let late = base.join("Drive");
+    let h = start(Config {
+        media: vec![late.clone()],
+        port: 0,
+        name: "Test box".into(),
+        lan: false,
+        config_dir: base.join("cfg"),
+        web: None,
+    })
+    .unwrap();
+    let auth = format!("Authorization: Bearer {}\r\n", h.token());
+    // The drive mounts.
+    fs::create_dir_all(&late).unwrap();
+    fs::write(late.join("clip.mp4"), b"on the late drive").unwrap();
+    let lib = send(h.port(), "GET", "/api/library?rescan=1", &auth);
+    assert!(String::from_utf8_lossy(&lib.body).contains("clip.mp4"));
+    let id = flick_server::index::item_id("Drive", "clip.mp4");
+    let r = send(h.port(), "GET", &format!("/media/{id}"), &auth);
+    assert_eq!(r.status, 200);
+    assert_eq!(r.body, b"on the late drive");
+    // Now resolved, the folder stays pinned: swapped for a link elsewhere, nothing outside is served.
+    fs::remove_dir_all(&late).unwrap();
+    fs::create_dir_all(base.join("elsewhere")).unwrap();
+    fs::write(base.join("elsewhere/clip.mp4"), b"outside the share").unwrap();
+    std::os::unix::fs::symlink(base.join("elsewhere"), &late).unwrap();
+    send(h.port(), "GET", "/api/library?rescan=1", &auth);
+    assert_eq!(
+        send(h.port(), "GET", &format!("/media/{id}"), &auth).status,
+        404
+    );
+    h.stop();
+    let _ = fs::remove_dir_all(&base);
+}
+
 #[test]
 fn same_file_tells_files_apart() {
     let dir = std::env::temp_dir().join(format!("flick-server-same-{}", std::process::id()));
