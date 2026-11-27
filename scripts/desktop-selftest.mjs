@@ -81,16 +81,17 @@ function descendants(pids) {
   return out
 }
 
-/** Stop the app and whatever it started, so a stream or search never outlives the run. */
-function stop(app) {
-  const kids = descendants(appPids(app))
+/** Stop the app and whatever it started (`kids`, gathered while it ran), so a stream or search never
+ *  outlives the run, even when the app exits by itself and its children are left to launchd. */
+function stop(app, kids) {
+  for (const p of descendants(appPids(app))) kids.add(p)
   for (let i = 0; i < 3; i++) {
     const pids = appPids(app)
     if (!pids.length) break
     spawnSync('kill', [i < 2 ? '-TERM' : '-KILL', ...pids])
     spawnSync('sleep', ['1'])
   }
-  const left = kids.filter((p) => spawnSync('kill', ['-0', p]).status === 0)
+  const left = [...kids].filter((p) => spawnSync('kill', ['-0', p]).status === 0)
   if (left.length) spawnSync('kill', ['-KILL', ...left])
 }
 
@@ -153,13 +154,16 @@ async function launch(mode) {
   execFileSync('open', ['-g', '-j', '-n', '--env', `FLICK_SELFTEST=${mode}`, '--env', `FLICK_SELFTEST_OUT=${out}`, APP])
   const t0 = Date.now()
   let why = ''
+  const kids = new Set()
+  const look = () => { for (const p of descendants(appPids(APP))) kids.add(p) }
   while (!existsSync(out)) {
+    look()
     if (Date.now() - t0 > WAIT_MS) { why = `No report after ${WAIT_MS / 1000} s.`; break }
     if (existsSync(log) && /\bERROR\b/.test(readFileSync(log, 'utf8'))) { why = 'A step failed.'; break }
     await sleep(200)
   }
-  for (let i = 0; i < 10 && appPids(APP).length; i++) await sleep(200)
-  stop(APP)
+  for (let i = 0; i < 10 && appPids(APP).length; i++) { look(); await sleep(200) }
+  stop(APP, kids)
   const left = appPids(APP).join(' ')
   const progress = existsSync(log) ? readFileSync(log, 'utf8') : ''
   const report = existsSync(out) ? JSON.parse(readFileSync(out, 'utf8')) : null
