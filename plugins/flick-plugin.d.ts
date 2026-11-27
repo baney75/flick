@@ -79,6 +79,8 @@ export interface Plugin {
   streams(ctx: Ctx, args: { type: MetaType; id: string; videoId: string }): Promise<Stream[]>
   subtitles?(ctx: Ctx, args: { type: MetaType; id: string; videoId: string }): Promise<Sub[]>
   library?(ctx: Ctx): Promise<Meta[]>
+  /** The user's addon URLs, for Flick to offer debrid keys found in them. Only the bundled Stremio plugin is asked. */
+  addonUrls?(ctx: Ctx): Promise<string[]>
   action?(ctx: Ctx, id: string, values: Record<string, any>): Promise<{ ok: boolean; message?: string }>
   progress?(ctx: Ctx, args: { type: MetaType; id: string; videoId: string; pos: number; dur: number }): Promise<void>
 }

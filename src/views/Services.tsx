@@ -6,7 +6,8 @@ import { notify, settings, setSettings } from '../lib/store'
 import { isDesktop } from '../lib/platform'
 import { acceptUpdate, absolute, installed, officialList, prepare, setEnabled, type Candidate, type OfficialEntry } from '../lib/plugins/registry'
 import { callPlugin } from '../lib/plugins/runtime'
-import { accountLine, allServices, checkAndSave, hasKey, keyField, moveService, removeService, type Service } from '../lib/plugins/services'
+import { accountLine, allServices, checkAndSave, hasKey, keyField, keyOffers, moveService, removeService, STREMIO_ID, stremioAddonUrls, takeFoundKey, type Service } from '../lib/plugins/services'
+import { keyEnd, type FoundKey } from '../lib/plugins/debrid-keys'
 import type { PluginManifest } from '../lib/plugins/validate'
 
 export function ServicesPanel() {
@@ -27,6 +28,7 @@ function Services() {
   return (
     <>
       <p class="dim small">A debrid service fetches a torrent on its own servers and Flick plays it from there over https, so nothing is shared from this computer. Your key stays on this device and goes only to that service.</p>
+      <FromStremio />
       {list.map((s, i) => <ServiceRow s={s} first={i === 0} last={i === list.length - 1} />)}
       {offer.length > 0 && <AddService offer={offer} />}
       <label class="toggle">
@@ -35,6 +37,41 @@ function Services() {
       </label>
       <p class="dim small">Off, services that send the video only from their own servers (all four from Flick) play with or without a VPN, and the player says which. Torrents Flick plays itself always need the VPN.</p>
     </>
+  )
+}
+
+/** Keys in the user's Stremio addons, offered one button each. Nothing is saved before the tap. */
+function FromStremio() {
+  const [urls, setUrls] = useState<string[]>([])
+  const [busy, setBusy] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const rec = installed.value.find((p) => p.id === STREMIO_ID)
+  useEffect(() => {
+    let stale = false
+    stremioAddonUrls().then((u) => { if (!stale) setUrls(u) })
+    return () => { stale = true }
+  }, [rec?.enabled, rec?.official, rec?.sha256, rec && JSON.stringify(rec.settings)])
+  const offers = keyOffers(urls, allServices.value)
+  if (!offers.length && !msg) return null
+  const use = async (f: FoundKey) => {
+    setBusy(f.serviceId + f.key)
+    setMsg(null)
+    try {
+      const r = await takeFoundKey(f)
+      if (r.ok) notify(r.line); else setMsg(r.line)
+    } catch (e) { setMsg((e as Error).message) }
+    setBusy(null)
+  }
+  return (
+    <div class="from-stremio">
+      {offers.map((f) => (
+        <div class="list-row">
+          <div class="grow">Use the {f.service} key from your {f.addon} setup <span class="small dim">(ends in {keyEnd(f.key)})</span></div>
+          <button class="btn sm" disabled={!!busy} onClick={() => use(f)}>{busy === f.serviceId + f.key ? 'Checking…' : 'Use this key'}</button>
+        </div>
+      ))}
+      {msg && <p class="err">{msg}</p>}
+    </div>
   )
 }
 

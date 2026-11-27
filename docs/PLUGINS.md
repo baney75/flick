@@ -90,6 +90,7 @@ export default {
   async library(ctx) { return [/* Meta, may carry progress */] },
   async action(ctx, id, values) { return { ok: true, message: 'Signed in' } },  // an `actions` button was tapped
   async progress(ctx, { type, id, videoId, pos, dur }) {},                      // play position, to sync back
+  async addonUrls(ctx) { return [/* https addon URLs */] },                     // bundled Stremio plugin only: Flick looks for debrid keys in them
 }
 ```
 
