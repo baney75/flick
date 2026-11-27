@@ -93,7 +93,7 @@ describe('regressions', () => {
   it('fails a median half again worse and past the floor', () => {
     const base = { 'nav.home-library': m([60, 65, 70]), 'scroll.dropped': m([1, 2, 3], '%') }
     const cur = { 'nav.home-library': m([190, 200, 210]), 'scroll.dropped': m([14, 15, 16], '%') }
-    expect(regressions(base, cur, budgets).map((r) => [r.metric, r.why])).toEqual([['nav.home-library', 'regressed'], ['scroll.dropped', 'regressed']])
+    expect(regressions(base, cur, budgets).map((r: { metric: string; why: string }) => [r.metric, r.why])).toEqual([['nav.home-library', 'regressed'], ['scroll.dropped', 'regressed']])
   })
   it('needs the floor on fast metrics: 20 to 40 ms is noise, not a regression', () => {
     expect(regressions({ 'nav.home-library': m([20]) }, { 'nav.home-library': m([40]) }, budgets)).toEqual([])
