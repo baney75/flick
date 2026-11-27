@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { items, loaded, playItem, shows, go, notify, reloadItems, progress, episodeLabel, clearProgress } from '../lib/store'
+import { back } from '../lib/back'
 import { ItemCard, VirtualGrid, VirtualList, useThumb } from '../components/Card'
 import { TitleCard } from '../components/Titles'
 import { buildTitles, type Title } from '../lib/titles'
@@ -292,7 +293,7 @@ export function ShowPage({ name }: { name: string }) {
   const left = savable.filter((e) => !isSaved(downloads.value.get(e.id)))
   return (
     <div class="page">
-      <button class="btn ghost sm" onClick={() => history.back()}><Icon name="left" size={16} /> Back</button>
+      <button class="btn ghost sm" onClick={back}><Icon name="left" size={16} /> Back</button>
       <header class="show-head">
         <div>
           <h1>{eps[0].show}</h1>

@@ -1,6 +1,8 @@
 // Arrow-key navigation between controls, for TV remotes (D-pad) and keyboard users.
 // The player handles its own keys; this covers every other screen.
 
+import { back, trackHistory } from './back'
+
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([type="hidden"]), select, [tabindex]:not([tabindex="-1"])'
 
 function visible(el: HTMLElement) {
@@ -37,6 +39,7 @@ export function move(dir: 'up' | 'down' | 'left' | 'right', from: HTMLElement | 
 }
 
 export function installSpatialNav(isPlayerOpen: () => boolean) {
+  trackHistory()
   const isTv = /Android TV|GoogleTV|AFT[A-Z]|BRAVIA|SMART-TV|Tizen|WebOS/i.test(navigator.userAgent) || matchMedia('(pointer: none)').matches
   if (isTv) document.documentElement.classList.add('tv')
   addEventListener('keydown', (e) => {
@@ -58,7 +61,7 @@ export function installSpatialNav(isPlayerOpen: () => boolean) {
     // Remote "Back" button.
     if ((e.key === 'GoBack' || e.key === 'BrowserBack' || (e.key === 'Escape' && !typing)) && location.hash.length > 2) {
       e.preventDefault()
-      history.back()
+      back()
     }
   })
 }
