@@ -17,8 +17,8 @@ import { isBuiltinType, type CatalogDef, type Meta, type Stream, type TitleActio
 import { sections, qualityOf, hdrOf, sizeOf, downloadable } from '../lib/plugins/streams'
 import { rank, pickLine, subLangFor, needsGate, type Ranked } from '../lib/pick'
 import { streamCandidates } from '../lib/candidates'
-import { notYet, serviceTag, wantsGate } from '../lib/debrid-play'
-import { useCached } from './Debrid'
+import { cancelFetch, canStart, serviceTag, wantsGate } from '../lib/debrid-play'
+import { DebridWait, playTorrent, useCached } from './Debrid'
 import { ctxNow, current, debridNow, deviceFor, holdGate, NO_ENGINE_YET, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
@@ -459,19 +459,25 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
   const streamOf = (r: Ranked) => shown[Number(r.c.id.slice(r.c.id.lastIndexOf('#') + 1))]
   const rowOf = new Map(rows.map((r) => [streamOf(r), r]))
   const shutBy = (r?: Ranked) => shutFor(r, ctx.vpnForDebrid)
-  // Play starts a stream with a url; a torrent waits for the engine or a debrid service to give it one.
-  const best = rows.find((r) => !r.blocked && !shutBy(r) && !!streamOf(r).url) ?? null
+  // Play starts a stream with a url, or a torrent a debrid service takes; the built-in engine is P6's.
+  const best = rows.find((r) => !r.blocked && !shutBy(r) && canStart(r, streamOf(r))) ?? null
   const top = best ? streamOf(best) : null
 
   const start = async (s: Stream, startAt?: number) => {
     const t = tap()
+    // Any newer tap ends a service's wait for an older one.
+    cancelFetch()
     // A stream behind the VPN gate never opens on a tap while the gate fails, nor outside its hold.
     const r = rowOf.get(s)
     const shut = shutBy(r)
     if (shut) { notify(shut); return }
-    // A torrent has no url to open: it plays once the engine or a debrid service gives it one.
-    const url = s.url
-    if (!url) { notify(r?.blocked ?? (r?.c.service ? notYet(serviceName(r.c.service)) : NO_ENGINE_YET)); return }
+    // A torrent has no url to open: a debrid service gives it one, else it waits for the engine.
+    let url = s.url
+    if (!url && r && canStart(r, s)) {
+      try { url = (await playTorrent(key, s, r)) ?? undefined } catch (e) { if (current(t)) notify((e as Error).message); return }
+      if (!url || !current(t)) return
+    }
+    if (!url) { notify(r?.blocked ?? NO_ENGINE_YET); return }
     if (s.external) { window.open(url, '_blank', 'noopener'); return }
     if (s.kind === 'book') {
       go(`/read-url?u=${encodeURIComponent(url)}&t=${encodeURIComponent(meta.name)}&r=${encodeURIComponent(JSON.stringify(ref))}`)
@@ -499,6 +505,8 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       subtitle: label,
       kind: s.kind === 'audio' ? 'audio' : 'video',
       url,
+      // A service's link is a plain https file: an MKV takes the desktop's convert path (SPEC-debrid rule 5).
+      ...(s.torrent ? { src: { t: 'url' as const, url } } : {}),
       poster: video?.thumbnail ?? meta.background ?? meta.poster,
       subs: subs.slice(0, 12).map((x) => ({ label: x.label ?? x.lang, lang: x.lang, url: x.url })),
       ref,
@@ -552,9 +560,10 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
         {dl?.state === 'done'
           ? <button class="btn primary play-best" onClick={() => playSaved(dl, { onSave })}><Icon name="play" size={16} /> {resumeAt ? `Resume downloaded ${formatTime(resumeAt)}` : 'Play downloaded'}</button>
           : top ? <><button class="btn primary play-best" onClick={() => start(top)}><Icon name="play" size={16} /> {resumeAt ? `Resume ${formatTime(resumeAt)}` : 'Play'}</button><span class="pick-line small dim">{pickLine(best!, serviceName)}</span></>
-            : rows[0] && <p class="pick-why small">{shutBy(rows[0]) ?? rows[0].blocked ?? (rows[0].c.service ? notYet(serviceName(rows[0].c.service)) : NO_ENGINE_YET)}</p>}
+            : rows[0] && <p class="pick-why small">{shutBy(rows[0]) ?? rows[0].blocked ?? NO_ENGINE_YET}</p>}
         {(dl?.state === 'done' || top) && resumeAt > 0 && <button class="btn ghost start-over" onClick={() => (dl?.state === 'done' ? playSaved(dl, { onSave, startAt: 0 }) : start(top!, 0))}>Start over</button>}
       </div>
+      <DebridWait streamKey={key} />
       {dl && !(dl.state === 'failed' && dl.error === 'Canceled' && !dl.part) && (
         <p class="dl-status small">
           {dl.state === 'done' ? 'Downloaded. Plays offline.' : dl.error === 'Canceled' ? 'Download canceled. Download again to resume.' : dl.state === 'failed' ? `Download failed: ${dl.error}` : dl.state === 'queued' ? 'Waiting to download' : `Downloading ${badgeFor(dl)}`}

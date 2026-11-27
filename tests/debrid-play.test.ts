@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto'
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { streamCandidates } from '../src/lib/candidates'
 import { rank, VPN_DEBRID, VPN_P2P, type Device, type PickCtx } from '../src/lib/pick'
 import type { Stream } from '../src/lib/plugins/validate'
@@ -17,7 +17,8 @@ vi.mock('../src/lib/platform', async (orig) => ({
   onDesktopEvent: async () => () => {},
 }))
 const { debridNow, gate, askable, mayAskNow, watchGate, NO_ENGINE_YET } = await import('../src/lib/picking')
-const { lookupCached, serviceTag, torrentHashes, mayAsk, resolveOrder, wantsGate, notYet } = await import('../src/lib/debrid-play')
+const { lookupCached, CachedLookups, serviceTag, torrentHashes, mayAsk, resolveOrder, wantsGate, canStart, torrentUrl, fetching, cancelFetch, waitLine, vpnStopped } = await import('../src/lib/debrid-play')
+const { services: playable } = await import('../src/lib/plugins/services')
 const { installed } = await import('../src/lib/plugins/registry')
 const { settings } = await import('../src/lib/store')
 
@@ -39,10 +40,10 @@ const setup = (o: { list: unknown[]; gate: boolean; sw?: boolean }) => {
 }
 
 /** What the page does: look up with the services Flick may ask, then rank. */
-async function page(streams: Stream[], answer: (id: string, hashes: string[]) => string[] = () => []) {
+async function page(streams: Stream[], answer: (id: string, hashes: string[]) => string[] = () => [], more: Partial<PickCtx> = {}) {
   const call = vi.fn(async (s: { id: string }, _fn: string, args: unknown[]) => answer(s.id, args[0] as string[]))
   const cached = await lookupCached(askable(), torrentHashes(streams), mayAskNow, call as never)
-  const rows = rank(streamCandidates('k', streams, { debrid: debridNow(cached) }), prefs, dev, ctx())
+  const rows = rank(streamCandidates('k', streams, { debrid: debridNow(cached) }), prefs, dev, ctx(more))
   return { call, rows }
 }
 
@@ -87,10 +88,13 @@ describe('the cached lookups', () => {
   })
   it('gate failing, no service, torrent stream: blocked (the built-in engine needs the VPN)', async () => {
     setup({ list: [], gate: false })
-    const { call, rows } = await page([torrent('a')])
+    // Today, with no engine: the engine's reason.
+    expect((await page([torrent('a')])).rows[0].blocked).toBe(NO_ENGINE_YET)
+    // With the engine there (P6's player), the row still needs the VPN.
+    const { call, rows } = await page([torrent('a')], undefined, { noEngine: undefined })
     expect(call).not.toHaveBeenCalled()
     expect(rows[0].c.via).toBe('p2p')
-    expect([NO_ENGINE_YET, VPN_P2P]).toContain(rows[0].blocked)
+    expect(rows[0].blocked).toBe(VPN_P2P)
   })
   it('gate passes, two services, the second has it cached: the second takes it', async () => {
     setup({ list: [OTHER, TORBOX], gate: true })
@@ -157,8 +161,71 @@ describe('the title page watches the gate for any torrent or debrid stream', () 
     await lookupCached(askable(), many, (s) => live && mayAskNow(s), call as never)
     expect(call).toHaveBeenCalledOnce()
   })
-  it('until Play resolves through a service, a tap on its torrent row says so', () =>
-    expect(notYet('TorBox')).toBe('Playing torrents through TorBox comes in the next Flick update'))
+})
+
+describe("a title page's lookups (useCached)", () => {
+  const H = [h('a'), h('b')]
+  const deferred = () => { let open!: (v: string[]) => void; const p = new Promise<string[]>((r) => { open = r }); return { p, open } }
+  it('nothing to claim until the answer comes, then the answer', async () => {
+    setup({ list: [TORBOX], gate: true })
+    const d = deferred()
+    const changed = vi.fn()
+    const lk = new CachedLookups(changed, mayAskNow, vi.fn(() => d.p) as never)
+    lk.fill(H, askable())
+    expect(lk.view(H, askable())).toBeNull()
+    d.open([h('b')])
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledOnce())
+    expect(lk.view(H, askable())).toEqual({ 'app.torbox': [h('b')] })
+  })
+  it('no torrents, or no service Flick may ask: nothing pending', () => {
+    const lk = new CachedLookups(() => {}, mayAskNow, vi.fn() as never)
+    expect(lk.view([], [])).toEqual({})
+    expect(lk.view(H, [])).toEqual({})
+  })
+  it('leaving the page mid-lookup: no more batches and no call back', async () => {
+    setup({ list: [TORBOX], gate: true })
+    const many = Array.from({ length: 150 }, (_, i) => i.toString(16).padStart(40, 'c'))
+    const d = deferred()
+    const call = vi.fn(() => d.p)
+    const changed = vi.fn()
+    const lk = new CachedLookups(changed, mayAskNow, call as never)
+    lk.fill(many, askable())
+    lk.dispose()
+    d.open([])
+    await new Promise((r) => setTimeout(r, 5))
+    expect(call).toHaveBeenCalledOnce()
+    expect(changed).not.toHaveBeenCalled()
+  })
+  it('the gate answering adds a gated service: only that one is asked, TorBox is not asked twice', async () => {
+    setup({ list: [OTHER, TORBOX], gate: false })
+    const call = vi.fn(async (_s: { id: string }) => [] as string[])
+    const lk = new CachedLookups(() => {}, mayAskNow, call as never)
+    lk.fill(H, askable())
+    await vi.waitFor(() => expect(lk.view(H, askable())).not.toBeNull())
+    gate.value = { ok: true, message: null } as never
+    expect(lk.view(H, askable())).toBeNull()
+    lk.fill(H, askable())
+    await vi.waitFor(() => expect(lk.view(H, askable())).toEqual({ 'org.other': [], 'app.torbox': [] }))
+    expect(call.mock.calls.map((c) => c[0].id)).toEqual(['app.torbox', 'org.other'])
+  })
+  it('a lookup the VPN cut short stays unclaimed, and the next fill asks again', async () => {
+    setup({ list: [OTHER], gate: true })
+    const many = Array.from({ length: 150 }, (_, i) => i.toString(16).padStart(40, 'd'))
+    let first = true
+    const call = vi.fn(async () => { if (first) { first = false; gate.value = { ok: false, message: 'x' } as never } return [] })
+    const lk = new CachedLookups(() => {}, mayAskNow, call as never)
+    const open = askable()
+    lk.fill(many, open)
+    await new Promise((r) => setTimeout(r, 5))
+    expect(call).toHaveBeenCalledOnce()
+    // The VPN is back before the page renders again: the same services, still nothing claimed.
+    gate.value = { ok: true, message: null } as never
+    expect(askable().map((x) => x.id)).toEqual(open.map((x) => x.id))
+    expect(lk.view(many, askable())).toBeNull()
+    lk.fill(many, askable())
+    await vi.waitFor(() => expect(lk.view(many, askable())).toEqual({ 'org.other': [] }))
+    expect(call).toHaveBeenCalledTimes(3)
+  })
 })
 
 describe('the row tag (rule 7)', () => {
@@ -177,4 +244,107 @@ describe('the best-stream button prefers cached rows', () => {
     expect(rows[0].c).toMatchObject({ id: 'k#1', via: 'debrid-cached' })
     expect(rows[1].c.via).toBe('debrid-fetch')
   })
+})
+
+describe('Play on a torrent row (rules 5b, 8)', () => {
+  const tor: Stream = { torrent: { infoHash: h('C'), fileIdx: 2, trackers: ['udp://t.example:80', 'https://t.example/a'] }, title: 'C 1080p' }
+  const row = (service: string, via: 'debrid-cached' | 'debrid-fetch' = 'debrid-fetch') => ({ c: { id: 'k#0', via, service } }) as never
+  const clock = () => { let t = 0; return { now: () => t, sleep: vi.fn(async (ms: number) => { t += ms }) } }
+  const opts = (call: unknown, more: object = {}) => ({ list: playable.value, may: mayAskNow, watch: (fn: () => void) => gate.subscribe(fn), call: call as never, ...clock(), ...more })
+  const lines: string[] = []
+  const stopLines = fetching.subscribe((f) => { if (f) lines.push(f.line) })
+  beforeEach(() => { lines.length = 0 })
+
+  it('TorBox, uncached, fixtures queued, 40%, done: shows the wait at 40%, then gives the https link', async () => {
+    setup({ list: [TORBOX], gate: false })
+    const answers = [{ wait: { message: 'Queued' } }, { wait: { pct: 40, message: 'Downloading' } }, { url: 'https://api.app.torbox/f.mkv' }]
+    const call = vi.fn(async () => answers.shift())
+    expect(await torrentUrl('k', tor, row('app.torbox'), opts(call))).toBe('https://api.app.torbox/f.mkv')
+    expect(lines).toEqual(['Asking TorBox', 'TorBox is fetching: Queued', 'TorBox is fetching: 40%'])
+    expect(fetching.value).toBeNull()
+  })
+  it('only the infoHash (lowercase) and fileIdx go to the service, never the trackers', async () => {
+    setup({ list: [TORBOX], gate: true })
+    const call = vi.fn(async (..._a: unknown[]) => ({ url: 'https://api.app.torbox/f' }))
+    await torrentUrl('k', tor, row('app.torbox', 'debrid-cached'), opts(call))
+    expect(call.mock.calls[0][1]).toBe('resolve')
+    expect(call.mock.calls[0][2]).toEqual([{ infoHash: h('c'), fileIdx: 2 }])
+  })
+  it('gate passes, two services, the second has it cached: only the second resolves', async () => {
+    setup({ list: [OTHER, TORBOX], gate: true })
+    const call = vi.fn(async (s: { id: string }, fn: string, args: unknown[]) => (fn === 'cached' ? (s.id === 'app.torbox' ? [h('c')] : []) : (void args, { url: `https://api.${s.id}/f` })))
+    const cached = await lookupCached(askable(), torrentHashes([tor]), mayAskNow, call as never)
+    const r = rank(streamCandidates('k', [tor], { debrid: debridNow(cached) }), prefs, dev, ctx())[0]
+    expect(await torrentUrl('k', tor, r, opts(call))).toBe('https://api.app.torbox/f')
+    expect(call.mock.calls.filter((c) => c[1] === 'resolve').map((c) => c[0].id)).toEqual(['app.torbox'])
+  })
+  it('Cancel during the wait stops it: no more calls, nothing plays, the line goes', async () => {
+    setup({ list: [TORBOX], gate: true })
+    const call = vi.fn(async () => { if (call.mock.calls.length === 2) cancelFetch('k'); return { wait: { pct: 10, message: 'x' } } })
+    expect(await torrentUrl('k', tor, row('app.torbox'), opts(call))).toBeNull()
+    expect(call).toHaveBeenCalledTimes(2)
+    expect(fetching.value).toBeNull()
+  })
+  it('Cancel while the last call is on its way: the link it brings plays nothing', async () => {
+    setup({ list: [TORBOX], gate: true })
+    const call = vi.fn(async () => { cancelFetch('k'); return { url: 'https://api.app.torbox/f' } })
+    expect(await torrentUrl('k', tor, row('app.torbox'), opts(call))).toBeNull()
+    expect(fetching.value).toBeNull()
+  })
+  it('the VPN dropping while the last call is on its way: stopped, not played', async () => {
+    setup({ list: [OTHER], gate: true })
+    const call = vi.fn(async () => { gate.value = { ok: false, message: 'x' } as never; return { url: 'https://api.org.other/f' } })
+    await expect(torrentUrl('k', tor, row('org.other'), opts(call))).rejects.toThrow(vpnStopped('Other'))
+  })
+  it('a newer wait cancels the older one', async () => {
+    setup({ list: [TORBOX], gate: true })
+    let second: Promise<string | null> | null = null
+    const call = vi.fn(async () => {
+      if (!second) second = torrentUrl('k2', tor, row('app.torbox'), opts(async () => ({ url: 'https://api.app.torbox/2' })))
+      return { wait: { message: 'x' } }
+    })
+    expect(await torrentUrl('k', tor, row('app.torbox'), opts(call))).toBeNull()
+    expect(await second).toBe('https://api.app.torbox/2')
+  })
+  it('a gated service: the VPN dropping mid-wait stops it before the next call', async () => {
+    setup({ list: [OTHER], gate: true })
+    const call = vi.fn(async () => { gate.value = { ok: false, message: 'dropped' } as never; return { wait: { message: 'x' } } })
+    await expect(torrentUrl('k', tor, row('org.other'), opts(call))).rejects.toThrow(vpnStopped('Other'))
+    expect(call).toHaveBeenCalledOnce()
+  })
+  it('a gated service with the gate failing: no request at all', async () => {
+    setup({ list: [OTHER], gate: false })
+    const call = vi.fn()
+    await expect(torrentUrl('k', tor, row('org.other'), opts(call))).rejects.toThrow(vpnStopped('Other'))
+    expect(call).not.toHaveBeenCalled()
+  })
+  it('TorBox with the switch off keeps going when the VPN drops', async () => {
+    setup({ list: [TORBOX], gate: true })
+    const answers = [{ wait: { message: 'x' } }, { url: 'https://api.app.torbox/f' }]
+    const call = vi.fn(async () => { gate.value = { ok: false, message: 'dropped' } as never; return answers.shift() })
+    expect(await torrentUrl('k', tor, row('app.torbox'), opts(call))).toBe('https://api.app.torbox/f')
+  })
+  it('wait longer than 10 minutes: "TorBox could not fetch this torrent in time"', async () => {
+    setup({ list: [TORBOX], gate: true })
+    await expect(torrentUrl('k', tor, row('app.torbox'), opts(async () => ({ wait: { message: 'x' } })))).rejects.toThrow('TorBox could not fetch this torrent in time')
+    expect(fetching.value).toBeNull()
+  })
+  it('the wait line', () => {
+    expect(waitLine('TorBox', { pct: 39.6, message: 'x' })).toBe('TorBox is fetching: 40%')
+    expect(waitLine('TorBox', { message: 'Queued' })).toBe('TorBox is fetching: Queued')
+  })
+  it('Play starts a link, or a torrent a service takes; with no service a torrent waits for the engine', () => {
+    expect(canStart({ c: { via: 'direct' } } as never, { url: 'https://x/y' })).toBe(true)
+    expect(canStart(row('app.torbox', 'debrid-cached'), tor)).toBe(true)
+    expect(canStart(row('app.torbox'), tor)).toBe(true)
+    expect(canStart({ c: { via: 'p2p' } } as never, tor)).toBe(false)
+  })
+  it('the best-stream button: a torrent through TorBox; none with no service', async () => {
+    setup({ list: [TORBOX], gate: false })
+    const best = (rows: { blocked?: string; c: { id: string } }[], list: Stream[]) => rows.find((r) => !r.blocked && canStart(r as never, list[Number(r.c.id.split('#')[1])]))
+    expect(best((await page([tor])).rows, [tor])?.c.id).toBe('k#0')
+    setup({ list: [], gate: true })
+    expect(best((await page([tor])).rows, [tor])).toBeUndefined()
+  })
+  afterAll(() => stopLines())
 })
