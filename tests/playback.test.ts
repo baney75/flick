@@ -80,6 +80,12 @@ describe('Remux (cases 4, 5 and 6)', () => {
     f.answer(0)
     expect(await opened).toBeNull()
     expect(f.calls.map((c) => c.cmd)).toEqual(['remux_start', 'remux_stop'])
+    expect(f.calls[1].args).toEqual({ owner: r.owner })
+    expect(f.calls[0].args!.owner).toBe(r.owner)
+  })
+  it('two players have different owners', () => {
+    const f = fake()
+    expect(new Remux('a', mkv, '', '', f.call).owner).not.toBe(new Remux('a', mkv, '', '', f.call).owner)
   })
   it('a run that fails says why', async () => {
     const f = fake()

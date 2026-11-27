@@ -96,9 +96,13 @@ export function writtenOf(seekable: Pick<TimeRanges, 'length' | 'end'>): number 
 }
 
 /** One remuxed stream in the player: its runs, the start of the newest, and the stop. */
+let players = 0
+
 export class Remux {
   at = 0
   private n = 0
+  /** This player's token: the desktop stops only its own run, so a closing player never stops the next one's. */
+  readonly owner = `${Date.now().toString(36)}-${++players}`
   constructor(readonly url: string, readonly probe: StreamProbe, private user = '', private pass = '', private call: Call = invoke) {}
 
   /** Starts a run at source time `at` (stopping the last). Returns its playlist URL, or null when a newer run replaced it. */
@@ -107,7 +111,7 @@ export class Remux {
     const max = this.probe.duration > 1 ? this.probe.duration - 1 : Infinity
     const from = Math.min(Math.max(0, at), max)
     try {
-      const r = await this.call<{ url: string; at: number }>('remux_start', { url: this.url, user: this.user, pass: this.pass, at: from })
+      const r = await this.call<{ url: string; at: number }>('remux_start', { url: this.url, user: this.user, pass: this.pass, at: from, owner: this.owner })
       if (n !== this.n) return null
       this.at = r.at
       return r.url
@@ -129,6 +133,6 @@ export class Remux {
 
   stop() {
     this.n++
-    this.call('remux_stop').catch(() => {})
+    this.call('remux_stop', { owner: this.owner }).catch(() => {})
   }
 }
