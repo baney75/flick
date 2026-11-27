@@ -1,7 +1,49 @@
-// Runs inside the sandboxed plugin iframe (see plugin-host.html). Flick sends one MessagePort, then
-// asks over it: load(code, platform, settings) and call(fn, args). The plugin reaches Flick only through
-// ctx, which asks back over the same port. Same message format as src/lib/plugins/rpc.ts.
+// Runs inside the sandboxed plugin iframe (see plugin-host.html). Flick sends one MessagePort; this page
+// starts a dedicated Worker and hands it the port, so the plugin's code, its top-level code included, runs
+// off Flick's thread: a plugin stuck in a loop can't freeze Flick, and Flick's time limit still fires and
+// removes the frame, which ends the Worker. The Worker inherits this page's CSP and opaque origin.
+// Over the port Flick asks load(code, platform, settings) and call(fn, args); the plugin reaches Flick
+// only through ctx, which asks back over the same port. Same message format as src/lib/plugins/rpc.ts.
 ;(function () {
+  'use strict'
+
+  // Take the first port Flick sends, then stop listening, so nothing else can swap it.
+  function first(e) {
+    if (e.source !== parent || !e.ports || !e.ports[0]) return
+    removeEventListener('message', first)
+    var port = e.ports[0]
+    var settled = false
+    // No Worker here: answer every ask at once instead of leaving Flick to wait out its time limit.
+    function fail(why) {
+      if (settled) return
+      settled = true
+      why = 'The plugin sandbox could not start a worker: ' + why
+      port.onmessage = function (m) { if (m.data && typeof m.data.id === 'number') port.postMessage({ re: m.data.id, ok: false, e: why }) }
+    }
+    try {
+      var src = '(' + pluginWorker + ')()'
+      var w = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })))
+      var t = setTimeout(function () { w.terminate(); fail('it did not start in time.') }, STARTUP_MS)
+      // A Worker the page's CSP refuses, or one that fails to load, fails later with an error event, so
+      // this page keeps the port (Flick's asks wait in it) until the Worker says it runs.
+      w.onerror = function (ev) { clearTimeout(t); w.terminate(); fail(String((ev && ev.message) || 'it failed to load.')) }
+      w.onmessage = function (m) {
+        if (settled || !m.data || m.data.flick !== 'up') return
+        settled = true
+        clearTimeout(t)
+        w.onerror = null
+        w.onmessage = null
+        w.postMessage({ flick: 'port' }, [port])
+      }
+    } catch (err) {
+      fail(String((err && err.message) || err))
+    }
+  }
+  var STARTUP_MS = 5000
+  addEventListener('message', first)
+
+  // The Worker's code, sent as its own blob: it shares nothing with this page.
+  function pluginWorker() {
   'use strict'
   var TIMEOUT = 20000
   var port = null
@@ -128,13 +170,14 @@
       .catch(function (err) { port.postMessage({ re: d.id, ok: false, e: String((err && err.message) || err) }) })
   }
 
-  // Take the first port Flick sends, then stop listening, so nothing else can swap it.
-  function first(e) {
-    if (e.source !== parent || port || !e.ports || !e.ports[0]) return
+  // The frame sends the port once; later messages to the Worker are ignored.
+  self.onmessage = function (e) {
+    if (port || !e.ports || !e.ports[0]) return
     port = e.ports[0]
-    removeEventListener('message', first)
+    self.onmessage = null
     port.onmessage = onMessage
     port.postMessage({ ready: true })
   }
-  addEventListener('message', first)
+  self.postMessage({ flick: 'up' })
+  }
 })()

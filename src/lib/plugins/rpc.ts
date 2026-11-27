@@ -10,7 +10,8 @@ export interface Rpc {
   close(): void
 }
 
-export function connect(port: MessagePort, handle: Handler, timeoutMs = CALL_TIMEOUT_MS): Rpc {
+/** `onTimeout` runs after a call passes its limit: the other side may be stuck, so the caller can end it. */
+export function connect(port: MessagePort, handle: Handler, timeoutMs = CALL_TIMEOUT_MS, onTimeout?: () => void): Rpc {
   let seq = 0
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>()
 
@@ -42,6 +43,7 @@ export function connect(port: MessagePort, handle: Handler, timeoutMs = CALL_TIM
         const timer = setTimeout(() => {
           pending.delete(id)
           reject(new Error(`The plugin took longer than ${Math.round(ms / 1000)} seconds.`))
+          onTimeout?.()
         }, ms)
         pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer })
         port.postMessage({ id, m: method, a: args })

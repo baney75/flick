@@ -6,7 +6,8 @@ description: Use when someone asks you to write, fix or publish a Flick source p
 # Write a Flick source plugin
 
 A Flick source plugin is one ES module, `plugin.js`, with no build step and no imports. Flick runs it
-in a sandboxed iframe and talks to it through `ctx`. The full contract is `docs/PLUGINS.md`
+in a Worker inside a sandboxed iframe (no DOM: no `document`, `window` or `localStorage`) and talks to
+it through `ctx`. The full contract is `docs/PLUGINS.md`
 (https://github.com/baney75/flick/blob/main/docs/PLUGINS.md); types are in `plugins/flick-plugin.d.ts`.
 
 ## Steps

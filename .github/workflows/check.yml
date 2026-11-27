@@ -17,9 +17,12 @@ jobs:
         with: { node-version: 24, cache: npm }
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps chromium webkit
       - run: npx tsc --noEmit && npx vitest run && npx vite build
       - run: SMOKE_CHANNEL=chromium node scripts/smoke.mjs
+      # Plugin code runs in a Worker: in WebKit, the apps' engine, a busy plugin used to freeze Flick.
+      - name: Plugin Worker, Chromium and WebKit
+        run: SMOKE_CHANNEL=chromium node scripts/plugin-worker-check.mjs && node scripts/plugin-worker-check.mjs --engine webkit
       - name: Sync relay and two-device sync
         run: node relay/test.mjs && SMOKE_CHANNEL=chromium node scripts/sync-e2e.mjs
   rust:

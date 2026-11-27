@@ -6,8 +6,9 @@
      ctx.fetch, which the app sends through plugin_fetch and the hosts listed at install.
      One source plugin runs here, in an iframe with sandbox="allow-scripts" and no allow-same-origin,
      so its origin is opaque: no access to Flick's storage, cookies, page or other plugins.
-     Plugin code arrives over postMessage and loads as a blob: (or data:) module. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' tauri://localhost blob: data:; connect-src 'none'; img-src data: blob:; media-src 'none'; font-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'">
+     Plugin code arrives over postMessage and loads as a blob: (or data:) module inside a blob: Worker,
+     which keeps this page's CSP, so the Worker has no network either. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' tauri://localhost blob: data:; connect-src 'none'; img-src data: blob:; media-src 'none'; font-src 'none'; frame-src 'none'; worker-src blob:; base-uri 'none'; form-action 'none'">
 <title>Flick plugin</title>
 </head>
 <body>

@@ -45,12 +45,19 @@ as a single JavaScript file with no build step.
 
 ## Sandbox
 
-Each source plugin runs in its own sandboxed iframe (`/plugin-host.html`, `sandbox="allow-scripts"`,
-no `allow-same-origin`), so it has an opaque origin. It cannot read Flick's storage, the sync key,
-server tokens, other plugins or the page. It talks to Flick only through `ctx` (a MessageChannel RPC).
-Every call has a 20 second timeout and every result is validated against the shapes below. One bad
-entry in a list (a meta, a stream) is skipped; a result that is wrong as a whole is dropped. Either
-way a note goes to the plugin's log in Settings > Plugins.
+Each source plugin runs in a dedicated Worker inside its own sandboxed iframe (`/plugin-host.html`,
+`sandbox="allow-scripts"`, no `allow-same-origin`), so it has an opaque origin. It cannot read Flick's
+storage, the sync key, server tokens, other plugins or the page. It talks to Flick only through `ctx`
+(a MessageChannel RPC). A Worker has no DOM: no `document`, `window`, `localStorage` or `DOMParser`.
+`fetch`, `URL`, `TextEncoder`, `crypto.subtle`, `setTimeout` and the rest of the Worker globals work.
+
+Every call has a 20 second timeout and every result is validated against the shapes below. A call
+past its timeout fails alone while the plugin still answers Flick's ping within 1.5 seconds (it may only
+be waiting on a slow site). A plugin that can't answer one, such as one stuck in a loop, has its frame and
+Worker ended, its other calls fail, and the next call starts the plugin again (its top-level code runs
+again). One bad entry in a list (a meta, a stream) is
+skipped; a result that is wrong as a whole is dropped. Either way a note goes to the plugin's log in
+Settings > Plugins.
 
 The host page has its own Content-Security-Policy: scripts only from Flick and the plugin's own
 `blob:`/`data:` module (so a plugin is one file and cannot `import` code from the web), network
