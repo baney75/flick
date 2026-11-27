@@ -218,9 +218,10 @@ plugin's page Flick calls `userCatalogs` again, so a list the action filled show
   marks MKV, AVI and similar that the desktop app converts. `external: true` opens an `https:` link
   in the browser instead of the player (a trailer on YouTube, a site that needs its own app).
   `group` names the source a stream came from; the title page shows one filter chip per group.
-  A torrent stream carries `torrent: { infoHash, fileIdx?, trackers? }` in place of `url`: `infoHash`
-  is 40 hex characters, `fileIdx` the file to play (a whole number, 0 or more; the largest video when
-  absent), and `trackers` at most 50 `udp://`, `http://` or `https://` URLs. Flick plays it only in the
+  A torrent stream carries `torrent: { infoHash, fileIdx?, name?, trackers? }` in place of `url`:
+  `infoHash` is 40 hex characters, `fileIdx` the file to play (a whole number, 0 or more; the largest
+  video when absent), `name` that file's name inside the torrent (at most 512 characters; it lets a
+  debrid service find an episode in a season pack), and `trackers` at most 50 `udp://`, `http://` or `https://` URLs. Flick plays it only in the
   desktop app with a VPN on (or through a debrid service), never offers Download for it, and ignores
   `kind: 'book'`, `external` and `needsDesktop` on it. A stream with both `url` and `torrent` is a `url`
   stream. A wrong `torrent` field is a plugin bug, so it drops the whole list with a message naming
@@ -295,12 +296,20 @@ service's first `password` setting.
   `{ ok: false, message }` with the service's own words.
 - `cached(ctx, hashes)` gets at most 100 lowercase infoHashes and returns the ones already on the
   service. Flick keeps only hashes it asked about. A service with no way to tell returns `[]`.
-- `resolve(ctx, torrent)` gets `{ infoHash, fileIdx?, name? }` and returns `{ url }`, `{ wait: { pct?,
-  message } }` while the service fetches a torrent it does not have yet, or `{ error }`. Flick asks
+- `resolve(ctx, torrent)` gets `{ infoHash, fileIdx?, name?, episode? }` and returns `{ url, bytes? }`,
+  `{ wait: { pct?, message } }` while the service fetches a torrent it does not have yet, or `{ error }`. Flick asks
   again every 3 seconds while it gets `wait`, for at most 10 minutes. A `url` that is not https, or not
-  on the plugin's `hosts`, is refused.
-- Flick sends a service only the infoHash, file index and file name: never the library, other titles
-  or a Stremio account. It calls a service only for a torrent stream and only in the desktop app.
+  on the plugin's `hosts`, is refused. `bytes` is the played file's size (a whole number above 0) for
+  the player's speed readout; Flick drops any other value and plays the link. `episode` is `{ season, episode }` (whole numbers above 0) and comes
+  only for a series. Pick the file by `fileIdx` only when the service's file list keeps the torrent's
+  order, else by a file whose name equals `name`, else the largest video whose name holds the episode
+  tag (`S01E02` or `1x02`, on the file or its folder). With an `episode` and no such file, return an
+  error unless the torrent has one video besides samples: never play the first or largest file of a
+  pack.
+- Flick sends a service only the infoHash, file index, the file's name inside the torrent (which often
+  names the show, as the torrent itself does) and, for a series, the season and episode numbers:
+  never the library, other titles, the title page's details or a Stremio account. The service already
+  serves that exact file, so the numbers tell it nothing new. It calls a service only for a torrent stream and only in the desktop app.
 - The VPN: by default Flick calls a service only while a VPN is on and hides this computer, and a
   stream whose link is on a service's `debridHosts` is held to the same rule. A service whose playback
   is only an https download from its own servers (no peer sees the user) may say `vpnOptional: true`;

@@ -56,13 +56,13 @@ describe('TorBox plugin', () => {
     const t = { infoHash: HASH.toUpperCase(), fileIdx: 2, name: 'Show.S01E02.1080p.mkv' }
     expect(V.validateResolve(await torbox.resolve(ctx, t), m.hosts)).toEqual({ wait: { pct: 0, message: 'TorBox is reading the torrent' } })
     expect(V.validateResolve(await torbox.resolve(ctx, t), m.hosts)).toEqual({ wait: { pct: 40, message: 'TorBox is downloading it' } })
-    expect(V.validateResolve(await torbox.resolve(ctx, t), m.hosts)).toEqual({ url: 'https://store-031.weur.tb-cdn.st/dld/4711/1?token=signed' })
+    expect(V.validateResolve(await torbox.resolve(ctx, t), m.hosts)).toEqual({ url: 'https://store-031.weur.tb-cdn.st/dld/4711/1?token=signed', bytes: 2200000000 })
 
     const adds = ctx.requests.filter((r) => r.url.endsWith('/torrents/createtorrent'))
     expect(adds).toHaveLength(1)
     expect(adds[0].body).toBe(`magnet=${encodeURIComponent(`magnet:?xt=urn:btih:${HASH}`)}`)
     expect(ctx.requests.at(-1)!.url).toContain('torrent_id=4711&file_id=2&redirect=false')
-    // Only the infoHash and the file index leave: never the file name or anything else about the title.
+    // Only the infoHash and TorBox's own ids leave: never the file name or anything else about the title.
     for (const r of ctx.requests) expect(`${r.url} ${r.body ?? ''}`).not.toMatch(/Show|S01E02/)
     for (const r of ctx.requests) expect(r.url.startsWith('https://api.torbox.app/')).toBe(true)
   })
@@ -116,13 +116,13 @@ describe('TorBox plugin', () => {
     expect(await ctx.store.get('ids')).toEqual({})
   })
 
-  it('picks the file: the name, then fileIdx, then the largest video', () => {
+  it('picks the file: the name, then the largest video; TorBox ids are not torrent order', () => {
     const files = (F.mylist_done.body as { data: { files: { id: number }[] } }).data.files
-    expect(pickFile(files, 1).id).toBe(1)
-    expect(pickFile(files, undefined, 'Show.S01E01.1080p.mkv').id).toBe(1)
-    // An id that points at another file loses to the name.
-    expect(pickFile(files, 2, 'Show.S01E01.1080p.mkv').id).toBe(1)
+    expect(pickFile(files, { name: 'Show.S01E01.1080p.mkv' }).id).toBe(1)
+    // An id that points at another file loses to the name, and an id alone picks nothing.
+    expect(pickFile(files, { fileIdx: 2, name: 'Show.S01E01.1080p.mkv' }).id).toBe(1)
+    expect(pickFile(files, { fileIdx: 1 }).id).toBe(2)
     expect(pickFile(files).id).toBe(2)
-    expect(pickFile([], 0)).toBeNull()
+    expect(pickFile([], { fileIdx: 0 })).toBeNull()
   })
 })

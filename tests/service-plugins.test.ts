@@ -69,6 +69,12 @@ describe('service results', () => {
     expect(() => V.validateResolve({ url: 'javascript:alert(1)' }, hosts)).toThrow(/not https/)
     expect(() => V.validateResolve({ url: 'https://x.example/f' }, ['*'])).toThrow(/not https/)
   })
+  it('resolve: bytes, the played file\'s size, is kept when a whole number above 0, else dropped', () => {
+    const u = 'https://eu1.cdn.example.net/f.mkv'
+    expect(V.validateResolve({ url: u, bytes: 1234 }, hosts)).toEqual({ url: u, bytes: 1234 })
+    // Only the readout uses it, so a wrong one still plays the link.
+    for (const bytes of [0, -1, 1.5, '12', Infinity, null]) expect(V.validateResolve({ url: u, bytes }, hosts), String(bytes)).toEqual({ url: u })
+  })
   it('resolve: wait with a clamped percent, or an error', () => {
     expect(V.validateResolve({ wait: { pct: 40.4, message: 'Downloading' } }, hosts)).toEqual({ wait: { pct: 40, message: 'Downloading' } })
     expect(V.validateResolve({ wait: { pct: 140 } }, hosts)).toEqual({ wait: { pct: 100, message: 'Fetching' } })

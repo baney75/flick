@@ -129,7 +129,10 @@ export interface PollOptions {
  * Ask the service for a playable link, every 3 seconds while it answers `wait`, for at most
  * 10 minutes. Resolves to the https URL; rejects with the service's error, on timeout, or on abort.
  */
-export async function resolveTorrent(s: Service, torrent: { infoHash: string; fileIdx?: number; name?: string }, o: PollOptions = {}): Promise<string> {
+/** A service's link for a torrent, and the played file's size when it says. */
+export interface Resolved { url: string; bytes?: number }
+
+export async function resolveTorrent(s: Service, torrent: { infoHash: string; fileIdx?: number; name?: string; episode?: { season: number; episode: number } }, o: PollOptions = {}): Promise<Resolved> {
   const call = o.call ?? callPlugin
   const sleep = o.sleep ?? ((ms, signal) => new Promise<void>((r) => { const t = setTimeout(r, ms); signal?.addEventListener('abort', () => { clearTimeout(t); r() }, { once: true }) }))
   const now = o.now ?? Date.now
@@ -148,7 +151,7 @@ export async function resolveTorrent(s: Service, torrent: { infoHash: string; fi
       failed = e as Error
     }
     stopped()
-    if (r && 'url' in r) return r.url
+    if (r && 'url' in r) return r.bytes ? { url: r.url, bytes: r.bytes } : { url: r.url }
     if (r && 'error' in r) throw new Error(r.error)
     if (r) o.onWait?.(r.wait)
     if (now() - start + every > limit) throw failed && !r ? failed : new Error(`${s.manifest.name} could not fetch this torrent in time.`)

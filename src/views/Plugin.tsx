@@ -17,7 +17,7 @@ import { isBuiltinType, type CatalogDef, type Meta, type Stream, type TitleActio
 import { sections, qualityOf, hdrOf, sizeOf, downloadable } from '../lib/plugins/streams'
 import { rank, pickLine, subLangFor, needsGate, type Ranked } from '../lib/pick'
 import { streamCandidates } from '../lib/candidates'
-import { cancelFetch, canStart, serviceTag, wantsGate } from '../lib/debrid-play'
+import { cancelFetch, canStart, episodeOf, serviceTag, wantsGate } from '../lib/debrid-play'
 import { DebridWait, playTorrent, useCached } from './Debrid'
 import { viaOf } from '../lib/readout'
 import { checkAgain, ctxNow, current, debridNow, deviceFor, holdGate, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
@@ -481,6 +481,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     cancelFetch()
     const r = rowOf.get(s)
     let url = s.url
+    let bytes: number | undefined
     // A torrent from peers gets its url from the built-in engine, which holds the VPN gate itself.
     const hash = !url && s.torrent && r?.c.via === 'p2p' ? s.torrent.infoHash : undefined
     // A stream behind the VPN gate never opens on a tap while the gate fails, nor outside its hold.
@@ -496,8 +497,11 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       url = got
     } else if (!url && r && canStart(r, s)) {
       // A torrent a debrid service takes gets its url from the service.
-      try { url = (await playTorrent(key, s, r)) ?? undefined } catch (e) { if (current(t)) notify((e as Error).message); return }
-      if (!url || !current(t)) return
+      let got
+      try { got = await playTorrent(key, s, r, episodeOf(meta.type, video)) } catch (e) { if (current(t)) notify((e as Error).message); return }
+      if (!got || !current(t)) return
+      url = got.url
+      bytes = got.bytes
     }
     if (!url) { notify(r?.blocked ?? NOTHING_YET); return }
     if (s.external) { window.open(url, '_blank', 'noopener'); return }
@@ -525,7 +529,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       if (!current(t)) { if (hash) letGo(hash, false); return }
       releaseGate()
     }
-    const via = r && viaOf(r, serviceName)
+    const via = r && viaOf(r, serviceName, bytes)
     if (hash) playingTorrent(key, hash)
     play({
       key,

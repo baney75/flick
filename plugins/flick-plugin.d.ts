@@ -57,6 +57,8 @@ export interface StreamTorrent {
   infoHash: string
   /** The file to play, 0 or more; the largest video when absent. */
   fileIdx?: number
+  /** That file's name inside the torrent (Stremio's behaviorHints.filename), at most 512 characters. */
+  name?: string
   /** At most 50 udp://, http:// or https:// trackers. */
   trackers?: string[]
 }
@@ -132,10 +134,12 @@ export interface Extension { id: string; name: string; description?: string; log
 /** `settings` sets this plugin's own declared, non-secret settings (like a list of addon URLs) when ok. */
 export interface ExtensionResult { ok: boolean; message?: string; settings?: Record<string, string | boolean | string[]> }
 
-/** A torrent as Flick hands it to a service: nothing else about the title or the user. */
-export interface Torrent { infoHash: string; fileIdx?: number; name?: string }
+/** A torrent as Flick hands it to a service: nothing else about the title or the user. `episode`
+ *  comes only for a series, so a service can find the episode in a season pack. */
+export interface Torrent { infoHash: string; fileIdx?: number; name?: string; episode?: { season: number; episode: number } }
 export type AccountResult = { ok: true; name: string; plan?: string; expires?: string } | { ok: false; message: string }
-export type ResolveResult = { url: string } | { wait: { pct?: number; message: string } } | { error: string }
+/** `bytes` is the played file's size, a whole number above 0, for the player's speed readout. */
+export type ResolveResult = { url: string; bytes?: number } | { wait: { pct?: number; message: string } } | { error: string }
 
 /** A service plugin (a debrid service): turns a torrent into an https link on its own hosts. */
 export interface ServicePlugin {

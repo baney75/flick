@@ -4,7 +4,7 @@
 import { signal } from '@preact/signals'
 import { HASHES_PER_CALL, type Stream, type Torrent } from './plugins/validate'
 import { callPlugin } from './plugins/runtime'
-import { resolveTorrent, type PollOptions, type Service } from './plugins/services'
+import { resolveTorrent, type PollOptions, type Resolved, type Service } from './plugins/services'
 import type { Candidate, Ranked } from './pick'
 
 /**
@@ -106,15 +106,34 @@ export function serviceTag(s: Stream, c: Candidate | undefined, name: (id: strin
   return undefined
 }
 
+/** The review sheet's VPN line for a service not from Flick that plays without a VPN (vpnOptional). */
+export const noVpnFact = (c: { official?: boolean; kind: string; manifest: object }) =>
+  !c.official && c.kind === 'service' && (c.manifest as { vpnOptional?: boolean }).vpnOptional === true ? 'Plays without a VPN' : null
+
 // ---------- Play: a torrent through a service ----------
 
 /** A row Play can start: a link, or a torrent a service takes (rule 5b). */
 export const canStart = (r: Ranked | undefined, s: Stream) =>
   !!s.url || (!!s.torrent && (r?.c.via === 'debrid-cached' || r?.c.via === 'debrid-fetch'))
 
-/** Rule 8: all a service learns about the torrent. The contract carries no file name, so none goes. */
-export const forService = (t: Torrent): { infoHash: string; fileIdx?: number } =>
-  ({ infoHash: t.infoHash.toLowerCase(), ...(t.fileIdx !== undefined ? { fileIdx: t.fileIdx } : {}) })
+/** A series episode's numbers, so a service finds it in a season pack. */
+export interface Episode { season: number; episode: number }
+const whole = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) > 0
+/** The episode to send for a stream: a series video's season and episode, both above 0, else none. */
+export const episodeOf = (type: string, v?: { season?: number; episode?: number }): Episode | undefined =>
+  type === 'series' && v && whole(v.season) && whole(v.episode) ? { season: v.season, episode: v.episode } : undefined
+
+/** Rule 8: all a service learns about the torrent: its hash, the file's index and its name inside the
+ *  torrent (often the show's, as in the torrent itself), and for a series the episode's numbers.
+ *  Never the trackers or the title page's details. */
+export function forService(t: Torrent, ep?: Episode): { infoHash: string; fileIdx?: number; name?: string; episode?: Episode } {
+  return {
+    infoHash: t.infoHash.toLowerCase(),
+    ...(t.fileIdx !== undefined ? { fileIdx: t.fileIdx } : {}),
+    ...(t.name ? { name: t.name } : {}),
+    ...(ep && whole(ep.season) && whole(ep.episode) ? { episode: { season: ep.season, episode: ep.episode } } : {}),
+  }
+}
 
 /** "TorBox is fetching: 40%", or the service's own words when it gives no percent. */
 export function waitLine(name: string, w: { pct?: number; message: string }): string {
@@ -138,17 +157,20 @@ export interface TorrentPlay {
   may: (s: Service) => boolean
   /** Calls back whenever the VPN gate changes; returns the unsubscribe. */
   watch: (fn: () => void) => () => void
+  /** For a series stream, the episode (see episodeOf). */
+  episode?: Episode
   call?: typeof callPlugin
   sleep?: PollOptions['sleep']
   now?: () => number
 }
 
 /**
- * The https link for a torrent row: `resolve` on the row's service, polling while it fetches, with
- * the wait line and Cancel in `fetching`. A newer wait cancels this one. For a service behind the
- * VPN gate, a gate failure stops it before the next call. Null when canceled.
+ * The https link for a torrent row, with the file's size when the service gives it: `resolve` on the
+ * row's service, polling while it fetches, with the wait line and Cancel in `fetching`. A newer wait
+ * cancels this one. For a service behind the VPN gate, a gate failure stops it before the next call.
+ * Null when canceled.
  */
-export async function torrentUrl(key: string, s: Stream, r: Ranked, o: TorrentPlay): Promise<string | null> {
+export async function torrentUrl(key: string, s: Stream, r: Ranked, o: TorrentPlay): Promise<Resolved | null> {
   const svc = o.list.find((x) => x.id === r.c.service)
   if (!s.torrent || !svc) throw new Error('Set up a debrid service in Settings to play torrents.')
   const name = svc.manifest.name
@@ -163,7 +185,7 @@ export async function torrentUrl(key: string, s: Stream, r: Ranked, o: TorrentPl
   const own = () => fetching.value?.cancel === mine.cancel
   const call = o.call ?? callPlugin
   try {
-    return await resolveTorrent(svc, forService(s.torrent), {
+    return await resolveTorrent(svc, forService(s.torrent, o.episode), {
       signal: ctl.signal,
       // A call goes out only while the VPN rules allow this service.
       call: ((p, fn, args) => { drop(); if (ctl.signal.aborted) throw new Error('Stopped.'); return call(p, fn, args) }) as typeof callPlugin,

@@ -87,7 +87,7 @@ export interface Library { shelves: Shelf[]; items: Meta[] }
 export type Note = (text: string) => void
 export interface Sub { url: string; lang: string; label?: string }
 /** A torrent the desktop app plays through its engine or a debrid service (SPEC-torrent rule 2). */
-export interface Torrent { infoHash: string; fileIdx?: number; trackers?: string[] }
+export interface Torrent { infoHash: string; fileIdx?: number; name?: string; trackers?: string[] }
 /** A stream has a `url`, or a `torrent` in its place. */
 export interface Stream { url?: string; torrent?: Torrent; title?: string; quality?: string; kind?: 'video' | 'audio' | 'book'; subs?: Sub[]; needsDesktop?: boolean; external?: boolean; group?: string }
 export interface CatalogResult { items: Meta[]; more: boolean }
@@ -98,7 +98,7 @@ export interface Extension { id: string; name: string; description?: string; log
 export interface ExtensionResult extends ActionResult { settings?: Record<string, unknown> }
 export interface TitleActionResult { ok: boolean; on: boolean; message?: string }
 export type AccountResult = { ok: true; name: string; plan?: string; expires?: string } | { ok: false; message: string }
-export type ResolveResult = { url: string } | { wait: { pct?: number; message: string } } | { error: string }
+export type ResolveResult = { url: string; bytes?: number } | { wait: { pct?: number; message: string } } | { error: string }
 
 export interface ThemeColors { bg: string; surface: string; fg: string; dim: string; line: string; accent: string }
 export interface ThemeManifest { flick: 'theme'; api: 1; id: string; name: string; version: string; author: string; light: ThemeColors; dark: ThemeColors; radius?: number; font?: string }
@@ -417,14 +417,22 @@ export const MAX_TRACKERS = 50
 const TRACKER = /^(udp|https?):\/\/[\x21-\x7e]+$/
 
 /** A stream's `torrent`, checked the way the desktop engine checks it. A wrong field is a plugin bug, so it fails the list. */
+/** A torrent's file name inside it, like Stremio's behaviorHints.filename. */
+export const MAX_FILE_NAME = 512
+
 function torrentOf(x: unknown): Torrent {
-  if (!isObj(x)) return fail('torrent must be { infoHash, fileIdx?, trackers? }.')
+  if (!isObj(x)) return fail('torrent must be { infoHash, fileIdx?, name?, trackers? }.')
   const hash = typeof x.infoHash === 'string' ? x.infoHash.toLowerCase() : ''
   if (!/^[0-9a-f]{40}$/.test(hash)) return fail('torrent.infoHash must be 40 hex characters.')
   const t: Torrent = { infoHash: hash }
   if (x.fileIdx !== undefined) {
     if (!Number.isSafeInteger(x.fileIdx) || (x.fileIdx as number) < 0) return fail('torrent.fileIdx must be a whole number, 0 or more.')
     t.fileIdx = x.fileIdx as number
+  }
+  if (x.name !== undefined) {
+    if (typeof x.name === 'string' && x.name.trim().length > MAX_FILE_NAME) return fail(`torrent.name is at most ${MAX_FILE_NAME} characters.`)
+    const name = str(x.name, 'torrent.name', false, MAX_FILE_NAME)
+    if (name) t.name = name
   }
   if (x.trackers !== undefined) {
     if (!Array.isArray(x.trackers)) return fail('torrent.trackers must be a list.')
@@ -585,7 +593,8 @@ export function validateResolve(x: unknown, hosts: string[]): ResolveResult {
     let u: URL | null = null
     try { u = typeof x.url === 'string' && x.url.length <= 8000 ? new URL(x.url.trim()) : null } catch { u = null }
     if (!u || u.protocol !== 'https:' || !hostMatches(u.hostname, hosts)) return fail('resolve() returned a link that is not https on the plugin\'s hosts.')
-    return { url: u.href }
+    // bytes only feeds the speed readout: a wrong one is dropped, never a reason to stop playing.
+    return Number.isSafeInteger(x.bytes) && (x.bytes as number) > 0 ? { url: u.href, bytes: x.bytes as number } : { url: u.href }
   }
   if (isObj(x.wait)) {
     const wait: { pct?: number; message: string } = { message: str(x.wait.message, 'message', false, 200) ?? 'Fetching' }

@@ -17,7 +17,7 @@ vi.mock('../src/lib/platform', async (orig) => ({
   onDesktopEvent: async () => () => {},
 }))
 const { debridNow, gate, askable, mayAskNow, watchGate, WINDOWS_NO_ENGINE } = await import('../src/lib/picking')
-const { lookupCached, CachedLookups, serviceTag, torrentHashes, mayAsk, resolveOrder, wantsGate, canStart, torrentUrl, fetching, cancelFetch, waitLine, vpnStopped } = await import('../src/lib/debrid-play')
+const { lookupCached, CachedLookups, serviceTag, torrentHashes, mayAsk, resolveOrder, wantsGate, canStart, torrentUrl, fetching, cancelFetch, waitLine, vpnStopped, forService, episodeOf, noVpnFact } = await import('../src/lib/debrid-play')
 const { services: playable } = await import('../src/lib/plugins/services')
 const { installed } = await import('../src/lib/plugins/registry')
 const { settings } = await import('../src/lib/store')
@@ -259,7 +259,7 @@ describe('Play on a torrent row (rules 5b, 8)', () => {
     setup({ list: [TORBOX], gate: false })
     const answers = [{ wait: { message: 'Queued' } }, { wait: { pct: 40, message: 'Downloading' } }, { url: 'https://api.app.torbox/f.mkv' }]
     const call = vi.fn(async () => answers.shift())
-    expect(await torrentUrl('k', tor, row('app.torbox'), opts(call))).toBe('https://api.app.torbox/f.mkv')
+    expect(await torrentUrl('k', tor, row('app.torbox'), opts(call))).toEqual({ url: 'https://api.app.torbox/f.mkv' })
     expect(lines).toEqual(['Asking TorBox', 'TorBox is fetching: Queued', 'TorBox is fetching: 40%'])
     expect(fetching.value).toBeNull()
   })
@@ -270,12 +270,33 @@ describe('Play on a torrent row (rules 5b, 8)', () => {
     expect(call.mock.calls[0][1]).toBe('resolve')
     expect(call.mock.calls[0][2]).toEqual([{ infoHash: h('c'), fileIdx: 2 }])
   })
+  it('a series episode: the file name and the episode numbers go too, and the file size comes back', async () => {
+    setup({ list: [TORBOX], gate: true })
+    const call = vi.fn(async (..._a: unknown[]) => ({ url: 'https://api.app.torbox/f', bytes: 1_007_000_000 }))
+    const ep: Stream = { ...tor, torrent: { ...tor.torrent!, name: 'Show.S01E07.1080p.mkv' } }
+    const got = await torrentUrl('k', ep, row('app.torbox', 'debrid-cached'), opts(call, { episode: episodeOf('series', { season: 1, episode: 7 }) }))
+    expect(call.mock.calls[0][2]).toEqual([{ infoHash: h('c'), fileIdx: 2, name: 'Show.S01E07.1080p.mkv', episode: { season: 1, episode: 7 } }])
+    expect(got).toEqual({ url: 'https://api.app.torbox/f', bytes: 1_007_000_000 })
+  })
+  it('a movie sends no episode field', async () => {
+    setup({ list: [TORBOX], gate: true })
+    const call = vi.fn(async (..._a: unknown[]) => ({ url: 'https://api.app.torbox/f' }))
+    await torrentUrl('k', tor, row('app.torbox', 'debrid-cached'), opts(call, { episode: episodeOf('movie', { season: 1, episode: 7 }) }))
+    expect(call.mock.calls[0][2]).toEqual([{ infoHash: h('c'), fileIdx: 2 }])
+    expect(Object.keys((call.mock.calls[0][2] as object[])[0])).not.toContain('episode')
+  })
+  it('episode numbers: only a series with both above 0, whole', () => {
+    expect(episodeOf('series', { season: 2, episode: 3 })).toEqual({ season: 2, episode: 3 })
+    for (const v of [{ season: 0, episode: 3 }, { season: 1, episode: 1.5 }, { season: 1 }, undefined]) expect(episodeOf('series', v)).toBeUndefined()
+    expect(episodeOf('movie', { season: 1, episode: 1 })).toBeUndefined()
+    expect(forService(tor.torrent!, { season: 1, episode: -2 })).toEqual({ infoHash: h('c'), fileIdx: 2 })
+  })
   it('gate passes, two services, the second has it cached: only the second resolves', async () => {
     setup({ list: [OTHER, TORBOX], gate: true })
     const call = vi.fn(async (s: { id: string }, fn: string, args: unknown[]) => (fn === 'cached' ? (s.id === 'app.torbox' ? [h('c')] : []) : (void args, { url: `https://api.${s.id}/f` })))
     const cached = await lookupCached(askable(), torrentHashes([tor]), mayAskNow, call as never)
     const r = rank(streamCandidates('k', [tor], { debrid: debridNow(cached) }), prefs, dev, ctx())[0]
-    expect(await torrentUrl('k', tor, r, opts(call))).toBe('https://api.app.torbox/f')
+    expect(await torrentUrl('k', tor, r, opts(call))).toEqual({ url: 'https://api.app.torbox/f' })
     expect(call.mock.calls.filter((c) => c[1] === 'resolve').map((c) => c[0].id)).toEqual(['app.torbox'])
   })
   it('Cancel during the wait stops it: no more calls, nothing plays, the line goes', async () => {
@@ -298,13 +319,13 @@ describe('Play on a torrent row (rules 5b, 8)', () => {
   })
   it('a newer wait cancels the older one', async () => {
     setup({ list: [TORBOX], gate: true })
-    let second: Promise<string | null> | null = null
+    let second: ReturnType<typeof torrentUrl> | null = null
     const call = vi.fn(async () => {
       if (!second) second = torrentUrl('k2', tor, row('app.torbox'), opts(async () => ({ url: 'https://api.app.torbox/2' })))
       return { wait: { message: 'x' } }
     })
     expect(await torrentUrl('k', tor, row('app.torbox'), opts(call))).toBeNull()
-    expect(await second).toBe('https://api.app.torbox/2')
+    expect(await second).toEqual({ url: 'https://api.app.torbox/2' })
   })
   it('a gated service: the VPN dropping mid-wait stops it before the next call', async () => {
     setup({ list: [OTHER], gate: true })
@@ -322,7 +343,7 @@ describe('Play on a torrent row (rules 5b, 8)', () => {
     setup({ list: [TORBOX], gate: true })
     const answers = [{ wait: { message: 'x' } }, { url: 'https://api.app.torbox/f' }]
     const call = vi.fn(async () => { gate.value = { ok: false, message: 'dropped' } as never; return answers.shift() })
-    expect(await torrentUrl('k', tor, row('app.torbox'), opts(call))).toBe('https://api.app.torbox/f')
+    expect(await torrentUrl('k', tor, row('app.torbox'), opts(call))).toEqual({ url: 'https://api.app.torbox/f' })
   })
   it('wait longer than 10 minutes: "TorBox could not fetch this torrent in time"', async () => {
     setup({ list: [TORBOX], gate: true })
@@ -347,4 +368,14 @@ describe('Play on a torrent row (rules 5b, 8)', () => {
     expect(best((await page([tor])).rows, [tor])).toBeUndefined()
   })
   afterAll(() => stopLines())
+})
+
+describe('review sheet (Amendment 1 decision)', () => {
+  const sheet = (official: boolean, kind: string, vpnOptional?: boolean) => noVpnFact({ official, kind, manifest: { vpnOptional } })
+  it('a third-party service declaring vpnOptional says "Plays without a VPN"', () => expect(sheet(false, 'service', true)).toBe('Plays without a VPN'))
+  it('Flick\'s own service, a service without it, and a source plugin show no line', () => {
+    expect(sheet(true, 'service', true)).toBeNull()
+    expect(sheet(false, 'service', false)).toBeNull()
+    expect(sheet(false, 'source')).toBeNull()
+  })
 })

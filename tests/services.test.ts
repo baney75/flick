@@ -128,7 +128,7 @@ describe('resolving a torrent', () => {
     const c = clock()
     const waits: unknown[] = []
     const url = await S.resolveTorrent(svc(), { infoHash: 'c'.repeat(40), fileIdx: 2 }, { call: call as never, ...c, onWait: (w) => waits.push(w) })
-    expect(url).toBe('https://x.tb-cdn.st/f')
+    expect(url).toEqual({ url: 'https://x.tb-cdn.st/f' })
     expect(waits).toEqual([{ pct: 0, message: 'TorBox is reading the torrent' }, { pct: 40, message: 'TorBox is downloading it' }])
     expect(c.sleep.mock.calls.map((x) => x[0])).toEqual([3000, 3000])
     expect(call.mock.calls[0]).toEqual([svc(), 'resolve', [{ infoHash: 'c'.repeat(40), fileIdx: 2 }]])
@@ -149,7 +149,7 @@ describe('resolving a torrent', () => {
   it('one failed call is asked again at the next step', async () => {
     const answers: (() => V.ResolveResult)[] = [() => ({ wait: { message: 'a' } }), () => { throw new Error('Plugin did not answer in time') }, () => ({ url: 'https://x.tb-cdn.st/f' })]
     const call = vi.fn(async () => answers.shift()!())
-    expect(await S.resolveTorrent(svc(), { infoHash: 'c'.repeat(40) }, { call: call as never, ...clock() })).toBe('https://x.tb-cdn.st/f')
+    expect(await S.resolveTorrent(svc(), { infoHash: 'c'.repeat(40) }, { call: call as never, ...clock() })).toEqual({ url: 'https://x.tb-cdn.st/f' })
     expect(call).toHaveBeenCalledTimes(3)
   })
   it('closing the player during a call that then answers with a link plays nothing', async () => {

@@ -83,6 +83,10 @@ describe('plugin validation', () => {
     expect(bad({})).toThrow('torrent.infoHash')
     expect(bad('magnet:?xt=urn:btih:x')).toThrow('torrent must be')
     for (const fileIdx of [-1, 1.5, '2', null]) expect(bad({ infoHash: H, fileIdx })).toThrow('torrent.fileIdx')
+    // The file's name inside the torrent: text of at most 512 characters, trimmed.
+    expect(V.validateStreams([{ torrent: { infoHash: H, name: ` ${'n'.repeat(512)} ` } }])[0].torrent?.name).toBe('n'.repeat(512))
+    expect(bad({ infoHash: H, name: 'n'.repeat(513) })).toThrow('torrent.name is at most 512 characters.')
+    expect(bad({ infoHash: H, name: { x: 1 } })).toThrow('torrent.name must be text.')
     for (const t of ['file:///etc/passwd', 'ws://t.example', 'UDP://t.example:80', 'udp://', 'udp://a b', 'http:t.example', 7])
       expect(bad({ infoHash: H, trackers: [t] }), String(t)).toThrow('torrent.trackers takes udp, http and https trackers')
     expect(bad({ infoHash: H, trackers: 'udp://t.example:80' })).toThrow('torrent.trackers must be a list.')

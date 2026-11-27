@@ -22,7 +22,8 @@ in a sandboxed iframe and talks to it through `ctx`. The full contract is `docs/
 4. Write `catalog`, `meta` and `streams`. Use only `ctx.fetch`, `ctx.store`, `ctx.settings` and
    `ctx.log`. Return plain data in the documented shapes: every meta needs `id`, `type`, `name`;
    every stream needs a playable `https:` URL (or `http:` on the LAN), or a `torrent: { infoHash,
-   fileIdx?, trackers? }` in its place ("Stream" in `docs/PLUGINS.md`).
+   fileIdx?, name?, trackers? }` in its place ("Stream" in `docs/PLUGINS.md`). Give `name`, the
+   file's name inside the torrent, so a debrid service plays the right episode of a season pack.
 5. Series: `meta` returns `videos` with `season`, `episode` and an `id` per episode; `streams` gets
    that id as `videoId`. Movies: `videoId` equals `id`.
 6. Settings and sign-in: declare `settings` and `actions` fields. Mark tokens and passwords
@@ -50,7 +51,10 @@ plugin" in `docs/PLUGINS.md`, then:
 3. One `password` setting holds the API key; its `help` names the exact page where the user finds it.
 4. Write `account`, `cached` and `resolve`. If the API cannot do one of them (no cache check), say so
    in a comment and return the documented fallback (`[]`), never a guess.
-5. Check with `npm run plugin:check -- plugin.js --set apiKey=<key> --hash <infoHash>`. Tests use
+5. In `resolve`, pick the file by `fileIdx` only if the API's file list keeps torrent order, else by
+   the exact `name`, else the largest video holding the `episode` tag (`S01E02`, `1x02`); never the
+   first file of a pack. Return the file's size as `bytes` with the `url`.
+6. Check with `npm run plugin:check -- plugin.js --set apiKey=<key> --hash <infoHash>`. Tests use
    recorded responses, never a real key.
 
 ## Check

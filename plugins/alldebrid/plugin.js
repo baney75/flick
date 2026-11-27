@@ -2,7 +2,7 @@
 // API docs: https://docs.alldebrid.com/ (API v4 and v4.1, read 2026-11-26).
 // No cache check: the docs no longer list /magnet/instant, so cached() returns []; a cached torrent
 // still comes back ready at once. The docs do not say a magnet's files follow the torrent's file order,
-// so the file is picked by name first, then by Stremio's fileIdx, then the largest video.
+// so the file is picked by name, then by the episode tag (see pickFile), never by fileIdx.
 // Download hosts (*.debrid.it) are not in the docs; they come from AllDebrid links seen by StremThru
 // (github.com/MunifTanjim/stremthru).
 
@@ -34,12 +34,40 @@ export function flatten(nodes, dir = '') {
   return out
 }
 
-export function pickFile(files, fileIdx, name) {
-  if (!files.length) return null
-  if (name) { const f = files.find((x) => x.path.endsWith(name)); if (f) return f }
-  if (Number.isInteger(fileIdx) && files[fileIdx]) return files[fileIdx]
-  const videos = files.filter((x) => VIDEO.test(x.path))
-  return (videos.length ? videos : files).reduce((a, b) => (b.size > a.size ? b : a))
+const base = (p) => String(p ?? '').split('/').pop()
+const isEp = (e) => Number.isSafeInteger(e?.season) && e.season > 0 && Number.isSafeInteger(e?.episode) && e.episode > 0
+const tag = (e) => `S${String(e.season).padStart(2, '0')}E${String(e.episode).padStart(2, '0')}`
+/** Whether a name holds this episode's tag: S01E02 (any padding, any case, an optional . _ - or
+ *  space between, also later in a run like S01E01E02) or 1x02, with no digit after it. */
+export function holdsEpisode(name, e) {
+  const n = base(name)
+  return new RegExp(`(?:^|[^a-z0-9])s0*${e.season}(?:[ ._-]?e\\d+)*[ ._-]?e0*${e.episode}(?![0-9])`, 'i').test(n) || new RegExp(`(?:^|[^0-9])0*${e.season}x0*${e.episode}(?![0-9])`, 'i').test(n)
+}
+const SAMPLE = /(?:^|[^a-z])sample(?:[^a-z]|$)/i
+const folder = (p) => base(String(p ?? '').split('/').slice(0, -1).join('/'))
+const sized = (url, n) => (Number.isSafeInteger(n) && n > 0 ? { url, bytes: n } : { url })
+
+/** The file to play from `want` ({ fileIdx, name, episode }): the exact name, then the largest video
+ *  holding the episode tag (on the file, else its folder). AllDebrid's docs do not say its list keeps
+ *  torrent order, so fileIdx is not used. A series with no tagged file plays only a torrent's one
+ *  video (samples aside), never a pack's first or largest file. */
+export function pickFile(files, want = {}) {
+  if (!Array.isArray(files) || !files.length) return null
+  const path = (x) => x.path
+  const size = (x) => x.size
+  if (want.name) { const f = files.find((x) => path(x) === want.name || base(path(x)) === want.name); if (f) return f }
+  const videos = files.filter((x) => VIDEO.test(path(x)))
+  const largest = (l) => l.reduce((a, b) => (size(b) > size(a) ? b : a))
+  if (isEp(want.episode)) {
+    // The tag on the file, else on its folder (Show.S01/S01E07/video.mkv).
+    const tagged = videos.filter((x) => holdsEpisode(path(x), want.episode))
+    const inFolder = tagged.length ? tagged : videos.filter((x) => holdsEpisode(folder(path(x)), want.episode))
+    if (inFolder.length) return largest(inFolder)
+    // One untagged video besides any samples is the episode (a daily show, an anime "- 07").
+    const real = videos.filter((x) => !SAMPLE.test(base(path(x))))
+    return real.length === 1 ? real[0] : null
+  }
+  return largest(videos.length ? videos : files)
 }
 
 async function ids(ctx) { return (await ctx.store.get('ids')) ?? {} }
@@ -85,7 +113,8 @@ export default {
   // AllDebrid has no cache check any more (see the top of this file).
   async cached() { return [] },
 
-  async resolve(ctx, { infoHash, fileIdx, name }) {
+  async resolve(ctx, want) {
+    const { infoHash, episode } = want
     const hash = String(infoHash).toLowerCase()
     let id = (await ids(ctx))[hash]
     if (id == null) {
@@ -103,10 +132,10 @@ export default {
     const code = Number(m?.statusCode)
     if (code === 4) {
       const node = (await api(ctx, '/v4/magnet/files', [['id[]', String(id)]]))?.magnets?.[0]
-      const f = pickFile(flatten(node?.files), fileIdx, name)
-      if (!f) return { error: 'This torrent has no file to play.' }
+      const f = pickFile(flatten(node?.files), want)
+      if (!f) return { error: isEp(episode) ? `No file for ${tag(episode)} in this torrent.` : 'This torrent has no file to play.' }
       const d = await api(ctx, '/v4/link/unlock', [['link', f.link]])
-      if (typeof d?.link === 'string' && d.link) return { url: d.link }
+      if (typeof d?.link === 'string' && d.link) return sized(d.link, f.size)
       return { wait: { message: 'AllDebrid is preparing the link' } }
     }
     if (code >= 5 || !Number.isFinite(code)) { await remember(ctx, hash, null); return { error: `AllDebrid could not fetch this torrent${m?.status ? ` (${m.status})` : ''}.` } }
