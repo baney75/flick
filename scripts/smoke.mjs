@@ -127,7 +127,8 @@ export default {
     return { ok: true, on }
   },
   async catalog(ctx, { id, search, skip = 0 }) {
-    if (search) return { items: [{ ...vid(9), name: 'Found ' + search }] }
+    // A search for "slow ..." answers late, so a newer search or a cleared box comes first.
+    if (search) { if (search.startsWith('slow')) await new Promise((r) => setTimeout(r, 1500)); return { items: [{ ...vid(9), name: 'Found ' + search }] } }
     if (id === 'saved') return { items: ((await ctx.store.get('later')) ?? []).map((v) => vid(v.slice(1))) }
     if (id !== 'topic') return { items: [] }
     return { items: [1, 2, 3, 4].slice(skip, skip + 2).map(vid), more: skip + 2 < 4 }
@@ -1196,6 +1197,32 @@ try {
     await gp.keyboard.type('cats')
     await gp.keyboard.press('Enter')
     check(await gp.locator('.video-grid .card', { hasText: 'Found cats' }).waitFor({ timeout: 10000 }).then(() => true, () => false), 'grid plugin search shows its results as a grid')
+    // Each search is numbered and an answer from an older one is dropped: the box shows only the newest
+    // search's results, and a cleared box shows none, however late the older answer lands.
+    const box = gp.getByLabel('Search Smoke Grid')
+    const lateSearch = async (results, after) => {
+      await box.fill('slow one'); await box.press('Enter')
+      await gp.waitForTimeout(200)
+      await after()
+      await gp.waitForTimeout(2500)
+      return results().allInnerTexts()
+    }
+    const plNewer = await lateSearch(() => gp.locator('.video-grid .card .t1'), async () => { await box.fill('cats two'); await box.press('Enter') })
+    const plCleared = await lateSearch(() => gp.locator('.video-grid .card .t1', { hasText: /^Found/ }), () => box.fill(''))
+    check(plNewer.join() === 'Found cats two' && plCleared.length === 0, `a plugin page shows only its newest search, and nothing late after a clear (${plNewer.join(', ')}; cleared: ${plCleared.join(', ') || 'none'})`)
+    await gp.goto(`${BASE}/#/`)
+    const homeBox = gp.getByLabel('Search your plugins')
+    const homeLate = async (after) => {
+      await homeBox.fill('slow one'); await homeBox.press('Enter')
+      await gp.waitForTimeout(200)
+      await after()
+      await gp.waitForTimeout(2500)
+      return gp.locator('.home-search .card .t1').allInnerTexts()
+    }
+    const homeNewer = await homeLate(async () => { await homeBox.fill('cats two'); await homeBox.press('Enter') })
+    const homeCleared = await homeLate(() => homeBox.fill(''))
+    check(homeNewer.join() === 'Found cats two' && homeCleared.length === 0, `Home search shows only its newest search, and nothing late after a clear (${homeNewer.join(', ')}; cleared: ${homeCleared.join(', ') || 'none'})`)
+    await gp.goto(`${BASE}/#/p/org.smoke.grid`)
     await gp.getByLabel('Search Smoke Grid').fill('')
     await cards.first().waitFor({ timeout: 10000 })
     await cards.first().focus()
