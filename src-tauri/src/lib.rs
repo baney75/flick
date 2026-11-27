@@ -14,6 +14,7 @@ use tauri::{Emitter, Manager};
 
 mod live;
 mod playback;
+mod playlog;
 mod resolve;
 mod plugins;
 mod selftest;
@@ -1445,6 +1446,8 @@ pub fn run() {
             torrent::torrent_stats,
             playback::probe_stream,
             resolve::resolve_stream,
+            playlog::playback_log,
+            playlog::playback_log_tail,
             live::remux_start,
             live::remux_stop
         ])
@@ -1464,6 +1467,9 @@ pub fn run() {
             }
             if let Ok(cache) = app.path().app_cache_dir() {
                 std::thread::spawn(move || ytdlp::clean_cache(&cache));
+            }
+            if let Ok(dir) = app.path().app_log_dir() {
+                playlog::init(dir);
             }
             if let Ok(root) = live::root(app.handle()) {
                 std::thread::spawn(move || live::clean(&root));

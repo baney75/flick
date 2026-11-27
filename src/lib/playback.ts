@@ -8,6 +8,7 @@
 
 import { invoke, isDesktop, isMobileApp } from './platform'
 import { OPENING, WAITING } from './stalls'
+import { note as logNote, type Note } from './playlog'
 
 export interface StreamProbe {
   duration: number
@@ -152,7 +153,7 @@ const host = (u: string) => { try { return new URL(u).host } catch { return '' }
  * the waiting line each second while the server is silent. Null when `signal` aborts (the player closed).
  * `remux` says the source plays only through the remux (a library file, a Kodi item).
  */
-export async function planStream(input: Live, remux: boolean, wait: (line: string) => void, signal: AbortSignal, call: Call = invoke): Promise<Plan | null> {
+export async function planStream(input: Live, remux: boolean, wait: (line: string) => void, signal: AbortSignal, call: Call = invoke, note: Note = logNote): Promise<Plan | null> {
   let src = input
   let type: string | null | undefined
   if (/^https?:\/\//i.test(input.input)) {
@@ -161,8 +162,15 @@ export async function planStream(input: Live, remux: boolean, wait: (line: strin
     const tick = setInterval(() => wait(serverWait(Date.now() - t0)), 1000)
     const aborted = new Promise<null>((ok) => signal.addEventListener('abort', () => ok(null), { once: true }))
     try {
-      const r = await Promise.race([resolveStream(input.input, input.user, input.pass, call), aborted])
+      const r = await Promise.race([
+        resolveStream(input.input, input.user, input.pass, call).catch((e) => {
+          note('resolve', { ms: Date.now() - t0, error: messageOf(e) })
+          throw e
+        }),
+        aborted,
+      ])
       if (!r || signal.aborted) return null
+      note('resolve', { ms: r.ms, status: r.status, contentType: r.contentType ?? null, redirects: r.redirects, ranges: r.ranges, final: r.url })
       // The login goes only to the host it belongs to.
       src = host(r.url) === host(input.input) ? { ...input, input: r.url } : { input: r.url, user: '', pass: '' }
       type = r.contentType
@@ -170,13 +178,23 @@ export async function planStream(input: Live, remux: boolean, wait: (line: strin
       clearInterval(tick)
     }
     wait(OPENING)
-    if (!remux && (isHls(src.input) || /mpegurl/i.test(type ?? ''))) return { direct: src.input, fallback: null }
+    if (!remux && (isHls(src.input) || /mpegurl/i.test(type ?? ''))) {
+      note('decision', { plan: 'direct', hls: true })
+      return { direct: src.input, fallback: null }
+    }
   }
-  const p = await probeStream(src.input, src.user, src.pass, call).catch(() => null)
+  const t1 = Date.now()
+  const p = await probeStream(src.input, src.user, src.pass, call).catch((e) => {
+    note('probe', { ms: Date.now() - t1, error: messageOf(e) })
+    return null
+  })
   if (signal.aborted) return null
-  if (p) return remux || !p.direct ? { remux: src, probe: p, safe: false } : { direct: src.input, fallback: null }
-  if (!remux && playsDirectly(src.input, type)) return { direct: src.input, fallback: src }
-  return { remux: src, probe: SAFE, safe: true }
+  if (p) note('probe', { ms: Date.now() - t1, verdict: p.direct ? 'direct' : 'remux', why: p.why ?? null, container: p.container, video: p.video ?? null, audio: p.audio ?? null })
+  const plan: Plan = p
+    ? remux || !p.direct ? { remux: src, probe: p, safe: false } : { direct: src.input, fallback: null }
+    : !remux && playsDirectly(src.input, type) ? { direct: src.input, fallback: src } : { remux: src, probe: SAFE, safe: true }
+  note('decision', { plan: 'direct' in plan ? 'direct' : plan.safe ? 'safe profile' : 'remux', fallback: 'direct' in plan && !!plan.fallback })
+  return plan
 }
 
 /** A server with its own fallback stream (Jellyfin, Plex) keeps it: a failed probe plays the link, and a
