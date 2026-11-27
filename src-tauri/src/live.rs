@@ -106,6 +106,8 @@ fn last_line(p: &Path) -> String {
 struct Run {
     /// Changes with every run, so an older call still waiting can tell it was replaced.
     id: u64,
+    /// The player that asked for this run, so a player closing stops only its own run.
+    owner: String,
     child: Option<Child>,
     dir: Option<PathBuf>,
 }
@@ -125,10 +127,25 @@ fn end(child: Option<Child>, dir: Option<PathBuf>) {
     }
 }
 
-/// Stops the run playing now, if any, and deletes its folder.
+/// Stops the run playing now, if any, and deletes its folder. A run still starting sees the
+/// newer id and ends itself.
 pub fn stop(st: &Live) {
     let (child, dir) = {
         let mut r = st.run.lock().unwrap();
+        r.id += 1;
+        (r.child.take(), r.dir.take())
+    };
+    end(child, dir);
+}
+
+/// Stops the run `owner` asked for, playing or still starting; another player's run is left alone.
+pub fn stop_owner(st: &Live, owner: &str) {
+    let (child, dir) = {
+        let mut r = st.run.lock().unwrap();
+        if r.owner != owner {
+            return;
+        }
+        r.id += 1;
         (r.child.take(), r.dir.take())
     };
     end(child, dir);
@@ -140,9 +157,32 @@ fn stop_if(st: &Live, id: u64) {
         if r.id != id {
             return;
         }
+        r.id += 1;
         (r.child.take(), r.dir.take())
     };
     end(child, dir);
+}
+
+/// Claims the next run for `owner`, stopping any other: from here a stop by `owner` or a newer
+/// claim ends the run, even before ffmpeg starts.
+pub fn ticket(st: &Live, owner: &str) -> u64 {
+    let (id, child, dir) = {
+        let mut r = st.run.lock().unwrap();
+        r.id += 1;
+        r.owner = owner.to_string();
+        (r.id, r.child.take(), r.dir.take())
+    };
+    end(child, dir);
+    id
+}
+
+/// Why a run that lost its ticket ended: a stop, or a newer run.
+fn replaced(r: &Run, owner: &str) -> String {
+    if r.owner == owner && r.child.is_none() {
+        STOPPED.into()
+    } else {
+        "Another stream started.".into()
+    }
 }
 
 /// A run that has written its first segment.
@@ -157,6 +197,7 @@ pub struct Started {
 
 /// Starts a run of `input` from `at` seconds in a fresh folder under `root`, stopping any other run,
 /// and returns once the playlist lists a segment.
+#[cfg(test)]
 pub fn start(
     st: &Live,
     ffmpeg: &Path,
@@ -166,12 +207,29 @@ pub fn start(
     p: &StreamProbe,
     at: f64,
 ) -> Result<Started, String> {
-    stop(st);
-    let id = {
-        let mut r = st.run.lock().unwrap();
-        r.id += 1;
-        r.id
-    };
+    let id = ticket(st, "");
+    run(st, id, "", ffmpeg, root, input, auth, p, at)
+}
+
+/// Starts the run ticket `id` claimed for `owner`. A stop or a newer ticket at any point ends it.
+#[allow(clippy::too_many_arguments)]
+pub fn run(
+    st: &Live,
+    id: u64,
+    owner: &str,
+    ffmpeg: &Path,
+    root: &Path,
+    input: &str,
+    auth: Option<&str>,
+    p: &StreamProbe,
+    at: f64,
+) -> Result<Started, String> {
+    {
+        let r = st.run.lock().unwrap();
+        if r.id != id {
+            return Err(replaced(&r, owner));
+        }
+    }
     let ms = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_millis())
@@ -190,9 +248,10 @@ pub fn start(
     let old = {
         let mut r = st.run.lock().unwrap();
         if r.id != id {
+            let why = replaced(&r, owner);
             drop(r);
             end(Some(child), Some(dir));
-            return Err("Another stream started.".into());
+            return Err(why);
         }
         (r.child.replace(child), r.dir.replace(dir.clone()))
     };
@@ -206,10 +265,9 @@ pub fn start(
         let ended = {
             let mut r = st.run.lock().unwrap();
             if r.id != id {
-                return Err("Another stream started.".into());
+                return Err(replaced(&r, owner));
             }
             match r.child.as_mut() {
-                // remux_stop ran while this run was starting: the player closed.
                 None => return Err(STOPPED.into()),
                 Some(c) => !matches!(c.try_wait(), Ok(None)),
             }
@@ -272,6 +330,7 @@ pub fn playlist_url(path: &Path) -> String {
 pub struct Opened {
     url: String,
     at: f64,
+    id: u64,
 }
 
 #[tauri::command]
@@ -281,14 +340,19 @@ pub async fn remux_start(
     user: Option<String>,
     pass: Option<String>,
     at: f64,
+    owner: String,
 ) -> Result<Opened, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let st = app.state::<Live>();
+        // The claim comes before the probe, so a close while the server is slow ends this run.
+        let id = ticket(&st, &owner);
         let auth = basic(&user.unwrap_or_default(), &pass.unwrap_or_default());
         let p = probe_cached(&app.state::<Probes>(), &url, auth.as_deref())?;
         let ffmpeg = find_tool("ffmpeg").ok_or(NEEDS_FFMPEG)?;
-        let s = start(
+        let s = run(
             &st,
+            id,
+            &owner,
             &ffmpeg,
             &root(&app)?,
             &url,
@@ -299,15 +363,18 @@ pub async fn remux_start(
         Ok(Opened {
             url: playlist_url(&s.playlist),
             at: s.at,
+            id: s.id,
         })
     })
     .await
     .map_err(|e| e.to_string())?
 }
 
+/// Stops `owner`'s run off the main thread: killing ffmpeg and deleting a long run's segments takes time.
 #[tauri::command]
-pub fn remux_stop(app: tauri::AppHandle) {
-    stop(&app.state::<Live>());
+pub async fn remux_stop(app: tauri::AppHandle, owner: String) {
+    let _ = tauri::async_runtime::spawn_blocking(move || stop_owner(&app.state::<Live>(), &owner))
+        .await;
 }
 
 #[cfg(test)]
@@ -597,6 +664,82 @@ mod tests {
     }
 
     // Case 8, while starting: the player closes before the first segment; the start gives up at once.
+    // Review F1: a player that closes while the probe is still running (before ffmpeg starts) leaves
+    // no ffmpeg behind and no folder.
+    #[test]
+    fn a_close_before_ffmpeg_starts_leaves_nothing_running() {
+        let Some((ffmpeg, _)) = tools() else {
+            return eprintln!("skipped: needs ffmpeg");
+        };
+        let dir = scratch("closeearly");
+        fixture(
+            &ffmpeg,
+            &dir.join("a.mkv"),
+            10,
+            24,
+            &["-c:v", "libx264", "-c:a", "ac3"],
+        );
+        let base = serve(dir.clone(), false);
+        let st = Live::default();
+        let p = StreamProbe {
+            video: Some("h264".into()),
+            audio: Some("ac3".into()),
+            ..Default::default()
+        };
+        let id = ticket(&st, "p1");
+        stop_owner(&st, "p1");
+        let root = dir.join("runs");
+        let e = run(
+            &st,
+            id,
+            "p1",
+            &ffmpeg,
+            &root,
+            &format!("{base}/a.mkv"),
+            None,
+            &p,
+            0.0,
+        );
+        assert_eq!(e.unwrap_err(), STOPPED);
+        assert!(alive(&st).is_none());
+        assert!(!root.exists() || std::fs::read_dir(&root).unwrap().next().is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    // Review F6: the old player's close, landing after the new player's start, leaves the new run alone.
+    #[test]
+    fn a_closing_player_stops_only_its_own_run() {
+        let Some((ffmpeg, _)) = tools() else {
+            return eprintln!("skipped: needs ffmpeg");
+        };
+        let dir = scratch("owners");
+        fixture(
+            &ffmpeg,
+            &dir.join("a.mkv"),
+            30,
+            24,
+            &["-c:v", "libx264", "-c:a", "ac3"],
+        );
+        let base = serve(dir.clone(), false);
+        let (st, root, url) = (Live::default(), dir.join("runs"), format!("{base}/a.mkv"));
+        let p = StreamProbe {
+            video: Some("h264".into()),
+            audio: Some("ac3".into()),
+            ..Default::default()
+        };
+        let one = ticket(&st, "p1");
+        run(&st, one, "p1", &ffmpeg, &root, &url, None, &p, 0.0).unwrap();
+        let two = ticket(&st, "p2");
+        let s = run(&st, two, "p2", &ffmpeg, &root, &url, None, &p, 0.0).unwrap();
+        let pid = alive(&st).unwrap();
+        stop_owner(&st, "p1");
+        assert_eq!(alive(&st), Some(pid));
+        assert!(s.playlist.is_file());
+        stop_owner(&st, "p2");
+        assert!(gone_within(pid, Duration::from_secs(1)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn a_stop_while_a_run_starts_ends_it() {
         let Some((ffmpeg, _)) = tools() else {
