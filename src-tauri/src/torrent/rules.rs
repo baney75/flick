@@ -14,6 +14,16 @@ pub const MAX_INFO: usize = 10 << 20;
 pub const MAX_FILES: usize = 10_000;
 pub const MAX_PIECE: u32 = 16 << 20;
 pub const MAX_TRACKERS: usize = 50;
+pub const MAX_ACTIVE: usize = 3;
+pub const MAX_PEERS: usize = 80;
+pub const UPLOAD_BPS: u32 = 1_000_000;
+pub const CACHE_CAP: u64 = 5 << 30;
+
+pub const NO_PEERS: &str = "No one is sharing this torrent right now. Try another stream.";
+pub const WINDOWS_OFF: &str = "Torrents play on Windows through a debrid service for now";
+pub const DROPPED: &str =
+    "Your VPN dropped or isn't hiding you, so playback stopped. Reconnect it and press Play.";
+pub const TOO_MANY: &str = "Flick plays up to 3 torrents at once. Stop one to start another.";
 
 /// A torrent stream from a plugin: `{ infoHash, fileIdx?, trackers? }`.
 #[derive(Clone, Debug, Deserialize)]
@@ -104,8 +114,10 @@ pub fn vet(torrent: &[u8]) -> Result<Vetted, String> {
     if raw.piece_length > MAX_PIECE {
         return Err("This torrent's pieces are over 16 MB, so Flick won't open it.".into());
     }
-    // librqbit's own check overflows on lengths that don't match the piece hashes, so these come
-    // first: the lengths add up, and there is one 20-byte hash per piece of that total.
+    // librqbit's own check overflows on lengths its piece hashes don't cover, so these come first:
+    // the lengths add up, and there is a 20-byte hash for every piece of that total. One spare
+    // hash at the end is harmless (librqbit's own torrents end with one when the length is a whole
+    // number of pieces).
     let lens: Vec<u64> = match &raw.files {
         Some(files) => files.iter().map(|f| f.length).collect(),
         None => raw.length.into_iter().collect(),
@@ -115,7 +127,10 @@ pub fn vet(torrent: &[u8]) -> Result<Vetted, String> {
     let fits = total.is_some_and(|t| {
         raw.piece_length > 0
             && hashes.is_multiple_of(20)
-            && t.div_ceil(raw.piece_length.into()) == hashes / 20
+            && matches!(
+                (hashes / 20).checked_sub(t.div_ceil(raw.piece_length.into())),
+                Some(0 | 1)
+            )
     });
     if !fits {
         return Err(unreadable(&"its file lengths don't match its pieces"));

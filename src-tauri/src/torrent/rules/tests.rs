@@ -452,22 +452,40 @@ fn file_lengths_that_do_not_match_the_pieces_are_refused() {
     let two = torrent(b"M", &[entry(&["a.mp4"], 1), entry(&["b.mp4"], 1)], PIECE);
     let overflow = edit(&two, "6:lengthi1e", &format!("6:lengthi{}e", u64::MAX));
     let zero_piece = edit(&one, "12:piece lengthi65536e", "12:piece lengthi0e");
+    // Two pieces of data with one hash.
+    let short = edit(&one, "6:lengthi1e", &format!("6:lengthi{}e", PIECE + 1));
     let hash = "\u{7}".repeat(20);
-    let extra_hash = edit(
+    let two_spare = edit(
         &one,
         &format!("6:pieces20:{hash}"),
-        &format!("6:pieces40:{hash}{hash}"),
+        &format!("6:pieces60:{hash}{hash}{hash}"),
+    );
+    let odd_hash = edit(
+        &one,
+        &format!("6:pieces20:{hash}"),
+        &format!("6:pieces21:{hash}x"),
     );
     for (what, t) in [
         ("2^62 bytes", huge),
         ("u64::MAX", overflow),
         ("piece length 0", zero_piece),
-        ("an extra hash", extra_hash),
+        ("too few hashes", short),
+        ("a partial hash", odd_hash),
+        ("two spare hashes", two_spare),
     ] {
         let e = rules::vet(&t).unwrap_err();
         assert!(e.contains("don't match its pieces"), "{what}: {e}");
     }
     assert!(rules::vet(&one).is_ok());
+    let spare = edit(
+        &one,
+        &format!("6:pieces20:{hash}"),
+        &format!("6:pieces40:{hash}{hash}"),
+    );
+    assert!(
+        rules::vet(&spare).is_ok(),
+        "a spare hash at the end is harmless"
+    );
 }
 
 #[test]
