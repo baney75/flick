@@ -371,9 +371,30 @@ function flickUrl(u: string) {
   return /^https?:\/\//i.test(u) ? u : 'https://' + u
 }
 
+// A flick-server that accepts the connection and never answers (every worker busy, a sleeping NAS)
+// fails after this long instead of spinning. The limit ends once the server answers, so a large
+// library keeps downloading for as long as it takes.
+export const FLICK_ANSWER_MS = 10_000
+
+async function flickFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(new DOMException('The Flick server did not answer.', 'TimeoutError')), FLICK_ANSWER_MS)
+  // The caller's own signal still aborts it (AbortSignal.any is missing from older WebViews).
+  const outer = init.signal
+  const pass = () => ctl.abort(outer?.reason)
+  if (outer?.aborted) pass()
+  outer?.addEventListener('abort', pass, { once: true })
+  try {
+    return await fetch(url, { ...init, signal: ctl.signal })
+  } finally {
+    clearTimeout(timer)
+    outer?.removeEventListener('abort', pass)
+  }
+}
+
 /** The server's info, or null when nothing at that address is a flick-server. */
 export async function flickInfo(url: string, signal?: AbortSignal): Promise<FlickInfo | null> {
-  const r = await fetch(`${url}/api/info`, { signal })
+  const r = await flickFetch(`${url}/api/info`, { signal })
   const j = (await r.json().catch(() => null)) as FlickInfo | null
   return j?.app === 'flick-server' ? j : null
 }
@@ -394,7 +415,7 @@ export async function flickConnect(url: string, code: string): Promise<Server> {
   code = code.trim()
   const info = await flickInfo(url).catch(() => { throw unreachable(url) })
   if (!info) throw new Error('That address answered, but it is not a Flick server.')
-  const r = await fetch(`${url}/api/library`, { headers: { Authorization: `Bearer ${code}` } }).catch(() => null)
+  const r = await flickFetch(`${url}/api/library`, { headers: { Authorization: `Bearer ${code}` } }).catch(() => null)
   if (!r) throw unreachable(url)
   if (r.status === 401 || r.status === 403) throw new Error('That access code is wrong. Copy it again from flick-server.')
   if (!r.ok) throw new Error(`${info.name || 'The Flick server'} said ${r.status}`)
@@ -433,7 +454,7 @@ export function flickMap(s: Server, lib: FlickLibrary): Item[] {
 }
 
 export async function flickItems(s: Server): Promise<Item[]> {
-  const r = await fetch(`${s.url}/api/library`, { headers: { Authorization: `Bearer ${s.token}` } }).catch(() => null)
+  const r = await flickFetch(`${s.url}/api/library`, { headers: { Authorization: `Bearer ${s.token}` } }).catch(() => null)
   if (!r) throw unreachable(s.url)
   if (r.status === 401) throw new Error('The access code no longer works. Remove this server and connect it again with the new code.')
   if (!r.ok) throw new Error(`${s.name} said ${r.status}`)
