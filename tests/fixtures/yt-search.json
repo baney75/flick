@@ -13,6 +13,8 @@
    "channel": "jawed",
    "uploader": "jawed",
    "duration": 19,
+   "view_count": 391000000,
+   "timestamp": 1114560000,
    "thumbnails": [
     { "url": "https://i.ytimg.com/vi/jNQXAC9IVRw/hqdefault.jpg?sqp=-oaymwE2COADEI4CSFXyq4qpAygIARUAAIhCGAFwAcABBvABAfgBvgKAAvABigIMCAAQARhVIFkoZTAP&rs=AOn4CLDkGJrAGBspJ5G6u9b7tutsHbloEg", "height": 270, "width": 480 }
    ]
@@ -26,6 +28,8 @@
    "channel": "Alina Celeste",
    "uploader": "Alina Celeste",
    "duration": 185,
+   "view_count": 0,
+   "timestamp": null,
    "thumbnails": [
     { "url": "https://i.ytimg.com/vi/zEVYvCKQ1gM/hq720.jpg?sqp=-oaymwEcCOgCEMoBSFXyq4qpAw4IARUAAIhCGAFwAcABBg==&rs=AOn4CLBNTuK-_7Og9UTsjiLGpVkN8U7I7Q", "height": 202, "width": 360 },
     { "url": "https://i.ytimg.com/vi/zEVYvCKQ1gM/hq720.jpg?sqp=-oaymwEcCNAFEJQDSFXyq4qpAw4IARUAAIhCGAFwAcABBg==&rs=AOn4CLClxJuB9Px8injAjq9TeWxgKqfZTQ", "height": 404, "width": 720 }
@@ -38,6 +42,21 @@
    "url": "https://www.youtube.com/channel/UC4QobU6STFB0P71PMvOGN5A",
    "title": "jawed",
    "thumbnails": []
+  },
+  {
+   "_type": "url",
+   "ie_key": "Youtube",
+   "id": "kArPaThY001",
+   "url": "https://www.youtube.com/watch?v=kArPaThY001",
+   "title": "A fixture lecture, one hour long",
+   "channel": "Andrej Karpathy",
+   "uploader": "Andrej Karpathy",
+   "duration": 3725.0,
+   "view_count": 1200000,
+   "timestamp": 1700000000,
+   "thumbnails": [
+    { "url": "https://i.ytimg.com/vi/kArPaThY001/hqdefault.jpg", "height": 270, "width": 480 }
+   ]
   },
   {
    "_type": "url",
