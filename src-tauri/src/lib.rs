@@ -1351,12 +1351,19 @@ fn queue_open(app: &tauri::AppHandle, paths: Vec<String>) {
 pub fn run() {
     selftest::mark_launch();
     let context = tauri::generate_context!();
+    // Windows and Android serve Flick from https://tauri.localhost only when the window asks for it.
+    let https = context
+        .config()
+        .app
+        .windows
+        .first()
+        .is_some_and(|w| w.use_https_scheme);
     // The dev server counts as Flick's own pages only in `tauri dev`.
     let dev_url = tauri::is_dev()
         .then(|| context.config().build.dev_url.clone())
         .flatten();
     let builder = tauri::Builder::default()
-        .plugin(navguard::init(dev_url))
+        .plugin(navguard::init(https, dev_url))
         .plugin(tauri_plugin_dialog::init());
     let builder = match selftest::init_script(&context.config().identifier) {
         Some(js) => builder.plugin(
