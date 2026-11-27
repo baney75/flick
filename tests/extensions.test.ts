@@ -110,6 +110,20 @@ describe('adding and removing from Flick', () => {
     expect(d.calls).toEqual([['addExtension', { url: 'https://torrentio.strem.fun/manifest.json' }]])
     expect(d.saved).toEqual([['org.example.addons', { addons: ['https://torrentio.strem.fun/manifest.json'] }]])
   })
+  it('two adds in a row both end up in the saved list', async () => {
+    const saved: Record<string, unknown> = { addons: [] as string[] }
+    const deps: E.Deps = {
+      // Like a plugin: each result is the whole list, built from the settings it has when called.
+      call: (async (_r: Installed, _fn: string, args: { url: string }[]) => {
+        const have = saved.addons as string[]
+        await new Promise((res) => setTimeout(res, 5))
+        return { ok: true, settings: { addons: [...have, args[0].url] } }
+      }) as unknown as E.Deps['call'],
+      saveSettings: async (_id, patch) => { Object.assign(saved, patch) },
+    }
+    await Promise.all([E.addExtension(rec, 'https://a.example/manifest.json', deps), E.addExtension(rec, 'https://b.example/manifest.json', deps)])
+    expect(saved.addons).toEqual(['https://a.example/manifest.json', 'https://b.example/manifest.json'])
+  })
   it('remove sends the id; a failed result saves nothing', async () => {
     const d = deps({ ok: false, message: 'Not removable' })
     expect(await E.removeExtension(rec, 'com.linvo.cinemeta', d.deps)).toEqual({ ok: false, message: 'Not removable' })
@@ -145,6 +159,16 @@ describe('showing an addon address', () => {
   })
   it('plugin log lines never show a key from an addon address', () => {
     expect(redact('org.example.none', 'Could not read https://torrentio.strem.fun/torbox=abc123XYZ9/manifest.json: 500')).toBe('Could not read https://torrentio.strem.fun/torbox=\u2022\u2022\u2022XYZ9/manifest.json: 500')
+  })
+  it('a base64 config holding "/" hides the whole path, short pieces included', () => {
+    const cfg = btoa(JSON.stringify({ indexers: ['???'], ['debrid' + 'Service']: 'torbox', ['debrid' + 'Api' + 'Key']: 'TBkey_slash1' }))
+    expect(cfg).toContain('/')
+    const shown = E.maskUrl(`https://comet.elfhosted.com/${cfg}/manifest.json?x=1`)
+    expect(shown).toBe(`https://comet.elfhosted.com/\u2022\u2022\u2022${cfg.slice(-4)}/manifest.json?x=1`)
+    for (const piece of cfg.split('/').slice(0, -1)) expect(shown).not.toContain(piece)
+  })
+  it('an http address in a log line is masked too', () => {
+    expect(redact('org.example.none', 'Could not read http://192.168.1.5:7000/torbox=abc123XYZ9/manifest.json')).toBe('Could not read http://192.168.1.5:7000/torbox=\u2022\u2022\u2022XYZ9/manifest.json')
   })
   it('an address with no key is unchanged', () => {
     expect(E.maskUrl('https://v3-cinemeta.strem.io/manifest.json')).toBe('https://v3-cinemeta.strem.io/manifest.json')
