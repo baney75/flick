@@ -34,6 +34,14 @@
     if (now() < 20000 && !P.bootDone) requestAnimationFrame(bootFrame)
   }
   requestAnimationFrame(bootFrame)
+  // When the library's own rows first paint (Home's Recently added), watched past the first tap: the
+  // items can land after Home is usable.
+  const itemsFrame = () => {
+    if (boot.marks.items || now() > 30000) return
+    for (const h of document.querySelectorAll('.main .row-section .row-head h2')) if (h.textContent === 'Recently added') { afterPaint((at) => { boot.marks.items ??= at }); return }
+    requestAnimationFrame(itemsFrame)
+  }
+  requestAnimationFrame(itemsFrame)
   /** Resolves as soon as Home has painted (or the welcome screen, for an empty library). */
   P.homePainted = (timeout = 15000) => new Promise((ok) => {
     const t0 = now()

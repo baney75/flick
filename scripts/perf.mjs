@@ -193,7 +193,11 @@ try {
     await first.reload()
     const copied = () => first.evaluate(() => new Promise((ok) => {
       const r = indexedDB.open('flick')
-      r.onsuccess = () => { const db = r.result; const g = db.transaction('kv').objectStore('kv').get('items.copy'); g.onsuccess = () => { db.close(); ok(!!g.result) } }
+      r.onsuccess = () => {
+        const db = r.result, kv = db.transaction('kv').objectStore('kv'), rev = kv.get('items.rev'), copy = kv.get('items.copy')
+        // The first, empty load saved a copy too: only one at the seed's rev counts.
+        copy.onsuccess = () => { db.close(); ok(!!copy.result && copy.result.rev === (rev.result ?? 0)) }
+      }
     }))
     for (const end = Date.now() + 30000; !(await copied());) {
       if (Date.now() > end) { notes.push(`${size}: the app saved no copy of the seeded items within 30 s, so each run starts as the first after an update`); break }
@@ -255,6 +259,7 @@ try {
         add(`${P}nav.${from}-${to}`, r.painted)
         add(`${P}nav.${from}-${to}.settled`, r.settled)
       }
+      add(`${P}start.items`, await page.waitForFunction(() => window.__perf.boot.marks.items, null, { timeout: 30000 }).then((h) => h.jsonValue(), () => null))
 
       // Library chips, then search, then the fling.
       await go(page, '/library', sel.library)
