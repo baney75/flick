@@ -2,13 +2,14 @@
 // button. A row opens that plugin's or server's page (Manage.tsx); logins never appear here.
 
 import type { ComponentChildren } from 'preact'
-import { useEffect, useState } from 'preact/hooks'
+import { useEffect, useRef, useState } from 'preact/hooks'
 import { go, items, notify, route, settings } from '../lib/store'
 import * as Srv from '../lib/servers'
 import { bus } from '../lib/sync/bus'
 import { isDesktop } from '../lib/platform'
 import { Icon } from '../components/icons'
 import { useEscape } from '../lib/escape'
+import { useFocusTrap } from '../lib/trap'
 import { PluginIcon } from './Plugin'
 import { absolute, install, installed, officialList, prepare, type Candidate, type Installed, type OfficialEntry } from '../lib/plugins/registry'
 import { allServices, hasKey, type Service } from '../lib/plugins/services'
@@ -100,6 +101,8 @@ function AddSheet({ onClose }: { onClose: () => void }) {
   const [url, setUrl] = useState('')
   useEffect(() => { officialList().then(setOfficial) }, [])
   useEscape(true, () => { if (!busy) onClose() })
+  const box = useRef<HTMLDivElement>(null)
+  useFocusTrap(box)
 
   const opened = (id: string) => { onClose(); go(pageOf(id)) }
   // Something from Flick's own list installs at once: the user picked it there, and the row said
@@ -140,7 +143,7 @@ function AddSheet({ onClose }: { onClose: () => void }) {
   const state = (key: string) => busy === key ? <span class="small dim">{slow ? 'Still starting the plugin…' : 'Installing…'}</span> : null
   return (
     <div class="sheet-back" role="dialog" aria-modal="true" aria-label="Add to Flick" onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose() }}>
-      <div class="sheet panel add-sheet">
+      <div class="sheet panel add-sheet" ref={box}>
         <h3>Add to Flick</h3>
         <h4 class="small dim">Servers</h4>
         {SERVER_KINDS.filter((k) => isDesktop || k.kind !== 'kodi').map((k) => (

@@ -1448,11 +1448,24 @@ try {
     await ep.keyboard.press('Escape')
     await ep.waitForTimeout(300)
     check(await addSheet.count() === 0 && ep.url().endsWith('#/settings/plugins'), `Escape closes the Add sheet and stays on the page (${ep.url().split('#')[1]})`)
+    // Tab and Shift+Tab stay inside the sheet, past either end.
+    const tabsOut = async (dialog) => {
+      const n = await dialog.evaluate((d) => d.querySelectorAll('a[href], button, input, select, textarea').length)
+      let out = 0
+      for (let i = 0; i < n + 2; i++) { await ep.keyboard.press('Tab'); if (!(await dialog.evaluate((d) => d.contains(document.activeElement)))) out++ }
+      for (let i = 0; i < 3; i++) { await ep.keyboard.press('Shift+Tab'); if (!(await dialog.evaluate((d) => d.contains(document.activeElement)))) out++ }
+      return out
+    }
     await addBtn.click()
+    await addSheet.waitFor()
+    const addOut = await tabsOut(addSheet)
+    check(addOut === 0, `Tab stays inside the Add sheet (${addOut} presses left it)`)
     await addSheet.getByLabel('Plugin address').fill(`${FLICK_URL}/grid-plugin.js`)
     await addSheet.getByRole('button', { name: 'Add', exact: true }).click()
     const review = ep.getByRole('dialog', { name: /^Install / })
     await review.waitFor({ timeout: 15000 })
+    const reviewOut = await tabsOut(review)
+    check(reviewOut === 0, `Tab stays inside the install review (${reviewOut} presses left it)`)
     await ep.keyboard.press('Escape')
     await ep.waitForTimeout(300)
     check(await review.count() === 0 && await addSheet.count() === 1 && ep.url().endsWith('#/settings/plugins'), `Escape closes the install review and goes back to the Add sheet (${ep.url().split('#')[1]})`)
