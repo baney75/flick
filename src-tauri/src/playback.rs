@@ -101,6 +101,8 @@ pub struct StreamProbe {
     pub checked: bool,
     /// What a remux run does with the video; None decides by the codec name alone.
     pub video_out: Option<VideoOut>,
+    /// More than 8 bits a sample: a forced transcode keeps that in HEVC main10.
+    pub deep: bool,
 }
 
 impl StreamProbe {
@@ -126,6 +128,24 @@ impl StreamProbe {
             Some("hevc") => VideoOut::Hvc1,
             _ => VideoOut::H264,
         })
+    }
+
+    /// The same source with video and audio both transcoded: the one restart after a decode error in a
+    /// remux run (rule 5). Sources deeper than 8 bits become HEVC main10, the rest H.264.
+    pub fn transcoded(mut self) -> Self {
+        self.video_out = Some(if self.deep { VideoOut::Hevc10 } else { VideoOut::H264 });
+        self.converts_video = self.video.is_some();
+        self.converts_audio = self.audio.is_some();
+        self
+    }
+
+    /// The probe for that restart, or why there is none: Dolby Vision profile 5 has no HDR10 base layer,
+    /// so a plain transcode would play with the wrong colours. The player shows the card instead.
+    pub fn forced(self) -> Result<Self, String> {
+        if self.video_out == Some(VideoOut::Dvh1) {
+            return Err("This Dolby Vision file cannot play here.".into());
+        }
+        Ok(self.transcoded())
     }
 }
 
@@ -282,6 +302,7 @@ pub fn verdict(j: &serde_json::Value, input: &str, plays: &[String]) -> StreamPr
         .or(video_why);
     p.direct = p.why.is_none();
     p.video_out = Some(out);
+    p.deep = pix.contains("p10") || pix.contains("p12");
     p.converts_video = matches!(out, VideoOut::H264 | VideoOut::Hevc10);
     p.converts_audio = a.is_some_and(|a| !COPY_AUDIO.contains(&a));
     p
@@ -677,12 +698,12 @@ mod tests {
         // 8-bit 4:2:0 H.264 plays and copies, full range too.
         for pix in ["yuv420p", "yuvj420p"] {
             let p = v(mp4, "h264", "avc1", pix);
-            assert!(p.direct && p.video_out() == VideoOut::Copy, "{pix}: {p:?}");
+            assert!(p.direct && p.video_out() == VideoOut::Copy && !p.deep, "{pix}: {p:?}");
         }
         // Case 7 and 8: 10-bit, 4:2:2 or 4:4:4 H.264 transcodes to HEVC main10, its problem named first.
         let p = v("matroska,webm", "h264", "", "yuv420p10le");
         assert_eq!((p.direct, p.why.as_deref()), (false, Some("10-bit H.264")));
-        assert_eq!((p.video_out(), p.converts_video), (VideoOut::Hevc10, true));
+        assert_eq!((p.video_out(), p.deep, p.converts_video), (VideoOut::Hevc10, true, true));
         let p = v(mp4, "h264", "avc1", "yuv444p");
         assert_eq!((p.why.as_deref(), p.video_out()), (Some("4:4:4 H.264"), VideoOut::Hevc10));
         assert_eq!(v(mp4, "h264", "avc1", "yuv422p10le").why.as_deref(), Some("10-bit H.264"));
@@ -707,6 +728,29 @@ mod tests {
         assert_eq!(web("av1", &["vp9".into()]).why.as_deref(), Some("AV1 video"));
         assert!(web("av1", &["av1".into()]).direct);
         assert_eq!(web("vp9", &[]).video_out(), VideoOut::H264);
+    }
+
+    // Rule 5: the one restart after a decode error transcodes both, keeping 10-bit where the source had it.
+    #[test]
+    fn a_forced_transcode_keeps_ten_bit_in_hevc() {
+        let p = |v: &str, deep: bool| StreamProbe {
+            video: Some(v.into()),
+            audio: Some("ac3".into()),
+            deep,
+            ..Default::default()
+        };
+        let t = p("h264", false).transcoded();
+        assert_eq!((t.video_out(), t.converts_video, t.converts_audio), (VideoOut::H264, true, true));
+        assert_eq!(p("h264", true).transcoded().video_out(), VideoOut::Hevc10);
+        // 8-bit HEVC the web view rejected goes to H.264, never back to HEVC.
+        assert_eq!(p("hevc", false).transcoded().video_out(), VideoOut::H264);
+        assert_eq!(p("hevc", true).transcoded().video_out(), VideoOut::Hevc10);
+        let audio = StreamProbe { audio: Some("aac".into()), ..Default::default() }.transcoded();
+        assert!(!audio.converts_video && audio.converts_audio);
+        // Dolby Vision profile 5 is never transcoded without its reshaping: the card shows instead.
+        let dv5 = StreamProbe { video_out: Some(VideoOut::Dvh1), deep: true, ..p("hevc", true) };
+        assert_eq!(dv5.forced().unwrap_err(), "This Dolby Vision file cannot play here.");
+        assert_eq!(p("hevc", true).forced().unwrap().video_out(), VideoOut::Hevc10);
     }
 
     // Cases 7 and 8 against real files: the probe reads the pixel format ffmpeg wrote.

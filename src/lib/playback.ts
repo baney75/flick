@@ -157,9 +157,10 @@ export const SAFE: StreamProbe = {
   convertsVideo: true, convertsAudio: true, checked: false,
 }
 
-/** What plays: the final URL as it is (with the safe remux to fall back on when the probe failed), or a remux run. */
+/** What plays: the final URL as it is, with the remux a decode error falls back to (its probe, or the safe
+ *  profile when the probe failed), or a remux run. */
 export type Plan =
-  | { direct: string; fallback: Live | null }
+  | { direct: string; fallback: Live | null; probe?: StreamProbe }
   | { remux: Live; probe: StreamProbe; safe: boolean }
 
 const host = (u: string) => { try { return new URL(u).host } catch { return '' } }
@@ -207,7 +208,7 @@ export async function planStream(input: Live, remux: boolean, wait: (line: strin
   if (signal.aborted) return null
   if (p) note('probe', { ms: Date.now() - t1, verdict: p.direct ? 'direct' : 'remux', why: p.why ?? null, container: p.container, video: p.video ?? null, audio: p.audio ?? null })
   const plan: Plan = p
-    ? remux || !p.direct ? { remux: src, probe: p, safe: false } : { direct: src.input, fallback: null }
+    ? remux || !p.direct ? { remux: src, probe: p, safe: false } : { direct: src.input, fallback: src, probe: p }
     : !remux && playsDirectly(src.input, type) ? { direct: src.input, fallback: src } : { remux: src, probe: SAFE, safe: true }
   note('decision', { plan: 'direct' in plan ? 'direct' : plan.safe ? 'safe profile' : 'remux', fallback: 'direct' in plan && !!plan.fallback })
   return plan
@@ -220,9 +221,32 @@ export function withServerFallback(plan: Plan): Plan {
   return plan.safe ? { direct: plan.remux.input, fallback: null } : plan
 }
 
-/** The safe remux a media error switches to: a decode or unsupported error on a direct play that has one. */
+/** The remux a media error switches to: a decode or unsupported error on a direct play that has one. */
 export function onMediaError(code: number | undefined, fallback: Live | null): Live | null {
   return fallback && (code === 3 || code === 4) ? fallback : null
+}
+
+/** Whether a media error on a remux run restarts it with video and audio transcoded (rule 5): once, and
+ *  never for a safe run, which converts both already. */
+export function onRemuxError(code: number | undefined, r: Remux): boolean {
+  return (code === 3 || code === 4) && !r.transcode && !r.safe
+}
+
+/** What a media error does next, in order (rule 5): a remux run restarts once transcoded, else shows the card;
+ *  a plugin stream is looked up again once, before any remux, which would read its expired address; then
+ *  the direct play's remux; null leaves the rest to the caller. `lookUp` is called only when it is the step. */
+export function afterError<T>(code: number | undefined, run: Remux | null, lookUp: (() => T | null) | null, fallback: Live | null):
+  { to: 'transcode' } | { to: 'card' } | { to: 'lookup'; again: T } | { to: 'remux'; fb: Live } | null {
+  if (run) return onRemuxError(code, run) ? { to: 'transcode' } : { to: 'card' }
+  const again = lookUp?.() ?? null
+  if (again) return { to: 'lookup', again }
+  const fb = onMediaError(code, fallback)
+  return fb ? { to: 'remux', fb } : null
+}
+
+/** The remux fallback after a plugin lookup: it reads the new address, or none when that is not http. */
+export function followed(fallback: Live | null, url: string): Live | null {
+  return fallback && /^https?:\/\//i.test(url) ? { input: url, user: '', pass: '' } : null
 }
 
 /** The error card's buttons (rule 6): a plugin stream offers another source and never its link. */
@@ -286,6 +310,8 @@ export class Remux {
   readonly owner = `${Date.now().toString(36)}-${++players}`
   /** The source's length: the probe's, or one learned after a safe run started; 0 while unknown. */
   length: number
+  /** Set after a decode error: later runs transcode video and audio (rule 5). */
+  transcode = false
   constructor(readonly url: string, readonly probe: StreamProbe, private user = '', private pass = '', private call: Call = invoke, readonly safe = false) {
     this.length = probe.duration
   }
@@ -301,7 +327,7 @@ export class Remux {
     const max = this.length > 1 ? this.length - 1 : Infinity
     const from = Number.isFinite(at) ? Math.min(Math.max(0, at), max) : this.at
     try {
-      const r = await this.call<{ url: string; at: number }>('remux_start', { url: this.url, user: this.user, pass: this.pass, at: from, owner: this.owner, safe: this.safe })
+      const r = await this.call<{ url: string; at: number }>('remux_start', { url: this.url, user: this.user, pass: this.pass, at: from, owner: this.owner, safe: this.safe, transcode: this.transcode })
       if (n !== this.n) return null
       this.at = r.at
       return r.url

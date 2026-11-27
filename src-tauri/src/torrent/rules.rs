@@ -218,8 +218,9 @@ pub fn touch(dir: &Path) -> std::io::Result<()> {
 }
 
 /// Deletes the least recently used torrent folders (40-hex names only) until the cache takes at
-/// most `cap` bytes on disk, never one in `keep`. Returns what it deleted.
-pub fn trim(cache: &Path, cap: u64, keep: &[String]) -> std::io::Result<Vec<PathBuf>> {
+/// most `cap` bytes on disk, never one `keep` names. `keep` is asked just before each delete.
+/// Returns what it deleted.
+pub fn trim(cache: &Path, cap: u64, keep: impl Fn(&str) -> bool) -> std::io::Result<Vec<PathBuf>> {
     let hex = |n: &str| n.len() == 40 && n.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
     let mut dirs = vec![];
     // An entry that vanishes or can't be read while the trim runs is simply not counted.
@@ -246,7 +247,7 @@ pub fn trim(cache: &Path, cap: u64, keep: &[String]) -> std::io::Result<Vec<Path
         if total <= cap {
             break;
         }
-        if keep.contains(&name) {
+        if keep(&name) {
             continue;
         }
         // One folder that won't delete doesn't stop the trim; the next folder may.

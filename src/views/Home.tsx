@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'preact/hooks'
-import { items, continueList, playItem, go, shows, type Progress } from '../lib/store'
+import { items, playItem, go, shows, type Progress } from '../lib/store'
 import { Card, ItemCard, Row, useThumb } from '../components/Card'
 import { Icon } from '../components/icons'
 import { addFolder, openFiles, openUrl, playPaths } from '../lib/actions'
 import { isDesktop } from '../lib/platform'
 import { online } from '../lib/offline'
 import { downloads } from '../lib/downloads'
-import { sources, searchAll, openPluginRef, libraries, loadLibrary, continueOf, type Found } from '../lib/plugins/use'
+import { sources, searchAll, openPluginRef, type Found } from '../lib/plugins/use'
 import { MetaCard, PluginIcon, CatalogRow, useCatalogs } from './Plugin'
 import { HOME_ROWS_PER_SOURCE } from '../lib/nav'
 import { addYouTube, installed, offersYouTube } from '../lib/plugins/registry'
 import { sessionSet } from '../lib/session'
+import { useContinue } from './Continue'
 
 export function ResumeCard({ k, p }: { k: string; p: Progress }) {
   const ref = p.ref
@@ -30,14 +31,15 @@ export function ResumeCard({ k, p }: { k: string; p: Progress }) {
 export function Home() {
   const [url, setUrl] = useState('')
   const all = items.value
-  const cont = continueList.value.filter(([, p]) => p.ref.t !== 'url' || p.ref.url)
+  // The same entries as Library's Continue tab: this device's in one row, each plugin's own in its row.
+  const entries = useContinue()
+  const cont = entries.flatMap((e) => (e.t === 'local' ? [e] : [])).slice(0, 24)
   const recent = [...all].filter((i) => i.kind === 'video').sort((a, b) => b.addedAt - a.addedAt).slice(0, 24)
   const music = all.filter((i) => i.kind === 'audio').slice(0, 24)
   const showList = [...shows.value.values()].slice(0, 20)
   const srcs = sources.value
-  const plCont = srcs.map((rec) => ({ rec, list: continueOf(libraries.value[rec.id]?.items ?? []).slice(0, 20) })).filter((x) => x.list.length)
+  const plCont = srcs.map((rec) => ({ rec, list: entries.flatMap((e) => (e.t === 'plugin' && e.p === rec.id ? [e.m] : [])).slice(0, 20) })).filter((x) => x.list.length)
   const empty = !all.length && !cont.length && !plCont.length && !srcs.length
-  useEffect(() => { for (const rec of srcs) loadLibrary(rec) }, [srcs.map((r) => r.id).join()])
 
   const saved = [...downloads.value.values()].filter((d) => d.state === 'done').length
   const toDownloads = () => {
@@ -83,7 +85,7 @@ export function Home() {
             </div>
           </header>
           {cont.length > 0 && (
-            <Row title="Continue watching">{cont.map(([k, p]) => <ResumeCard k={k} p={p} />)}</Row>
+            <Row title="Continue watching">{cont.map((e) => <ResumeCard key={e.k} k={e.k} p={e.p} />)}</Row>
           )}
           {plCont.map(({ rec, list }) => (
             <Row title={`Continue on ${rec.manifest.name}`} action={<a class="link" href={`#/p/${encodeURIComponent(rec.id)}`}>{rec.manifest.name}</a>}>
