@@ -193,10 +193,12 @@ try {
     await first.reload()
     const copied = () => first.evaluate(() => new Promise((ok) => {
       const r = indexedDB.open('flick')
+      r.onerror = () => ok(false)
       r.onsuccess = () => {
         const db = r.result, kv = db.transaction('kv').objectStore('kv'), rev = kv.get('items.rev'), copy = kv.get('items.copy')
         // The first, empty load saved a copy too: only one at the seed's rev counts.
         copy.onsuccess = () => { db.close(); ok(!!copy.result && copy.result.rev === (rev.result ?? 0)) }
+        copy.onerror = () => { db.close(); ok(false) }
       }
     }))
     for (const end = Date.now() + 30000; !(await copied());) {

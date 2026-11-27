@@ -206,4 +206,38 @@ describe('items copy', () => {
     expect(ids(await next.all('items'))).toEqual(['a', 'b'])
     expect(storeReads).toBe(0)
   })
+  it('changing an item after putMany is called, before it lands, changes neither the store nor the copy', async () => {
+    const db = await launch()
+    await db.putMany('items', [['a', it3('a')]])
+    await db.all('items')
+    await db.copySettled()
+    const b = it3('b')
+    const write = db.putMany('items', [['b', b]])
+    b.title = 'changed before the write landed'
+    await write
+    expect((await db.all<{ title: string }>('items'))[1].title).toBe('b')
+    await db.copySettled()
+    storeReads = 0
+    expect((await (await launch()).all<{ title: string }>('items'))[1].title).toBe('b')
+    expect(storeReads).toBe(0)
+  })
+
+  it('a copy that cannot be saved (a full disk) stops copying, and reads keep working', async () => {
+    const put = IDBObjectStore.prototype.put
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, v: any, k?: any) {
+      // As a full disk fails it: the request errors and the transaction aborts with that error.
+      if (k === 'items.copy') return this.add(v, 'items.rev')
+      return put.call(this, v, k)
+    })
+    const db = await launch()
+    await db.putMany('items', [['a', it3('a')]])
+    expect(ids(await db.all('items'))).toEqual(['a'])
+    await db.putMany('items', [['b', it3('b')]])
+    await db.copySettled()
+    await db.copySettled()
+    expect(ids(await db.all('items'))).toEqual(['a', 'b'])
+    await db.copySettled()
+    // One read for each all(): no store reads in the background.
+    expect(storeReads).toBe(2)
+  })
 })
