@@ -49,6 +49,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "time", "io-util", "sync
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
+# Already in the tree through wry; the self-test turns off hidden-page timer throttling with it.
+objc2 = "0.6"
 
 [profile.release]
 codegen-units = 1

@@ -95,9 +95,9 @@ export function App() {
     startOffline()
     addEventListener('flick:db-stale', () => notify('Flick was updated in another tab. Reload this tab to keep going.', 15000))
     addEventListener('flick:db-blocked', () => notify('Close your other Flick tabs to finish updating.', 15000))
+    // scripts/desktop-selftest.mjs: a no-op unless this run is a self-test.
+    if (isDesktop || '__FLICK_SELFTEST__' in window) plugins.finally(() => import('./lib/selftest').then((m) => m.selftestIfAsked())).catch(() => {})
     if (isDesktop) {
-      // scripts/desktop-selftest.mjs: a no-op unless this is the self-test build started for it.
-      plugins.finally(() => import('./lib/plugins/selftest').then((m) => m.selftestIfAsked())).catch(() => {})
       // Files opened from Finder before or after launch.
       invoke<string[]>('take_opened').then((p) => p.length && playPaths(p)).catch(() => {})
       const off = onDesktopEvent<string[]>('open-files', (p) => playPaths(p))

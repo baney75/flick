@@ -1339,7 +1339,17 @@ fn queue_open(app: &tauri::AppHandle, paths: Vec<String>) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    selftest::mark_launch();
+    let context = tauri::generate_context!();
     let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    let builder = match selftest::init_script(&context.config().identifier) {
+        Some(js) => builder.plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("flick-selftest")
+                .js_init_script(js)
+                .build(),
+        ),
+        None => builder,
+    };
     // Desktop builds update themselves from GitHub Releases; phones update through their stores.
     #[cfg(desktop)]
     let builder = builder
@@ -1406,8 +1416,10 @@ pub fn run() {
             torrent::torrent_stats
         ])
         .setup(|app| {
+            selftest::mark_setup();
             if selftest::active(app) {
                 selftest::stay_hidden(app);
+                selftest::unthrottle(app);
             }
             // Files passed on the command line: `Flick movie.mkv`.
             let args: Vec<String> = std::env::args()
@@ -1424,7 +1436,7 @@ pub fn run() {
             vpn::watch::install(app.handle().clone());
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building Flick");
 
     app.run(|handle, event| {
