@@ -226,9 +226,19 @@ const nas = createServer((req, res) => {
 await new Promise((r) => nas.listen(0, '127.0.0.1', r))
 const NAS_URL = `http://127.0.0.1:${nas.address().port}`
 
-const server = process.env.SMOKE_BASE ? null : spawn('npx', ['vite', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' })
+// Vite itself, not through npx, so kill() stops the server and no preview keeps the port.
+const server = process.env.SMOKE_BASE ? null : spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'preview', '--port', String(PORT), '--strictPort'], { stdio: 'ignore' })
 const fails = []
-const check = (ok, what) => { console.log(`${ok ? 'PASS' : 'FAIL'} ${what}`); if (!ok) fails.push(what) }
+// A step that never returns (a key press into a frame that is being replaced has done it) fails the run
+// with the last check that passed, instead of hanging it. No step takes near this long.
+let last = 'the start', stuck
+const watch = () => {
+  clearTimeout(stuck)
+  stuck = setTimeout(() => { console.error(`\nsmoke: no check for 180 s after "${last}"; stopping`); server?.kill(); process.exit(1) }, 180_000)
+  stuck.unref?.()
+}
+watch()
+const check = (ok, what) => { console.log(`${ok ? 'PASS' : 'FAIL'} ${what}`); if (!ok) fails.push(what); last = what; watch() }
 
 try {
   for (let i = 0; i < 50; i++) {
