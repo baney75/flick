@@ -1381,6 +1381,30 @@ try {
   const keptPlace = await cp.evaluate(() => new Promise((res) => { const r = indexedDB.open('flick'); r.onsuccess = () => { const q = r.result.transaction('progress').objectStore('progress').get('kept-1'); q.onsuccess = () => res(q.result ?? null) } }))
   const afterHome = await homeCont()
   check(keptPlace === null && afterHome.length === 0, `Remove from library clears the item's place, and Home has nothing to continue (${afterHome.join(', ') || 'none'})`)
+
+  // Library keeps its search and sort for the session: after Back, and after a reload.
+  await cp.goto(`${BASE}/#/library`)
+  await cp.getByLabel('Search library').fill('Tw')
+  await cp.getByLabel('Sort').selectOption('title')
+  await cp.goto(`${BASE}/#/settings`)
+  await cp.goBack()
+  const libState = async () => [await cp.getByLabel('Search library').inputValue(), await cp.getByLabel('Sort').inputValue()].join()
+  await cp.getByLabel('Sort').waitFor()
+  const afterBack = await libState()
+  await cp.reload()
+  await cp.getByLabel('Sort').waitFor()
+  const afterReload = await libState()
+  check(afterBack === 'Tw,title' && afterReload === 'Tw,title', `Library keeps its search and sort after Back and a reload (${afterBack}; ${afterReload})`)
+
+  // Default speed lists the player's speeds, and a saved speed is never shown blank.
+  const speedShown = async (speed) => {
+    await cp.evaluate((v) => localStorage.setItem('flick.settings', JSON.stringify({ ...JSON.parse(localStorage.getItem('flick.settings') || '{}'), speed: v })), speed)
+    await cp.goto(`${BASE}/#/settings`)
+    await cp.reload()
+    return cp.getByLabel('Default speed').evaluate((s) => s.selectedOptions[0]?.textContent ?? '')
+  }
+  const shown = [await speedShown(2.5), await speedShown(1.2)]
+  check(shown.join() === '2.5×,1.2×', `Default speed shows a speed set in the player and one off its list (${shown.join(', ') || 'blank'})`)
   await cp.context().close()
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.join(' | ') : ''}`)

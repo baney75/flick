@@ -13,6 +13,7 @@ import { UpdatesPanel } from './Updates'
 import { PluginsHub } from './Hub'
 import { VpnPanel } from './Vpn'
 import { StreamPrefs } from './StreamPrefs'
+import { SPEEDS } from '../lib/playback'
 
 async function shareSetup() {
   const link = SETUP_BASE + encodeSetup(await currentSetup())
@@ -70,7 +71,8 @@ export function Settings() {
         </label>
         <label>Default speed
           <select value={s.speed} onChange={(e) => setSettings({ speed: Number((e.target as HTMLSelectElement).value) })}>
-            {[0.75, 1, 1.25, 1.5, 2].map((n) => <option value={n}>{n}×</option>)}
+            {/* The player's speeds; a saved speed off that list stays listed, so the box is never blank. */}
+            {(SPEEDS.includes(s.speed) ? SPEEDS : [...SPEEDS, s.speed].sort((a, b) => a - b)).map((n) => <option value={n}>{n}×</option>)}
           </select>
         </label>
         <StreamPrefs />

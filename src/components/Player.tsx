@@ -13,9 +13,8 @@ import { Icon } from './icons'
 import { Readout } from './Readout'
 import { Delayed, KEEPS_STALLING, kindOf, OPENING, waitLine, Watchdog } from '../lib/stalls'
 import { note, sourceOf } from '../lib/playlog'
-import { afterError, cardButtons, convertLine, followed, withServerFallback, DESKTOP_ONLY, isHls, planStream, playsHere, planSeek, probeStream, probes, Remux, SAFE, writtenOf, type Live, type StreamProbe, cuesAt, messageOf } from '../lib/playback'
+import { afterError, cardButtons, convertLine, followed, withServerFallback, DESKTOP_ONLY, isHls, planStream, playsHere, planSeek, probeStream, probes, Remux, SAFE, SPEEDS, writtenOf, type Live, type StreamProbe, cuesAt, messageOf } from '../lib/playback'
 
-const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
 
 type HlsLike = { destroy(): void; loadSource(u: string): void; attachMedia(v: HTMLMediaElement): void; on(e: string, cb: (...a: any[]) => void): void }
 

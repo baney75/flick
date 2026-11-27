@@ -68,6 +68,9 @@ export function cuesAt<T extends { startTime: number; endTime: number }>(cues: A
 export interface Live { input: string; user: string; pass: string }
 
 /** What the website shows for a stream its browser cannot open (rule 8): no ffmpeg there. */
+/** The player's speeds, slowest first. Settings offers the same list for the default. */
+export const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
+
 export const DESKTOP_ONLY = 'This file plays in the Flick desktop app.'
 
 const TYPES: Record<string, string> = {
