@@ -155,6 +155,8 @@ const samples = {}
 const add = (k, v, unit = 'ms') => { if (v == null || Number.isNaN(v)) return; (samples[k] ??= { unit, s: [] }).s.push(v) }
 const notes = []
 const pageErrors = new Set()
+// Runs where Home showed the empty welcome screen before the seeded library: a wrong screen, then a jump.
+const welcomeFlash = []
 let failure = null
 // A step that never shows its result counts as the whole wait, so a slow run cannot drop out of the p95.
 const STEP_TIMEOUT = 10000
@@ -249,7 +251,7 @@ try {
     for (let run = 0; run < RUNS; run++) {
       const { page, boot } = await open(false)
       add(`${P}start.painted`, boot.painted)
-      if (boot.welcome != null && boot.welcome < (boot.painted ?? Infinity)) notes.push(`${P}run ${run + 1}: Home showed the empty welcome screen before the library (${Math.round(boot.welcome)} ms, library at ${Math.round(boot.painted)} ms)`)
+      if (boot.welcome != null && boot.welcome < (boot.painted ?? Infinity)) welcomeFlash.push(`${P}run ${run + 1}`), notes.push(`${P}run ${run + 1}: Home showed the empty welcome screen before the library (${Math.round(boot.welcome)} ms, library at ${Math.round(boot.painted)} ms)`)
 
       // Bar taps. The first lands the moment Home paints: Home interactive (first input handled) is
       // the frame that answers it, counted from navigation.
@@ -403,6 +405,7 @@ const problems = [
   ...misses.map((m) => `${m.metric}: p95 ${m.p95 == null ? m.why : Math.round(m.p95 * 1000) / 1000} > ${m.budget}`),
   // A screen that threw can look fast, so an app error fails the run too.
   ...[...pageErrors].map((e) => `page error: ${e}`),
+  ...(welcomeFlash.length ? [`Home showed the empty welcome screen before the library (${welcomeFlash.join(', ')})`] : []),
   ...(failure ? [`the run stopped early: ${failure.message.split('\n')[0]}`] : []),
 ]
 if (problems.length) {

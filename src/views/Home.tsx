@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks'
-import { items, playItem, go, shows, type Progress } from '../lib/store'
+import { items, loaded, playItem, go, shows, type Progress } from '../lib/store'
 import { Card, ItemCard, Row, useThumb } from '../components/Card'
 import { Icon } from '../components/icons'
 import { addFolder, isStreamUrl, openFiles, openUrl, playPaths } from '../lib/actions'
@@ -58,7 +58,8 @@ export function Home() {
           {saved > 0 && <button class="btn sm" onClick={toDownloads}>Open downloads</button>}
         </div>
       )}
-      {empty ? (
+      {/* Nothing until the library is read: an empty list before then is not an empty library. */}
+      {!loaded.value ? null : empty ? (
         <div class="welcome">
           <div class="welcome-mark"><Icon name="play" size={34} /></div>
           <h1>Drop anything here to play it.</h1>
