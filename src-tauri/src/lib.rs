@@ -1468,6 +1468,7 @@ pub fn run() {
             if let Ok(cache) = app.path().app_cache_dir() {
                 std::thread::spawn(move || ytdlp::clean_cache(&cache));
             }
+            torrent::trim_at_launch(app.handle());
             if let Ok(dir) = app.path().app_log_dir() {
                 playlog::init(dir);
             }

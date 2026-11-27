@@ -346,7 +346,7 @@ fn aged(dir: &Path, secs_ago: u64) {
 }
 
 /// A torrent folder holding `kb` KiB of written data.
-fn folder(cache: &Path, name: &str, kb: usize, secs_ago: u64) -> PathBuf {
+pub fn folder(cache: &Path, name: &str, kb: usize, secs_ago: u64) -> PathBuf {
     let d = cache.join(name);
     std::fs::create_dir_all(d.join("sub")).unwrap();
     // Incompressible bytes, so the blocks on disk match the length on compressing filesystems.
