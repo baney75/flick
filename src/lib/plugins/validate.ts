@@ -161,6 +161,7 @@ export function validateManifest(x: unknown, fns: string[]): PluginManifest {
     if (!hosts.length) fail('A service plugin must list the hosts it reaches.')
     if (hosts.some((h) => h === '*')) fail('A service plugin must name its hosts; "*" is not allowed.')
     if (tools.length) fail('A service plugin cannot use desktop tools.')
+    if (EXTENSION_FNS.some((f) => fns.includes(f))) fail('A service plugin cannot host addons.')
     debridHosts = list(x.debridHosts, 'debridHosts', 50).map((h) => str(h, 'A debridHosts entry', true, 253).toLowerCase())
     for (const h of debridHosts) if (!hosts.includes(h)) fail(`debridHosts entry "${h}" must also be in hosts.`)
   } else {
@@ -366,7 +367,9 @@ function extension(x: unknown, catalog: boolean): Extension | null {
 export function validateExtensions(x: unknown, catalog = false): Extension[] {
   if (!Array.isArray(x)) return fail('The addon list must be a list.')
   if (x.length > MAX_LIST) return fail(`The addon list has ${x.length} rows; at most ${MAX_LIST} are allowed.`)
-  return x.map((e) => extension(e, catalog)).filter((e): e is Extension => !!e)
+  const out: Extension[] = []
+  for (const e of x) { try { const r = extension(e, catalog); if (r) out.push(r) } catch { /* skip one bad row */ } }
+  return out
 }
 
 /** inspectExtension(): the one addon at an address, read before the user confirms adding it. */
@@ -377,7 +380,7 @@ export function validateInspect(x: unknown): Extension {
 /** addExtension() and removeExtension(). Only the plugin's own declared, non-secret settings may change, each in its own type. */
 export function validateExtensionResult(x: unknown, fields: Field[]): ExtensionResult {
   const r: ExtensionResult = validateAction(x)
-  if (!r.ok || !isObj(x) || !isObj(x.settings)) return r
+  if (!isObj(x) || x.ok !== true || !isObj(x.settings)) return r
   const patch: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(x.settings)) {
     const f = fields.find((d) => d.key === k)

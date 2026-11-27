@@ -9,7 +9,7 @@ vi.hoisted(() => {
 })
 import * as V from '../src/lib/plugins/validate'
 import * as E from '../src/lib/plugins/extensions'
-import type { Installed } from '../src/lib/plugins/runtime'
+import { redact, type Installed } from '../src/lib/plugins/runtime'
 import hostJs from '../public/plugin-host.js?raw'
 
 const FNS = ['catalog', 'meta', 'streams']
@@ -55,6 +55,14 @@ describe('the extensions contract', () => {
     expect(out[0]).not.toHaveProperty('installed')
     expect(out[1].logo).toBe('https://a2.example.org/l.png')
   })
+  it('one row with a field of the wrong type is skipped, not the whole list', () => {
+    const out = V.validateExtensions([row(1, { types: 'movie' }), row(2, { description: { en: 'x' } }), row(3, { name: ['X'] }), row(4)])
+    expect(out.map((e) => e.id)).toEqual(['org.example.a4'])
+  })
+  it('a service plugin cannot host addons', () => {
+    const svc = { api: 1, kind: 'service', provides: ['debrid'], id: 'app.example.debrid', name: 'D', version: '1', hosts: ['api.example.app'] }
+    expect(() => V.validateManifest(svc, ['account', 'cached', 'resolve', ...V.EXTENSION_FNS])).toThrow(/cannot host addons/)
+  })
   it('catalog rows carry installed as a boolean; removable defaults to false', () => {
     const [a, b] = V.validateExtensions([row(1, { installed: true }), { ...row(2), removable: 'yes' }], true)
     expect([a.installed, b.installed, b.removable]).toEqual([true, false, false])
@@ -72,6 +80,7 @@ describe('the extensions contract', () => {
     expect(r).toEqual({ ok: true, message: 'Added', settings: { addons: ['https://a'] } })
     expect(V.validateExtensionResult({ ok: true, settings: { mode: 'b' } }, fields).settings).toEqual({ mode: 'b' })
     expect(V.validateExtensionResult({ ok: false, message: 'No', settings: { addons: [] } }, fields)).toEqual({ ok: false, message: 'No' })
+    expect(V.validateExtensionResult({ settings: { addons: [] } }, fields).settings).toBeUndefined()
   })
 })
 
@@ -107,6 +116,10 @@ describe('adding and removing from Flick', () => {
     expect(d.calls).toEqual([['removeExtension', { id: 'com.linvo.cinemeta' }]])
     expect(d.saved).toEqual([])
   })
+  it('inspect refuses a row for another host than the address asked', async () => {
+    const d = deps({ id: 'com.linvo.cinemeta', name: 'Cinemeta', url: 'https://v3-cinemeta.strem.io/manifest.json', removable: false, installed: false })
+    await expect(E.inspectExtension(rec, 'https://a.example/manifest.json', d.deps)).rejects.toThrow(/not a\.example/)
+  })
   it('inspect checks the address too', async () => {
     const d = deps({})
     await expect(E.inspectExtension(rec, 'ftp://x.example/manifest.json', d.deps)).rejects.toThrow()
@@ -124,6 +137,14 @@ describe('showing an addon address', () => {
     const shown = E.maskUrl(`https://comet.example.app/${cfg}/manifest.json`)
     expect(shown).not.toContain(cfg)
     expect(atob(shown.split('/')[3].replace(/•/g, ''))).not.toContain('TBkeyHidden99')
+  })
+  it('the host survives, and a config that is the last segment is masked too', () => {
+    const cfg = btoa(JSON.stringify({ ['debrid' + 'Service']: 'torbox', ['debrid' + 'Api' + 'Key']: 'TBkeyHidden99' })).replace(/=+$/, '')
+    expect(E.maskUrl(`https://comet.elfhosted.com/${cfg}/manifest.json`)).toBe(`https://comet.elfhosted.com/\u2022\u2022\u2022${cfg.slice(-4)}/manifest.json`)
+    expect(E.maskUrl(`https://comet.elfhosted.com/${cfg}`)).toBe(`https://comet.elfhosted.com/\u2022\u2022\u2022${cfg.slice(-4)}`)
+  })
+  it('plugin log lines never show a key from an addon address', () => {
+    expect(redact('org.example.none', 'Could not read https://torrentio.strem.fun/torbox=abc123XYZ9/manifest.json: 500')).toBe('Could not read https://torrentio.strem.fun/torbox=\u2022\u2022\u2022XYZ9/manifest.json: 500')
   })
   it('an address with no key is unchanged', () => {
     expect(E.maskUrl('https://v3-cinemeta.strem.io/manifest.json')).toBe('https://v3-cinemeta.strem.io/manifest.json')

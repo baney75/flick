@@ -2,7 +2,6 @@
 // Flick calls these only when the user taps (SPEC-plugins-hub rules 9 to 12). An address is checked
 // here before the plugin sees it, and settings the plugin hands back are saved through the registry.
 
-import { findDebridKeys, keyEnd } from './debrid-keys'
 import { setPluginSettings } from './registry'
 import { callPlugin, type Installed } from './runtime'
 import * as V from './validate'
@@ -22,7 +21,11 @@ export const browseExtensions = (rec: Installed, search = '', deps: Deps = live)
 
 /** Read the addon at an address so the user sees its name, types and host before adding it. Nothing is saved. */
 export async function inspectExtension(rec: Installed, url: string, deps: Deps = live): Promise<V.Extension> {
-  return deps.call(rec, 'inspectExtension', [{ url: V.extensionUrl(url) }])
+  const asked = V.extensionUrl(url)
+  const e = await deps.call(rec, 'inspectExtension', [{ url: asked }])
+  // The confirm step shows this row; it must describe the address that addExtension will get.
+  if (hostOf(e.url) !== hostOf(asked)) throw new Error(`${e.name} answered for ${hostOf(e.url)}, not ${hostOf(asked)}.`)
+  return e
 }
 
 async function apply(rec: Installed, r: V.ExtensionResult, deps: Deps): Promise<V.ExtensionResult> {
@@ -43,20 +46,4 @@ export function hostOf(url: string): string {
   try { return new URL(url.replace(/^stremio:/i, 'https:')).hostname } catch { return '' }
 }
 
-const DOTS = '•••'
-
-/**
- * An addon address as Flick shows it: any debrid key in it cut to its last 4 characters
- * (`torbox=abc123XYZ9` shows as `torbox=•••XYZ9`). A key inside an encoded config hides that whole part.
- */
-export function maskUrl(url: string): string {
-  const keys = findDebridKeys([url.replace(/^stremio:/i, 'https:')]).map((f) => f.key)
-  let out = url
-  for (const k of keys) {
-    const shown = DOTS + keyEnd(k)
-    if (out.includes(k)) out = out.split(k).join(shown)
-    else if (out.includes(encodeURIComponent(k))) out = out.split(encodeURIComponent(k)).join(shown)
-    else out = out.replace(/\/([^/]{16,})(?=\/)/g, (_, seg: string) => `/${DOTS}${seg.slice(-4)}`)
-  }
-  return out
-}
+export { maskUrl } from './debrid-keys'
