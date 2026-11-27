@@ -197,6 +197,9 @@ function PlayerInner({ req }: { req: PlayRequest }) {
 
   /** Starts the live remux of `input` at source time `at`; its playlist URL, or null when replaced. */
   function openLive(input: Live, p: StreamProbe, at: number) {
+    // A retry that switches to the remux is watched as a remux from here (the next attach builds it).
+    dog.current?.stop()
+    dog.current = null
     const r = new Remux(input.input, p, input.user, input.pass)
     remux.current = r
     setDur(p.duration)
