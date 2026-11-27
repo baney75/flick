@@ -11,8 +11,8 @@ import { kodiLive, urlLive } from '../lib/servers'
 import { barFor, oneRetry, openToolStream } from '../lib/plugins/runtime'
 import { Icon } from './icons'
 import { Readout } from './Readout'
-import { Delayed, KEEPS_STALLING, kindOf, OPENING, WAITING, waitLine, Watchdog } from '../lib/stalls'
-import { convertLine, DESKTOP_ONLY, isHls, playsHere, planSeek, probeStream, probes, Remux, SLOW_SERVER, writtenOf, type Live, type StreamProbe, cuesAt, messageOf } from '../lib/playback'
+import { Delayed, KEEPS_STALLING, kindOf, OPENING, waitLine, Watchdog } from '../lib/stalls'
+import { cardButtons, convertLine, onMediaError, withServerFallback, DESKTOP_ONLY, isHls, planStream, playsHere, planSeek, probeStream, probes, Remux, SAFE, writtenOf, type Live, type StreamProbe, cuesAt, messageOf } from '../lib/playback'
 
 const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
 
@@ -37,6 +37,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   // A stream the web view cannot open plays through a live remux run; its start offsets the clock.
   const remux = useRef<Remux | null>(null)
   const restarting = useRef(false)
+  // A direct play the probe could not vouch for: the safe remux to switch to on a decode error.
+  const fallback = useRef<Live | null>(null)
   // What plays now, for a reload at the same place, and the watchdog over it (rule 6).
   const playingUrl = useRef('')
   const dog = useRef<Watchdog | null>(null)
@@ -85,6 +87,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   // ---- load the source ----
   useEffect(() => {
     let cancelled = false
+    const closed = new AbortController()
     const v = video.current!
     ;(async () => {
       try {
@@ -123,16 +126,16 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         // A link the desktop probes, or a source resolve() says needs the remux (a library MKV, a Kodi AVI).
         const input: Live | null = liveIn ?? (probes(url) ? { input: url, user: '', pass: '' } : null)
         if (input) {
-          // Only a server that never answers stops here; any other probe failure plays the link as it is,
-          // unless it can only play through the remux.
-          const slow = setTimeout(() => !cancelled && setStatus(WAITING), 3000)
-          const p = await probeStream(input.input, input.user, input.pass).catch((e) => {
-            if (liveIn || messageOf(e) === SLOW_SERVER) throw new Error(messageOf(e))
-            return null
-          }).finally(() => clearTimeout(slow))
-          if (cancelled) return
-          if (p && (liveIn || !p.direct)) {
-            const local = await openLive(input, p, req.startAt ?? 0)
+          // One resolve (a 4xx, 5xx or 90 s of silence stops here), then the final URL plays as it is or
+          // through the remux; a probe that fails never stops the play (SPEC-playback-2 rules 1 and 2).
+          const planned = await planStream(input, !!liveIn, (line) => !cancelled && setStatus(line), closed.signal)
+          if (cancelled || !planned) return
+          const plan = req.fallbackUrl ? withServerFallback(planned) : planned
+          if ('direct' in plan) {
+            url = plan.direct
+            fallback.current = plan.fallback
+          } else {
+            const local = await openLive(plan.remux, plan.probe, req.startAt ?? 0, plan.safe)
             if (cancelled || !local) return
             url = local
             startAt = 0
@@ -156,6 +159,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     })()
     return () => {
       cancelled = true
+      closed.abort()
       remux.current?.stop()
       dog.current?.stop()
       delayed.current?.stop()
@@ -196,24 +200,42 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   }
 
   /** Starts the live remux of `input` at source time `at`; its playlist URL, or null when replaced. */
-  function openLive(input: Live, p: StreamProbe, at: number) {
+  function openLive(input: Live, p: StreamProbe, at: number, safe = false) {
     // A retry that switches to the remux is watched as a remux from here (the next attach builds it).
     dog.current?.stop()
     dog.current = null
-    const r = new Remux(input.input, p, input.user, input.pass)
+    const r = new Remux(input.input, p, input.user, input.pass, invoke, safe)
     remux.current = r
     setDur(p.duration)
     setStatus(convertLine(p))
+    // A safe run asks the warmed server once more for the length, for the seek bar and saved progress.
+    if (!r.known) {
+      probeStream(input.input, input.user, input.pass).then((q) => {
+        if (remux.current === r && q.duration > 0) { r.length = q.duration; setDur(q.duration) }
+      }).catch(() => {})
+    }
     return r.open(at)
   }
 
-  function onFail(msg: string, unsupported = false) {
+  function onFail(msg: string, unsupported = false, code?: number) {
     const v = video.current!
     // A run being replaced loses its folder; the new run plays instead.
     if (restarting.current) return
     // No reload behind an error card or a conversion; a failed reload says the stream keeps stalling.
     if (dog.current?.failed()) return
     if (remux.current) { setStatus(null); setError(msg); return }
+    // The probe could not read this stream and the web view cannot decode it: the safe remux, same spot.
+    const fb = onMediaError(code, fallback.current)
+    if (fb) {
+      fallback.current = null
+      const at = v.currentTime || req.startAt || 0
+      ;(async () => {
+        const url = await openLive(fb, SAFE, at, true)
+        if (video.current !== v) { remux.current?.stop(); return }
+        if (url) await attach(v, url, 0)
+      })().catch((e) => { setStatus(null); setError(messageOf(e) || msg) })
+      return
+    }
     // A plugin stream's address expires and is bound to this IP: look it up again once, at the same spot.
     const again = tool.current?.retry(tool.current.url, v.currentTime || req.startAt || 0)
     if (again) {
@@ -233,10 +255,10 @@ function PlayerInner({ req }: { req: PlayRequest }) {
       setStatus(OPENING)
       ;(async () => {
         const input = src.t === 'kodi' ? await kodiLive(src) : await urlLive(src.url)
-        const p = await probeStream(input.input, input.user, input.pass)
+        const p = await probeStream(input.input, input.user, input.pass).catch(() => null)
         // A player closed meanwhile starts no run; one closed while the run starts stops it.
         if (video.current !== v) return
-        const url = await openLive(input, p, at)
+        const url = await openLive(input, p ?? SAFE, at, !p)
         if (video.current !== v) { remux.current?.stop(); return }
         if (url) await attach(v, url, 0)
       })().catch((e) => { setStatus(null); setError(messageOf(e) || msg) })
@@ -328,7 +350,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     const r = remux.current
     if (!r) { v.currentTime = t; return }
     const d = durOf()
-    const plan = planSeek(d > 1 ? Math.min(t, d - 1) : t, r.at, writtenOf(v.seekable))
+    const plan = planSeek(r.clamp(t, d), r.at, writtenOf(v.seekable))
     if ('local' in plan) { v.currentTime = plan.local; return }
     setTime(plan.restart)
     restartAt(r, plan.restart)
@@ -396,7 +418,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   const save = useCallback(() => {
     const v = video.current
     const d = durOf()
-    if (!v || !d || !isFinite(d) || restarting.current) return
+    // A safe run's length is not known yet: no progress until it is, so a title never looks finished.
+    if (!v || !d || !isFinite(d) || restarting.current || remux.current?.known === false) return
     const pos = clock()
     saveProgress(req.key, { pos, dur: d, at: Date.now(), title: req.title, subtitle: req.subtitle, poster: req.poster, ref: req.ref })
     req.onSave?.(pos, d)
@@ -434,7 +457,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     else v.pause()
   }
   const seekBy = (d: number) => {
-    seekTo(Math.max(0, Math.min((durOf() || 0) - 0.1, clock() + d)))
+    const r = remux.current
+    seekTo(r && !r.known ? Math.max(0, clock() + d) : Math.max(0, Math.min((durOf() || 0) - 0.1, clock() + d)))
     flash(`${d > 0 ? '+' : '−'}${Math.abs(d)}s`)
   }
   const setVol = (x: number) => {
@@ -661,7 +685,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         onError={() => {
           const err = video.current?.error
           const hint = isDesktop ? '' : ' Formats like MKV with AC3 or HEVC play best in the Flick desktop app.'
-          onFail(err?.code === 4 ? `This file's format is not supported here.${hint}` : `Playback failed (${err?.message || 'unknown error'}).`, err?.code === 4)
+          onFail(err?.code === 4 ? `This file's format is not supported here.${hint}` : `Playback failed (${err?.message || 'unknown error'}).`, err?.code === 4, err?.code)
         }}
       >
         {subs.map((s, i) => <track key={s.url} kind="subtitles" label={s.label} srcLang={s.lang} src={s.url} default={i === subOn} />)}
@@ -675,10 +699,11 @@ function PlayerInner({ req }: { req: PlayRequest }) {
           <h3>Can't play this</h3>
           <p>{error}</p>
           <div class="row">
-            {req.url && <a class="btn" href={req.url} target="_blank" rel="noreferrer">Open stream URL</a>}
-            {stuck
-              ? <button class="btn primary" onClick={() => { close(); setTimeout(() => document.querySelector<HTMLElement>('.streams .stream')?.focus(), 0) }}>Try another source</button>
-              : <button class="btn primary" onClick={close}>Back</button>}
+            {cardButtons(req, stuck).map((b, _i, all) => b === 'open'
+              ? <a class="btn" href={req.url} target="_blank" rel="noreferrer">Open stream URL</a>
+              : b === 'back'
+                ? <button class={`btn${all.includes('another') ? '' : ' primary'}`} onClick={close}>Back</button>
+                : <button class="btn primary" onClick={() => { close(); setTimeout(() => document.querySelector<HTMLElement>('.streams .stream')?.focus(), 0) }}>Try another source</button>)}
           </div>
         </div>
       )}
