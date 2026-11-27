@@ -5,7 +5,7 @@ use super::rules::tests::{tmp, want, HASH, PIECE};
 use super::{closed, Close, Config, Engine, Gate, CLOSE_LIMIT, STOPPING, STOP_WAIT};
 use crate::vpn::{Fail, GateState};
 use librqbit::{CreateTorrentOptions, ListenerMode, ListenerOptions, Session, SessionOptions};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -601,4 +601,48 @@ fn windows_plays_torrents_through_debrid_only() {
     let gate = Fake::passing();
     let e = engine("windows", &gate, vec![], Duration::from_secs(2));
     assert_eq!(e.play(&want(HASH, &[])), Err(rules::WINDOWS_OFF.into()));
+}
+
+/// Audit F3 (#113): a torrent played once plays again from what the first play cached after its
+/// only peer is gone, with part of the file missing: its metadata and first piece are on disk.
+#[test]
+fn audit_a_replay_from_a_partial_cache_with_no_peers_plays() {
+    let seeder = Seeder::new("replay");
+    let movie = body(3 << 20, 9);
+    let hash = seeder.seed("movie.mp4", &movie);
+    let gate = Fake::passing();
+    let e = engine(
+        "replay",
+        &gate,
+        vec![seeder.addr()],
+        Duration::from_secs(10),
+    );
+    let url = e.play(&want(&hash, &[])).unwrap();
+    let range = format!("Range: bytes=0-{}\r\n", PIECE - 1);
+    assert_eq!(
+        get(&url, None, &range),
+        (206, movie[..PIECE as usize].to_vec())
+    );
+    e.stop(&hash);
+    drop(seeder);
+    // The last piece goes bad on disk, so the replay's check finds the file only partly cached.
+    let cached = e.cfg.cache.join(&hash).join("movie.mp4");
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&cached)
+        .unwrap();
+    f.seek(SeekFrom::Start(movie.len() as u64 - PIECE)).unwrap();
+    f.write_all(&vec![0; PIECE as usize]).unwrap();
+    drop(f);
+
+    let started = std::time::Instant::now();
+    let url = e
+        .play(&want(&hash, &[]))
+        .expect("the cached start plays with no peers");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(
+        get(&url, None, "Range: bytes=0-1023\r\n"),
+        (206, movie[..1024].to_vec())
+    );
+    e.stop(&hash);
 }

@@ -8,7 +8,7 @@ use crate::torrent_http::media_type;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 pub const MAX_INFO: usize = 10 << 20;
 pub const MAX_FILES: usize = 10_000;
@@ -24,6 +24,14 @@ pub const WINDOWS_OFF: &str = "Torrents play on Windows through a debrid service
 pub const DROPPED: &str =
     "Your VPN dropped or isn't hiding you, so playback stopped. Reconnect it and press Play.";
 pub const TOO_MANY: &str = "Flick plays up to 3 torrents at once. Stop one to start another.";
+pub const CHECK_SLOW: &str =
+    "Flick couldn't finish checking this torrent's cached part. Try again.";
+
+/// How long a replay's check of the pieces already cached may take. It doesn't count against the
+/// start's wait, so a large cache on a slow disk doesn't read as no peers (#116).
+pub const CHECK_WAIT: Duration = Duration::from_secs(600);
+/// The file in a torrent's cache folder that keeps its metadata, so a replay opens with no peers.
+pub const METADATA: &str = ".flick.torrent";
 
 /// A torrent stream from a plugin: `{ infoHash, fileIdx?, trackers? }`.
 #[derive(Clone, Debug, Deserialize)]
@@ -210,6 +218,23 @@ pub fn pick_file(v: &Vetted, file_idx: Option<usize>) -> Result<usize, String> {
         .filter(video)
         .max_by_key(|i| v.files[*i].1)
         .ok_or_else(|| "This torrent has no video file.".to_string())
+}
+
+/// The metadata saved at `path`, when it is the torrent `hash` names; anything else is ignored.
+pub fn saved_metadata(path: &Path, hash: &str) -> Option<Vec<u8>> {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            eprintln!(
+                "flick: torrent metadata at {} unreadable: {e}",
+                path.display()
+            );
+            return None;
+        }
+    };
+    let ours = librqbit::torrent_from_bytes(&bytes).is_ok_and(|m| m.info_hash.as_string() == hash);
+    ours.then_some(bytes)
 }
 
 /// Marks a torrent's cache folder as just used, for the oldest-first trim.
