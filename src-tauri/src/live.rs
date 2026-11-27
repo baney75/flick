@@ -39,7 +39,9 @@ pub fn run_args(
         a.extend(video_out_args(p.video_out()));
     }
     match p.audio.as_deref() {
-        Some(c) if COPY_AUDIO.contains(&c) => a.extend(["-c:a", "copy"].map(String::from)),
+        Some(c) if COPY_AUDIO.contains(&c) && !p.converts_audio => {
+            a.extend(["-c:a", "copy"].map(String::from))
+        }
         Some(_) => {
             let ch = if p.channels > 2 { "6" } else { "2" };
             a.extend(["-c:a", "aac", "-b:a", "384k", "-ac", ch].map(String::from));
@@ -361,6 +363,8 @@ pub struct Opened {
     id: u64,
 }
 
+// Each argument is a field the player sends.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn remux_start(
     app: tauri::AppHandle,
@@ -370,6 +374,7 @@ pub async fn remux_start(
     at: f64,
     owner: String,
     safe: Option<bool>,
+    transcode: Option<bool>,
 ) -> Result<Opened, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let st = app.state::<Live>();
@@ -382,6 +387,8 @@ pub async fn remux_start(
             _ => probe_cached(&app.state::<Probes>(), &url, auth.as_deref(), &[])
                 .unwrap_or_else(|_| StreamProbe::safe()),
         };
+        // A run the player could not decode restarts once with both transcoded (rule 5).
+        let p = if transcode == Some(true) { p.transcoded() } else { p };
         let ffmpeg = find_tool("ffmpeg").ok_or(NEEDS_FFMPEG)?;
         let s = run(
             &st,
@@ -461,30 +468,33 @@ mod tests {
         false
     }
 
-    // Cases 7 to 9: the run copies, tags or transcodes the video as the verdict says (rule 4).
+    // Cases 7 to 9: the run copies, tags or transcodes the video as the verdict says (rule 4), and a
+    // forced transcode converts audio a plain run copies (rule 5).
     #[test]
     fn run_args_follow_the_video_verdict() {
         use super::super::playback::VideoOut;
-        let args = |out: VideoOut, audio: &str| {
+        let args = |out: VideoOut, audio: &str, converts_audio: bool| {
             let p = StreamProbe {
                 video: Some("hevc".into()),
                 audio: Some(audio.into()),
                 channels: 6,
                 video_out: Some(out),
+                converts_audio,
                 ..Default::default()
             };
             run_args("https://x/a.mkv", None, &p, 0.0, Path::new("/c/r")).join(" ")
         };
-        let s = args(VideoOut::Dvh1, "eac3");
+        let s = args(VideoOut::Dvh1, "eac3", false);
         assert!(s.contains("-c:v copy -tag:v dvh1 -strict unofficial -c:a copy -sn"), "{s}");
         if cfg!(target_os = "macos") {
-            let s = args(VideoOut::Hevc10, "eac3");
+            let s = args(VideoOut::Hevc10, "eac3", false);
             assert!(
                 s.contains("-c:v hevc_videotoolbox -profile:v main10 -pix_fmt p010le -tag:v hvc1 -b:v 12M -c:a copy"),
                 "{s}"
             );
         }
-        assert!(args(VideoOut::Hvc1, "ac3").contains("-c:v copy -tag:v hvc1 -c:a copy"));
+        assert!(args(VideoOut::Hvc1, "ac3", true).contains("-c:a aac -b:a 384k -ac 6"));
+        assert!(args(VideoOut::Hvc1, "ac3", false).contains("-c:v copy -tag:v hvc1 -c:a copy"));
     }
 
     // Case 7, the run: a 10-bit H.264 MKV over http comes out as HEVC main10 tagged hvc1, ready to play.

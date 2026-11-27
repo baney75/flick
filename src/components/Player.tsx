@@ -13,7 +13,7 @@ import { Icon } from './icons'
 import { Readout } from './Readout'
 import { Delayed, KEEPS_STALLING, kindOf, OPENING, waitLine, Watchdog } from '../lib/stalls'
 import { note, sourceOf } from '../lib/playlog'
-import { cardButtons, convertLine, onMediaError, withServerFallback, DESKTOP_ONLY, isHls, planStream, playsHere, planSeek, probeStream, probes, Remux, SAFE, writtenOf, type Live, type StreamProbe, cuesAt, messageOf } from '../lib/playback'
+import { cardButtons, convertLine, onMediaError, onRemuxError, withServerFallback, DESKTOP_ONLY, isHls, planStream, playsHere, planSeek, probeStream, probes, Remux, SAFE, writtenOf, type Live, type StreamProbe, cuesAt, messageOf } from '../lib/playback'
 
 const SPEEDS = [0.5, 0.75, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3]
 
@@ -40,6 +40,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   const restarting = useRef(false)
   // A direct play the probe could not vouch for: the safe remux to switch to on a decode error.
   const fallback = useRef<Live | null>(null)
+  const fbProbe = useRef<StreamProbe | null>(null)
   // What plays now, for a reload at the same place, and the watchdog over it (rule 6).
   const playingUrl = useRef('')
   const dog = useRef<Watchdog | null>(null)
@@ -145,6 +146,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
           if ('direct' in plan) {
             url = plan.direct
             fallback.current = plan.fallback
+            fbProbe.current = plan.probe ?? null
           } else {
             const local = await openLive(plan.remux, plan.probe, req.startAt ?? 0, plan.safe)
             if (cancelled || !local) return
@@ -243,15 +245,28 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     if (restarting.current) return
     // No reload behind an error card or a conversion; a failed reload says the stream keeps stalling.
     if (dog.current?.failed()) return
-    if (remux.current) { setStatus(null); setError(msg); return }
-    // The probe could not read this stream and the web view cannot decode it: the safe remux, same spot.
+    const r = remux.current
+    if (r) {
+      // A run the web view cannot decode restarts once, at the same spot, with everything transcoded.
+      if (onRemuxError(code, r)) {
+        r.transcode = true
+        note('fallback', { to: 'transcode', code: code ?? null })
+        restartAt(r, clock())
+        return
+      }
+      setStatus(null)
+      setError(msg)
+      return
+    }
+    // The web view cannot decode this stream: the remux at the same spot, the safe profile when the probe failed.
     const fb = onMediaError(code, fallback.current)
     if (fb) {
+      const p = fbProbe.current
       fallback.current = null
-      note('fallback', { to: 'safe profile', code: code ?? null })
+      note('fallback', { to: p ? 'remux' : 'safe profile', code: code ?? null })
       const at = v.currentTime || req.startAt || 0
       ;(async () => {
-        const url = await openLive(fb, SAFE, at, true)
+        const url = await openLive(fb, p ?? SAFE, at, !p)
         if (video.current !== v) { remux.current?.stop(); return }
         if (url) await attach(v, url, 0)
       })().catch((e) => { setStatus(null); setError(messageOf(e) || msg) })
@@ -384,7 +399,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     v.pause()
     v.removeAttribute('src')
     v.load()
-    setStatus(convertLine(r.probe))
+    setStatus(convertLine(r.transcode ? SAFE : r.probe))
     try {
       const url = await r.open(at)
       if (!url || remux.current !== r) return
