@@ -9,6 +9,7 @@
 //   node scripts/desktop-selftest.mjs --mode perf [--runs 5] [--out file.json] [--no-browser]
 //       seed a library (first launch), then time a cold start, the bar taps and a Library chip in the
 //       real app (each later launch) and the same steps in Playwright WebKit over http; prints medians
+//   node scripts/desktop-selftest.mjs --mode youtube (or --youtube)  YouTube end to end: install, search, resolve, open
 
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
@@ -32,6 +33,21 @@ export function failures(report) {
   return out
 }
 
+/** The YouTube run's failures: an error at a step, or a step that gave nothing. */
+export function youtubeFailures(report) {
+  if (!report || !Array.isArray(report.steps)) return [`the self-test itself failed: ${report?.error ?? 'no report'}`]
+  if (report.error) return [`YouTube: ${report.error} (at ${report.failedAfter})`]
+  const out = []
+  if (!(report.rows > 0)) out.push(`YouTube: search "${report.query}" returned no rows`)
+  if (!/^(https?|asset):\/\/./.test(report.host ?? '')) out.push(`YouTube: the stream opened to no playable address (${report.host})`)
+  return out
+}
+
+export function youtubeTable(report) {
+  const rows = report.steps.map((s) => `| ${s.step.padEnd(7)} | ${String(s.ms).padStart(6)} | ${s.detail ?? ''}`)
+  return ['| Step    |     ms | Detail', '| ------- | ------ | ------', ...rows, '', `Search "${report.query}": ${report.rows ?? 0} rows. Plays from ${report.host ?? 'nothing'}.`].join('\n')
+}
+
 export function table(report) {
   const rows = report.plugins.map((p) => [p.name, String(p.totalMs), p.steps.map((s) => `${s.step} ${s.ms}`).join(', '), p.error ? `${p.error} (after ${p.failedAfter})` : 'ok'])
   const head = ['Plugin', 'Total ms', 'Steps (ms each)', 'Result']
@@ -43,9 +59,10 @@ export function table(report) {
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)) }
 
 export const PRODUCT = 'Flick Self-test'
-/** The build override: its own identifier and name, and no window ever shown. */
+/** The build override: its own identifier and name, and no window ever shown. WebKit suspends a hidden
+ *  window's page after a few seconds, which stopped every answer that took longer, so throttling is off. */
 export function override(conf) {
-  return { identifier: IDENTIFIER, productName: PRODUCT, app: { windows: conf.app.windows.map((w) => ({ ...w, visible: false, focus: false })) } }
+  return { identifier: IDENTIFIER, productName: PRODUCT, app: { windows: conf.app.windows.map((w) => ({ ...w, visible: false, focus: false, backgroundThrottling: 'disabled' })) } }
 }
 
 /** PIDs of processes running from this bundle only. */
@@ -54,13 +71,28 @@ function appPids(app) {
   return r.stdout.split('\n').map((s) => s.trim()).filter(Boolean)
 }
 
-function stop(app) {
+/** Every process under these, children first: yt-dlp and ffmpeg run in their own process groups. */
+function descendants(pids) {
+  const out = []
+  for (const p of pids) {
+    const kids = spawnSync('pgrep', ['-P', p], { encoding: 'utf8' }).stdout.split('\n').map((s) => s.trim()).filter(Boolean)
+    out.push(...descendants(kids), ...kids)
+  }
+  return out
+}
+
+/** Stop the app and whatever it started (`kids`, gathered while it ran), so a stream or search never
+ *  outlives the run, even when the app exits by itself and its children are left to launchd. */
+function stop(app, kids) {
+  for (const p of descendants(appPids(app))) kids.add(p)
   for (let i = 0; i < 3; i++) {
     const pids = appPids(app)
-    if (!pids.length) return
+    if (!pids.length) break
     spawnSync('kill', [i < 2 ? '-TERM' : '-KILL', ...pids])
     spawnSync('sleep', ['1'])
   }
+  const left = [...kids].filter((p) => spawnSync('kill', ['-0', p]).status === 0)
+  if (left.length) spawnSync('kill', ['-KILL', ...left])
 }
 
 /** Startup invokes (those starting before Home was interactive): per command, and how many ran one after another. */
@@ -122,13 +154,16 @@ async function launch(mode) {
   execFileSync('open', ['-g', '-j', '-n', '--env', `FLICK_SELFTEST=${mode}`, '--env', `FLICK_SELFTEST_OUT=${out}`, APP])
   const t0 = Date.now()
   let why = ''
+  const kids = new Set()
+  const look = () => { for (const p of descendants(appPids(APP))) kids.add(p) }
   while (!existsSync(out)) {
+    look()
     if (Date.now() - t0 > WAIT_MS) { why = `No report after ${WAIT_MS / 1000} s.`; break }
     if (existsSync(log) && /\bERROR\b/.test(readFileSync(log, 'utf8'))) { why = 'A step failed.'; break }
     await sleep(200)
   }
-  for (let i = 0; i < 10 && appPids(APP).length; i++) await sleep(200)
-  stop(APP)
+  for (let i = 0; i < 10 && appPids(APP).length; i++) { look(); await sleep(200) }
+  stop(APP, kids)
   const left = appPids(APP).join(' ')
   const progress = existsSync(log) ? readFileSync(log, 'utf8') : ''
   const report = existsSync(out) ? JSON.parse(readFileSync(out, 'utf8')) : null
@@ -211,8 +246,8 @@ export function medianReport(reports) {
 async function main() {
   if (process.platform !== 'darwin') { console.error('The desktop self-test runs on macOS.'); process.exit(2) }
   const arg = (k) => { const i = process.argv.indexOf(k); return i > 0 ? process.argv[i + 1] : undefined }
-  const mode = arg('--mode') ?? 'plugins'
-  if (!['plugins', 'perf'].includes(mode)) { console.error('--mode is plugins or perf.'); process.exit(2) }
+  const mode = arg('--mode') ?? (process.argv.includes('--youtube') ? 'youtube' : 'plugins')
+  if (!['plugins', 'perf', 'youtube'].includes(mode)) { console.error('--mode is plugins, perf or youtube.'); process.exit(2) }
   if (!process.argv.includes('--no-build')) {
     const conf = JSON.parse(readFileSync(join(ROOT, 'src-tauri/tauri.conf.json'), 'utf8'))
     const r = spawnSync('npx', ['tauri', 'build', '--bundles', 'app', '--config', JSON.stringify(override(conf))], { cwd: ROOT, stdio: 'inherit' })
@@ -224,10 +259,17 @@ async function main() {
   if (id !== IDENTIFIER) { console.error(`${APP} is not ${IDENTIFIER}. Build it with this script.`); process.exit(1) }
 
   if (mode === 'perf') return perfMain(arg('--out'))
-  const { report, progress, why } = await launch('plugins').catch((e) => { console.error(`FAIL: ${e.message}`); process.exit(1) })
+  const { report, progress, why } = await launch(mode).catch((e) => { console.error(`FAIL: ${e.message}`); process.exit(1) })
   if (progress) console.log(`Progress:\n${progress}`)
   if (!report) { console.error(`FAIL: ${why} The app was stopped.`); process.exit(1) }
   if (process.argv.includes('--json')) console.log(JSON.stringify(report, null, 2))
+  if (mode === 'youtube') {
+    console.log(youtubeTable(report))
+    const bad = youtubeFailures(report)
+    if (bad.length) { console.error(`\nFAIL\n${bad.join('\n')}`); process.exit(1) }
+    console.log('\nPASS: YouTube installed, searched, resolved and opened a stream.')
+    return
+  }
   if (report.plugins) console.log(table(report))
   if (report.userAgent) console.log(`\n${report.origin} ${report.userAgent}`)
   const bad = failures(report)

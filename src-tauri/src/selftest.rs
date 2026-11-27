@@ -1,5 +1,5 @@
 // The desktop self-test (scripts/desktop-selftest.mjs). Only a build with the self-test identifier, started
-// with FLICK_SELFTEST=plugins or perf, runs it, so the user's own Flick and its data never do. The report goes to the
+// with FLICK_SELFTEST=plugins, perf or youtube, runs it, so the user's own Flick and its data never do. The report goes to the
 // path in FLICK_SELFTEST_OUT, which the web side cannot choose, and then the app quits.
 
 use std::path::PathBuf;
@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 use tauri::{AppHandle, Manager};
 
 pub const IDENTIFIER: &str = "dev.flick.selftest";
-const MODES: [&str; 2] = ["plugins", "perf"];
+const MODES: [&str; 3] = ["plugins", "perf", "youtube"];
 static LAUNCHED_MS: OnceLock<u64> = OnceLock::new();
 static SETUP_MS: OnceLock<u64> = OnceLock::new();
 
@@ -108,6 +108,7 @@ pub fn stay_hidden<M: Manager<tauri::Wry>>(app: &M) {
 }
 
 /// Where the report goes, or None unless the identifier, the mode and the path all say self-test.
+/// The self-test modes: every bundled plugin's install, or YouTube end to end (search, resolve, open).
 fn gate(identifier: &str, mode: Option<&str>, out: Option<PathBuf>) -> Option<PathBuf> {
     if identifier != IDENTIFIER || !mode.is_some_and(|m| MODES.contains(&m)) {
         return None;
@@ -183,6 +184,8 @@ mod tests {
         assert_eq!(gate(IDENTIFIER, Some("plugins"), p()), p());
         assert_eq!(gate(IDENTIFIER, Some("perf"), p()), p());
         assert_eq!(gate("com.dbaney.flick", Some("perf"), p()), None);
+        assert_eq!(gate(IDENTIFIER, Some("youtube"), p()), p());
+        assert_eq!(gate("com.dbaney.flick", Some("youtube"), p()), None);
         assert_eq!(gate("com.dbaney.flick", Some("plugins"), p()), None);
         assert_eq!(gate(IDENTIFIER, None, p()), None);
         assert_eq!(gate(IDENTIFIER, Some("other"), p()), None);

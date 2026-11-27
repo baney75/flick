@@ -10,3 +10,5 @@ export function medianReport(reports: any[]): any
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function perfMarkdown(app: any, browser: any): string
 export function webkitPath(webkit: { executablePath(): string }, cache?: string, fs?: { existsSync(p: string): boolean; readdirSync(p: string): string[] }): string | undefined
+export function youtubeFailures(report: unknown): string[]
+export function youtubeTable(report: unknown): string
