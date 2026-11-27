@@ -109,12 +109,28 @@ export function resolveStream(url: string, user = '', pass = '', call: Call = in
   return p
 }
 
+/** The codecs among VP9 and AV1 that `can` (a video element's canPlayType) says it decodes (rule 4). */
+export function codecsPlayed(can: (type: string) => string): string[] {
+  return [
+    ...(can('video/webm; codecs="vp9"') || can('video/mp4; codecs="vp09.00.10.08"') ? ['vp9'] : []),
+    ...(can('video/mp4; codecs="av01.0.05M.08"') ? ['av1'] : []),
+  ]
+}
+let played: string[] | undefined
+function webPlays(): string[] {
+  try {
+    return (played ??= codecsPlayed((t) => document.createElement('video').canPlayType(t)))
+  } catch {
+    return []
+  }
+}
+
 /** The probe of `url`, once per session; a failed probe is tried again next time. */
 export function probeStream(url: string, user = '', pass = '', call: Call = invoke): Promise<StreamProbe> {
   const key = `${url}\n${user}`
   let p = seen.get(key)
   if (!p) {
-    p = call<StreamProbe>('probe_stream', { url, user, pass })
+    p = call<StreamProbe>('probe_stream', { url, user, pass, plays: webPlays() })
     p.catch(() => seen.delete(key))
     seen.set(key, p)
   }

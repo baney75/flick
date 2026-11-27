@@ -10,9 +10,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 use tauri::Manager;
 
-use super::playback::{probe_cached, Probes, StreamProbe, COPY_AUDIO};
+use super::playback::{probe_cached, video_out_args, Probes, StreamProbe, COPY_AUDIO};
 use super::ytdlp::{kill_tree, own_group};
-use super::{basic, find_tool, input_args, video_args};
+use super::{basic, find_tool, input_args};
 
 const FIRST_SEGMENT: Duration = Duration::from_secs(30);
 const DAY: Duration = Duration::from_secs(86_400);
@@ -35,7 +35,9 @@ pub fn run_args(
     // Capital V: real video only, never an album's cover picture, which would hold every segment
     // to its one keyframe and leave an audio file with nothing to play until it ends.
     a.extend(["-map", "0:V:0?", "-map", "0:a:0?"].map(String::from));
-    a.extend(video_args(p.video.as_deref()));
+    if p.video.is_some() {
+        a.extend(video_out_args(p.video_out()));
+    }
     match p.audio.as_deref() {
         Some(c) if COPY_AUDIO.contains(&c) => a.extend(["-c:a", "copy"].map(String::from)),
         Some(_) => {
@@ -377,7 +379,7 @@ pub async fn remux_start(
         // A stream the probe could not read plays through the safe profile (SPEC-playback-2 rule 2).
         let p = match safe {
             Some(true) => StreamProbe::safe(),
-            _ => probe_cached(&app.state::<Probes>(), &url, auth.as_deref())
+            _ => probe_cached(&app.state::<Probes>(), &url, auth.as_deref(), &[])
                 .unwrap_or_else(|_| StreamProbe::safe()),
         };
         let ffmpeg = find_tool("ffmpeg").ok_or(NEEDS_FFMPEG)?;
@@ -459,6 +461,67 @@ mod tests {
         false
     }
 
+    // Cases 7 to 9: the run copies, tags or transcodes the video as the verdict says (rule 4).
+    #[test]
+    fn run_args_follow_the_video_verdict() {
+        use super::super::playback::VideoOut;
+        let args = |out: VideoOut, audio: &str| {
+            let p = StreamProbe {
+                video: Some("hevc".into()),
+                audio: Some(audio.into()),
+                channels: 6,
+                video_out: Some(out),
+                ..Default::default()
+            };
+            run_args("https://x/a.mkv", None, &p, 0.0, Path::new("/c/r")).join(" ")
+        };
+        let s = args(VideoOut::Dvh1, "eac3");
+        assert!(s.contains("-c:v copy -tag:v dvh1 -strict unofficial -c:a copy -sn"), "{s}");
+        if cfg!(target_os = "macos") {
+            let s = args(VideoOut::Hevc10, "eac3");
+            assert!(
+                s.contains("-c:v hevc_videotoolbox -profile:v main10 -pix_fmt p010le -tag:v hvc1 -b:v 12M -c:a copy"),
+                "{s}"
+            );
+        }
+        assert!(args(VideoOut::Hvc1, "ac3").contains("-c:v copy -tag:v hvc1 -c:a copy"));
+    }
+
+    // Case 7, the run: a 10-bit H.264 MKV over http comes out as HEVC main10 tagged hvc1, ready to play.
+    #[test]
+    fn a_ten_bit_h264_run_writes_hevc_main10() {
+        let Some((ffmpeg, ffprobe)) = tools() else {
+            return eprintln!("skipped: needs ffmpeg");
+        };
+        if !cfg!(target_os = "macos") {
+            return eprintln!("skipped: needs hevc_videotoolbox");
+        }
+        let dir = scratch("case7");
+        fixture(
+            &ffmpeg,
+            &dir.join("a10.mkv"),
+            20,
+            24,
+            &["-c:v", "libx264", "-pix_fmt", "yuv420p10le", "-profile:v", "high10", "-g", "48", "-c:a", "ac3"],
+        );
+        let base = serve(dir.clone(), false);
+        let url = format!("{base}/a10.mkv");
+        let p = probe(&ffprobe, &url, None, LIMIT, &[]).unwrap();
+        assert_eq!(p.why.as_deref(), Some("10-bit H.264"));
+        let st = Live::default();
+        let s = start(&st, &ffmpeg, &dir.join("runs"), &url, None, &p, 0.0).unwrap();
+        assert_eq!(codecs_of(&ffprobe, &s.playlist), "hevc,hvc1 ac3,ac-3");
+        let out = Command::new(&ffprobe)
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=profile,pix_fmt", "-of", "csv=p=0"])
+            .arg(&s.playlist)
+            .output()
+            .unwrap();
+        let got = String::from_utf8_lossy(&out.stdout);
+        assert!(got.lines().next().unwrap_or("").starts_with("Main 10,yuv420p10le"), "{got}");
+        stop(&st);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn run_args_copy_what_plays_and_convert_the_rest() {
         let p = StreamProbe {
@@ -526,13 +589,13 @@ mod tests {
             &["-c:v", "libx264", "-c:a", "aac"],
         );
         let base = serve(dir.clone(), false);
-        let p = probe(&ffprobe, &format!("{base}/a.mkv"), None, LIMIT).unwrap();
+        let p = probe(&ffprobe, &format!("{base}/a.mkv"), None, LIMIT, &[]).unwrap();
         assert_eq!(
             (p.direct, p.why.as_deref(), p.converts_audio),
             (false, Some("MKV"), false)
         );
         assert!((p.duration - 60.0).abs() < 1.0, "duration {}", p.duration);
-        let c = probe(&ffprobe, &format!("{base}/c.mp4"), None, LIMIT).unwrap();
+        let c = probe(&ffprobe, &format!("{base}/c.mp4"), None, LIMIT, &[]).unwrap();
         assert!(c.direct && c.why.is_none(), "{c:?}");
 
         let st = Live::default();
@@ -582,7 +645,7 @@ mod tests {
         );
         let base = serve(dir.clone(), false);
         let url = format!("{base}/b.mp4");
-        let p = probe(&ffprobe, &url, None, LIMIT).unwrap();
+        let p = probe(&ffprobe, &url, None, LIMIT, &[]).unwrap();
         assert_eq!(
             (
                 p.direct,
@@ -630,7 +693,7 @@ mod tests {
         );
         let base = serve(dir.clone(), false);
         let url = format!("{base}/long.mkv");
-        let p = probe(&ffprobe, &url, None, LIMIT).unwrap();
+        let p = probe(&ffprobe, &url, None, LIMIT, &[]).unwrap();
         assert!((p.duration - 5700.0).abs() < 2.0, "duration {}", p.duration);
         let st = Live::default();
         let root = dir.join("runs");
@@ -695,7 +758,7 @@ mod tests {
             ],
         );
         let path = file.to_string_lossy().into_owned();
-        let p = probe(&ffprobe, &path, None, LIMIT).unwrap();
+        let p = probe(&ffprobe, &path, None, LIMIT, &[]).unwrap();
         assert!(!p.direct && (p.duration - 600.0).abs() < 2.0, "{p:?}");
         assert!(!run_args(&path, None, &p, 0.0, &dir).contains(&"-reconnect".to_string()));
         let st = Live::default();
@@ -751,7 +814,7 @@ mod tests {
             .unwrap();
         assert!(ok.success());
         let path = file.to_string_lossy().into_owned();
-        let p = probe(&ffprobe, &path, None, LIMIT).unwrap();
+        let p = probe(&ffprobe, &path, None, LIMIT, &[]).unwrap();
         let st = Live::default();
         let s = start(&st, &ffmpeg, &dir.join("runs"), &path, None, &p, 0.0).unwrap();
         let init = s.playlist.with_file_name("init.mp4");
