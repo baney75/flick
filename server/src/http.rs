@@ -5,17 +5,20 @@ use http_body::{Body, Frame, SizeHint};
 use hyper::header::{AUTHORIZATION, CONTENT_LENGTH, RANGE};
 use hyper::{body::Incoming, service::service_fn, Method, Request, Response};
 use hyper_util::rt::{TokioIo, TokioTimer};
+use std::future::Future;
 use std::io::{self, Read};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 
 /// A client must send its request headers within this long.
 const HEADER_READ: Duration = Duration::from_secs(30);
 const CHUNK: usize = 64 * 1024;
+/// Threads for handlers and file reads. A paused stream holds none of them.
+const BLOCKING_THREADS: usize = 64;
 
 pub(crate) struct Transport {
     rt: Option<tokio::runtime::Runtime>,
@@ -28,12 +31,21 @@ pub(crate) fn listen(listener: std::net::TcpListener, st: Arc<State>) -> io::Res
     listener.set_nonblocking(true)?;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
+        .max_blocking_threads(BLOCKING_THREADS)
         .thread_name("flick-server")
         .enable_all()
         .build()?;
     let listener = {
         let _in = rt.enter();
-        TcpListener::from_std(listener)?
+        TcpListener::from_std(listener)
+    };
+    let listener = match listener {
+        Ok(l) => l,
+        Err(e) => {
+            // Dropping a runtime on another runtime's thread panics; this never blocks.
+            rt.shutdown_background();
+            return Err(e);
+        }
     };
     let (stop, stopped) = watch::channel(false);
     let (closed_tx, closed) = std::sync::mpsc::channel();
@@ -147,40 +159,31 @@ fn build(reply: Reply, head: bool) -> Response<Stream> {
     })
 }
 
-/// A body read from a blocking reader on the blocking pool, a chunk or two ahead of the client.
+type Reader = Box<dyn Read + Send>;
+
+/// A body read from a blocking reader one chunk at a time, on the blocking pool, only when hyper
+/// asks for the next chunk. A paused client holds the reader and no thread.
 pub(crate) struct Stream {
-    rx: Option<mpsc::Receiver<io::Result<Bytes>>>,
+    feed: Feed,
     left: u64,
+}
+
+enum Feed {
+    Idle(Reader),
+    Reading(tokio::task::JoinHandle<(Reader, io::Result<Bytes>)>),
+    Done,
 }
 
 impl Stream {
     fn empty() -> Stream {
-        Stream { rx: None, left: 0 }
-    }
-    fn read(mut body: Box<dyn Read + Send>, len: u64) -> Stream {
-        let (tx, rx) = mpsc::channel(2);
-        tokio::task::spawn_blocking(move || {
-            let mut left = len;
-            while left > 0 {
-                let mut buf = vec![0; left.min(CHUNK as u64) as usize];
-                let chunk = match body.read(&mut buf) {
-                    Ok(0) => Err(io::ErrorKind::UnexpectedEof.into()),
-                    Ok(n) => {
-                        buf.truncate(n);
-                        left -= n as u64;
-                        Ok(Bytes::from(buf))
-                    }
-                    Err(e) => Err(e),
-                };
-                let failed = chunk.is_err();
-                // A closed channel means the connection is gone.
-                if tx.blocking_send(chunk).is_err() || failed {
-                    return;
-                }
-            }
-        });
         Stream {
-            rx: Some(rx),
+            feed: Feed::Done,
+            left: 0,
+        }
+    }
+    fn read(body: Reader, len: u64) -> Stream {
+        Stream {
+            feed: Feed::Idle(body),
             left: len,
         }
     }
@@ -193,17 +196,42 @@ impl Body for Stream {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Bytes>, io::Error>>> {
-        let Some(rx) = self.rx.as_mut() else {
-            return Poll::Ready(None);
-        };
-        Poll::Ready(match ready!(rx.poll_recv(cx)) {
-            Some(Ok(b)) => {
-                self.left -= b.len() as u64;
-                Some(Ok(Frame::data(b)))
+        loop {
+            match std::mem::replace(&mut self.feed, Feed::Done) {
+                Feed::Done => return Poll::Ready(None),
+                Feed::Idle(_) if self.left == 0 => return Poll::Ready(None),
+                Feed::Idle(mut body) => {
+                    let want = self.left.min(CHUNK as u64) as usize;
+                    self.feed = Feed::Reading(tokio::task::spawn_blocking(move || {
+                        let mut buf = vec![0; want];
+                        let got = match body.read(&mut buf) {
+                            Ok(0) => Err(io::ErrorKind::UnexpectedEof.into()),
+                            Ok(n) => {
+                                buf.truncate(n);
+                                Ok(Bytes::from(buf))
+                            }
+                            Err(e) => Err(e),
+                        };
+                        (body, got)
+                    }));
+                }
+                Feed::Reading(mut job) => {
+                    let Poll::Ready(done) = Pin::new(&mut job).poll(cx) else {
+                        self.feed = Feed::Reading(job);
+                        return Poll::Pending;
+                    };
+                    return Poll::Ready(Some(match done {
+                        Ok((body, Ok(b))) => {
+                            self.left -= b.len() as u64;
+                            self.feed = Feed::Idle(body);
+                            Ok(Frame::data(b))
+                        }
+                        Ok((_, Err(e))) => Err(e),
+                        Err(e) => Err(io::Error::other(e)),
+                    }));
+                }
             }
-            Some(Err(e)) => Some(Err(e)),
-            None => None,
-        })
+        }
     }
     fn is_end_stream(&self) -> bool {
         self.left == 0

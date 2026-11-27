@@ -14,7 +14,6 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, RwLock};
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -89,7 +88,6 @@ pub struct Handle {
     web: bool,
     transport: http::Transport,
     stop_tx: Option<mpsc::Sender<()>>,
-    threads: Vec<JoinHandle<()>>,
     state: Arc<State>,
 }
 
@@ -124,11 +122,6 @@ impl Handle {
         self.state.stopping.store(true, Ordering::SeqCst);
         self.transport.stop();
         // The rescan thread ends at its next wait; one caught mid-scan finishes on its own.
-        for t in self.threads.drain(..) {
-            if t.is_finished() {
-                let _ = t.join();
-            }
-        }
     }
 }
 
@@ -226,7 +219,7 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
     state.rescan(false);
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let st = state.clone();
-    let rescan = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         st.rescan(true);
         while let Err(mpsc::RecvTimeoutError::Timeout) = stop_rx.recv_timeout(RESCAN_EVERY) {
             st.rescan(true);
@@ -240,7 +233,6 @@ pub fn start(cfg: Config) -> Result<Handle, String> {
         web: serves_web,
         transport,
         stop_tx: Some(stop_tx),
-        threads: vec![rescan],
         state,
     })
 }
