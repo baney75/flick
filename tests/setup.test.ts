@@ -81,3 +81,83 @@ describe('applying a setup', () => {
     } finally { globalThis.fetch = real }
   })
 })
+
+// A server added during setup is shown at once; its library loads after. A page closed while the
+// library loads leaves the server marked, and the next start finishes the load.
+describe('a server added by a setup link', () => {
+  const lib = { name: 'NAS', folders: ['Movies'], items: [{ id: '9f86d081884c7d65', folder: 'Movies', path: 'Heat (1995).mkv', name: 'Heat (1995).mkv', kind: 'video', ext: 'mkv', size: 7, mtime: 1 }] }
+  const CODE = 'Ab-_0123456789abcdefghijklmnopqrstuvwxyzABC'
+  const flickAt = (url: string) => ({ v: 1 as const, servers: [{ type: 'flick' as const, url, token: CODE }] })
+
+  it('is connected without reading its library, which loads on the next start if the page closed', async () => {
+    const { vi } = await import('vitest')
+    const Srv = await import('../src/lib/servers')
+    const db = await import('../src/lib/db')
+    const calls: string[] = []
+    let library: 'hang' | 'answer' = 'hang'
+    vi.stubGlobal('fetch', async (u: string, init?: RequestInit) => {
+      const path = new URL(u).pathname
+      calls.push(`${init?.method ?? 'GET'} ${path}`)
+      if (path === '/api/info') return Response.json({ app: 'flick-server', v: 1, name: 'NAS' })
+      if (init?.method === 'HEAD') return new Response(null, { status: 200 })
+      // The page closes while the library is on its way: this load never finishes.
+      if (library === 'hang') return new Promise<Response>(() => {})
+      return Response.json(lib)
+    })
+    try {
+      const out = await S.applySetup(flickAt('https://nas-load.example'))
+      expect(out).toEqual([{ label: 'Flick server at https://nas-load.example', ok: true, detail: 'Connected. Its titles are loading into your library.' }])
+      // The connect checked the code with HEAD, and nothing waited for the full library.
+      expect(calls.slice(0, 2)).toEqual(['GET /api/info', 'HEAD /api/library'])
+      const srv = (await Srv.getServers()).find((s) => s.url === 'https://nas-load.example')!
+      expect((await db.all<{ server?: string }>('items')).filter((i) => i.server === srv.id)).toEqual([])
+
+      // The next start: the server answers and its library loads.
+      library = 'answer'
+      expect((await Srv.resumeServerLoads()).map((s) => s.id)).toEqual([srv.id])
+      expect((await db.all<{ server?: string }>('items')).filter((i) => i.server === srv.id)).toHaveLength(1)
+      // Loaded, so a later start does nothing more.
+      expect(await Srv.resumeServerLoads()).toEqual([])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('a server that was off at setup loads on a later start, and a removed one gets no titles', async () => {
+    const { vi } = await import('vitest')
+    const Srv = await import('../src/lib/servers')
+    const db = await import('../src/lib/db')
+    let up = false
+    let release = () => {}
+    vi.stubGlobal('fetch', async (u: string, init?: RequestInit) => {
+      const path = new URL(u).pathname
+      if (path === '/api/info') return Response.json({ app: 'flick-server', v: 1, name: 'NAS' })
+      if (init?.method === 'HEAD') return new Response(null, { status: 200 })
+      if (u.includes('late.example')) await new Promise<void>((r) => { release = r })
+      else if (!up) throw new TypeError('Failed to fetch')
+      return Response.json(lib)
+    })
+    const mine = async (url: string) => (await Srv.getServers()).find((x) => x.url === url)
+    const titles = async (id: string) => (await db.all<{ server?: string }>('items')).filter((i) => i.server === id).length
+    try {
+      // The NAS goes to sleep right after the connect: the background load fails.
+      await S.applySetup(flickAt('https://asleep.example'))
+      const srv = (await mine('https://asleep.example'))!
+      await expect(Srv.syncServer(srv)).rejects.toThrow()
+      // It is still marked, so the next start loads it once the NAS is awake.
+      up = true
+      expect((await Srv.resumeServerLoads()).map((x) => x.id)).toContain(srv.id)
+      expect(await titles(srv.id)).toBe(1)
+
+      // Removed while its library was on its way: nothing lands in the library.
+      await S.applySetup(flickAt('https://late.example'))
+      const late = (await mine('https://late.example'))!
+      await Srv.removeServer(late)
+      release()
+      await new Promise((r) => setTimeout(r, 50))
+      expect(await titles(late.id)).toBe(0)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})

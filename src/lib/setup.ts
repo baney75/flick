@@ -1,8 +1,8 @@
 // Setup links: one payload that adds addons, servers, folders and settings after the user taps Connect.
 // Link form: https://flick-player.pages.dev/#/setup?c=<base64url(JSON)>
 
-import { settings, setSettings, reloadItems, type Settings } from './store'
-import { getServers, saveServer, syncServer, plexManual, flickConnect, type Server } from './servers'
+import { settings, setSettings, reloadItems, notify, type Settings } from './store'
+import { getServers, saveServer, syncServer, markLoading, plexManual, flickConnect, type Server } from './servers'
 import { isDesktop } from './platform'
 import { addFolderPath } from './actions'
 import { installed, install, setPluginSettings, portable, type Candidate } from './plugins/registry'
@@ -140,6 +140,12 @@ export function describeSettings(s: Partial<Settings>): string {
   return parts.join(', ')
 }
 
+function loadServer(s: Server) {
+  syncServer(s)
+    .then(async (n) => { await reloadItems(); notify(`${s.name}: ${n} items in your library.`) })
+    .catch((e) => notify(`${s.name}: ${(e as Error).message}`))
+}
+
 async function toServer(s: SetupServer): Promise<Server> {
   if (s.type === 'plex') return { ...(await plexManual(s.url, s.token)), name: s.name ?? 'Plex' }
   if (s.type === 'flick') return flickConnect(s.url, s.token)
@@ -179,9 +185,18 @@ export async function applySetup(p: Setup, reviewed: Record<string, Candidate> =
     const label = `${s.type === 'plex' ? 'Plex' : s.type === 'flick' ? 'Flick' : 'Jellyfin'} server at ${s.url}`
     try {
       const srv = await toServer(s)
+      await markLoading(srv.id)
       await saveServer(srv)
-      const n = await syncServer(srv)
-      out.push({ label, ok: true, detail: `${n} items` })
+      if (srv.type === 'flick') {
+        // The connect already checked the code, and a large library takes a while to load, so the setup
+        // does not wait for it. A load cut off by the page closing resumes on the next start.
+        loadServer(srv)
+        out.push({ label, ok: true, detail: 'Connected. Its titles are loading into your library.' })
+      } else {
+        // The first load is what tests a Jellyfin or Plex token, so the row waits for it.
+        const n = await syncServer(srv)
+        out.push({ label, ok: true, detail: `${n} items` })
+      }
     } catch (e) {
       out.push({ label, ok: false, detail: (e as Error).message })
     }
