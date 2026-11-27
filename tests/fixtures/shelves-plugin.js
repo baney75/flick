@@ -1,11 +1,14 @@
 // A Library fixture for scripts/smoke.mjs (SPEC-library-format P10b): 20 shelves, a kind of its own
-// (recipe) with 10 facts, a video and a song with no shelf, and a Like action that fills the Liked shelf.
+// (recipe) with 10 facts, a video and a song with no shelf, a Like action that fills the Liked shelf,
+// and a Watch later list of 301 rows.
 // Check it with: npm run plugin:check -- tests/fixtures/shelves-plugin.js
 
 const facts = [{ label: 'Servings', value: '4' }, { label: 'Platform', value: 'Switch' },
   ...Array.from({ length: 8 }, (_, i) => ({ label: `Fact ${i + 3}`, value: `Value ${i + 3}` }))]
 const recipe = { id: 'pancakes', type: 'recipe', name: 'Smoke Pancakes', subtitle: 'Breakfast', description: 'A test recipe.', facts }
 const fillers = Array.from({ length: 17 }, (_, i) => ({ id: `paper-${i + 1}`, type: 'paper', name: `Smoke Paper ${i + 1}`, shelves: [`p${i + 1}`] }))
+// Watch later is long enough that the list must window its rows (smoke: every row shows, few at once).
+const saved = Array.from({ length: 300 }, (_, i) => ({ id: `saved-${i + 1}`, type: 'paper', name: `Saved paper ${i + 1}`, subtitle: 'Smoke Channel', shelves: ['later'] }))
 
 /** @type {import('../../plugins/flick-plugin').Plugin} */
 export default {
@@ -38,6 +41,7 @@ export default {
         { id: 'talk', type: 'video', name: 'Smoke Talk', subtitle: 'Smoke Channel', badges: ['12 min'], shelves: ['later'] },
         { id: 'song', type: 'audio', name: 'Smoke Song', posterShape: 'square' },
         ...fillers,
+        ...saved,
       ],
     }
   },

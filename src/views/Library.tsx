@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { items, loaded, playItem, shows, go, notify, reloadItems, progress, episodeLabel, clearProgress } from '../lib/store'
-import { ItemCard, VirtualGrid, useThumb } from '../components/Card'
+import { ItemCard, VirtualGrid, VirtualList, useThumb } from '../components/Card'
 import { TitleCard } from '../components/Titles'
 import { buildTitles, type Title } from '../lib/titles'
 import { sources, libraries, loadLibrary } from '../lib/plugins/use'
@@ -214,7 +214,7 @@ export function Library({ start }: { start?: Tab } = {}) {
       ) : isShelfKey(tab) ? (
         !shelf ? <p class="dim center">Nothing on this shelf yet.</p>
           : !shelfList.length ? <p class="dim center">Nothing matches “{q}”.</p>
-          : shelf.layout === 'list' ? <div class="shelf-list">{shelfList.map((x) => recs.get(x.p) && <ShelfRow rec={recs.get(x.p)!} m={x.m} />)}</div>
+          : shelf.layout === 'list' ? <VirtualList class="shelf-list" list={shelfList.filter((x) => recs.has(x.p))} keyOf={(x) => `${x.p}\n${x.m.type}\n${x.m.id}`} render={(x) => <ShelfRow rec={recs.get(x.p)!} m={x.m} />} />
           : <VirtualGrid list={shelfList} min={shelf.layout === 'landscape' ? 230 : 160} ratio={shelf.layout === 'landscape' ? 9 / 16 : shelf.layout === 'square' ? 1 : 1.5}
               render={(x) => recs.get(x.p) && <MetaCard rec={recs.get(x.p)!} m={x.m} shape={shelf.layout as 'poster' | 'square' | 'landscape'} />} />
       ) : counts.all === 0 && !photos.length ? (
