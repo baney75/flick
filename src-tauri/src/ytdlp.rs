@@ -2,7 +2,9 @@
 // Only a plugin whose installed manifest lists `tools: ['ytdlp']` may call it: the web side registers
 // each plugin's tools from its installed record (plugin_tools), and plugin_tool checks that list here.
 // Flick keeps its own yt-dlp: the official release binary, checked against the release's SHA2-256SUMS
-// and updated with `yt-dlp -U` at most once a day. A yt-dlp on PATH is used only when that one fails.
+// and updated at most once a day. A yt-dlp on PATH is used only when that one fails. On macOS it is the
+// unpacked build (yt-dlp_macos.zip): the one-file build unpacks itself on every run, and macOS checks the
+// unpacked files each time, which cost about 4 s per call (`--version` 4.35 s, against 0.18 s unpacked).
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -10,6 +12,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Manager, Url};
@@ -52,7 +55,7 @@ struct Job {
 /// The release file for this computer, and the name Flick saves it under.
 fn asset() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", _) => Some("yt-dlp_macos"),
+        ("macos", _) => Some("yt-dlp_macos.zip"),
         ("windows", "aarch64") => Some("yt-dlp_arm64.exe"),
         ("windows", _) => Some("yt-dlp.exe"),
         ("linux", "x86_64") => Some("yt-dlp_linux"),
@@ -61,12 +64,95 @@ fn asset() -> Option<&'static str> {
     }
 }
 
+/// The unpacked macOS build's folder, and the file next to its program that holds the zip's SHA-256.
+const MAC_DIR: &str = "yt-dlp_macos";
+const SUM_FILE: &str = "release.sha256";
+
 fn managed_path(dir: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        return dir.join(MAC_DIR).join("yt-dlp_macos");
+    }
     dir.join(if cfg!(windows) {
         "yt-dlp.exe"
     } else {
         "yt-dlp"
     })
+}
+
+/// The one-file build Flick kept on macOS before; used only while the unpacked build downloads.
+fn legacy_path(dir: &Path) -> Option<PathBuf> {
+    cfg!(target_os = "macos").then(|| dir.join("yt-dlp"))
+}
+
+/// Whether the daily check should fetch the release again: its checksum changed, or none was kept.
+fn needs_fetch(kept: Option<&str>, published: Option<&str>) -> bool {
+    match (kept, published) {
+        (_, None) => false,
+        (None, Some(_)) => true,
+        (Some(k), Some(p)) => k.trim() != p,
+    }
+}
+
+/// Unpacks the verified zip into `dir`/yt-dlp_macos, replacing any copy there, and removes the old
+/// one-file build. The program is run once in the background so macOS checks its files now, not
+/// during the first search (6 s here, once).
+fn unpack(zip: &Path, dir: &Path, sum: &str) -> Result<(), String> {
+    let new = dir.join(format!("{MAC_DIR}.new"));
+    let old = dir.join(format!("{MAC_DIR}.old"));
+    let live = dir.join(MAC_DIR);
+    let _ = std::fs::remove_dir_all(&new);
+    let ok = Command::new("/usr/bin/ditto")
+        .args(["-x", "-k"])
+        .arg(zip)
+        .arg(&new)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    let _ = std::fs::remove_file(zip);
+    if !ok || !new.join("yt-dlp_macos").is_file() {
+        let _ = std::fs::remove_dir_all(&new);
+        return Err("Could not unpack yt-dlp.".into());
+    }
+    std::fs::write(new.join(SUM_FILE), sum).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_dir_all(&old);
+    if live.exists() {
+        std::fs::rename(&live, &old).map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(&new, &live).map_err(|e| e.to_string())?;
+    // The previous copy stays in .old until the next update: a search or stream still running from it
+    // loads its modules from those files.
+    if let Some(l) = legacy_path(dir) {
+        let _ = std::fs::remove_file(&l);
+        let _ = std::fs::remove_file(l.with_extension("updated"));
+    }
+    let bin = live.join("yt-dlp_macos");
+    std::thread::spawn(move || {
+        Command::new(bin)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+    });
+    Ok(())
+}
+
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(15)))
+        .timeout_per_read(Some(Duration::from_secs(60)))
+        .build()
+        .into()
+}
+
+fn release_sums(agent: &ureq::Agent, base: &str) -> Result<String, String> {
+    agent
+        .get(&format!("{base}/SHA2-256SUMS"))
+        .call()
+        .map_err(|e| format!("Could not download yt-dlp: {e}"))?
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| e.to_string())
 }
 
 /// The SHA-256 the release lists for `name`, from SHA2-256SUMS ("<hex>  <name>" per line).
@@ -85,21 +171,14 @@ fn hex(bytes: &[u8]) -> String {
 /// Download the release binary into `dir`, refuse it unless its SHA-256 matches, then make it executable.
 fn install(dir: &Path, base: &str, state: &Mutex<Fetch>) -> Result<(), String> {
     let name = asset().ok_or("yt-dlp has no release for this computer.")?;
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_connect(Some(Duration::from_secs(15)))
-        .timeout_per_read(Some(Duration::from_secs(60)))
-        .build()
-        .into();
+    let agent = agent();
     let get = |url: &str| {
         agent
             .get(url)
             .call()
             .map_err(|e| format!("Could not download yt-dlp: {e}"))
     };
-    let sums = get(&format!("{base}/SHA2-256SUMS"))?
-        .body_mut()
-        .read_to_string()
-        .map_err(|e| e.to_string())?;
+    let sums = release_sums(&agent, base)?;
     let want = expected_sum(&sums, name)
         .ok_or("The yt-dlp release lists no checksum for this computer.")?;
     let mut resp = get(&format!("{base}/{name}"))?;
@@ -129,6 +208,9 @@ fn install(dir: &Path, base: &str, state: &Mutex<Fetch>) -> Result<(), String> {
                 .into(),
         );
     }
+    if name.ends_with(".zip") {
+        return unpack(&part, dir, &want);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -138,22 +220,65 @@ fn install(dir: &Path, base: &str, state: &Mutex<Fetch>) -> Result<(), String> {
     std::fs::rename(&part, managed_path(dir)).map_err(|e| e.to_string())
 }
 
-/// `yt-dlp -U` in the background, at most once a day (the stamp file's age says when it last ran).
-fn update_daily(bin: &Path) {
-    let stamp = bin.with_extension("updated");
+/// When the daily update last ran. On macOS it sits beside the unpacked build's folder, not in it,
+/// so an update that replaces the folder keeps it.
+fn stamp_path(dir: &Path, bin: &Path) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        return dir.join(format!("{MAC_DIR}.updated"));
+    }
+    bin.with_extension("updated")
+}
+
+/// Holds the one daily update slot until dropped. Home asks for several rows at once, and two macOS
+/// installs at the same time would unpack over each other.
+struct Claim(&'static AtomicBool);
+impl Claim {
+    fn take(flag: &'static AtomicBool) -> Option<Self> {
+        (!flag.swap(true, Ordering::SeqCst)).then_some(Claim(flag))
+    }
+}
+impl Drop for Claim {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+static UPDATING: AtomicBool = AtomicBool::new(false);
+
+/// An update in the background, at most once a day (the stamp file's age says when it last ran) and
+/// one at a time: `yt-dlp -U`, or for the unpacked macOS build, which cannot update itself, the
+/// release again when its checksum changed.
+fn update_daily(dir: &Path, bin: &Path) {
+    let stamp = stamp_path(dir, bin);
     let fresh = std::fs::metadata(&stamp)
         .and_then(|m| m.modified())
         .is_ok_and(|t| t.elapsed().is_ok_and(|a| a < DAY));
-    if fresh || std::fs::write(&stamp, b"").is_err() {
+    if fresh {
         return;
     }
-    let bin = bin.to_path_buf();
+    let Some(claim) = Claim::take(&UPDATING) else {
+        return;
+    };
+    if std::fs::write(&stamp, b"").is_err() {
+        return;
+    }
+    let (dir, bin) = (dir.to_path_buf(), bin.to_path_buf());
     std::thread::spawn(move || {
-        Command::new(bin)
+        let _claim = claim;
+        if cfg!(target_os = "macos") {
+            let kept = std::fs::read_to_string(dir.join(MAC_DIR).join(SUM_FILE)).ok();
+            let published = release_sums(&agent(), RELEASES)
+                .ok()
+                .and_then(|s| asset().and_then(|n| expected_sum(&s, n)));
+            if needs_fetch(kept.as_deref(), published.as_deref()) {
+                let _ = install(&dir, RELEASES, &Mutex::default());
+            }
+            return;
+        }
+        let _ = Command::new(bin)
             .arg("-U")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()
+            .status();
     });
 }
 
@@ -163,9 +288,11 @@ fn managed(dir: &Path, fetch: &Arc<Mutex<Fetch>>, wait: Duration) -> Result<Path
     let start = Instant::now();
     loop {
         if bin.is_file() {
-            update_daily(&bin);
+            update_daily(dir, &bin);
             return Ok(bin);
         }
+        // Moving to the unpacked build: the old one keeps working while the new one downloads.
+        let legacy = legacy_path(dir).filter(|l| l.is_file());
         let now = {
             let mut g = fetch.lock().unwrap();
             let was = g.clone();
@@ -185,9 +312,11 @@ fn managed(dir: &Path, fetch: &Arc<Mutex<Fetch>>, wait: Duration) -> Result<Path
             Fetch::Failed(e) => {
                 // Try again on the next call.
                 *fetch.lock().unwrap() = Fetch::Idle;
-                return Err(e);
+                if legacy.is_none() {
+                    return Err(e);
+                }
             }
-            Fetch::Getting { got, total } if start.elapsed() >= wait => {
+            Fetch::Getting { got, total } if legacy.is_none() && start.elapsed() >= wait => {
                 let mb = |b: u64| b / 1_000_000;
                 return Err(match total {
                     0 => "Flick is downloading yt-dlp. Try again in a moment.".into(),
@@ -198,7 +327,13 @@ fn managed(dir: &Path, fetch: &Arc<Mutex<Fetch>>, wait: Duration) -> Result<Path
                     ),
                 });
             }
-            Fetch::Getting { .. } => std::thread::sleep(Duration::from_millis(200)),
+            Fetch::Getting { .. } if legacy.is_none() => {
+                std::thread::sleep(Duration::from_millis(200))
+            }
+            Fetch::Getting { .. } => {}
+        }
+        if let Some(l) = legacy {
+            return Ok(l);
         }
     }
 }
@@ -1427,5 +1562,152 @@ mod tests {
             "an MPEG-TS segment starts with 0x47"
         );
         stop_job(&st);
+    }
+
+    #[test]
+    fn fetches_again_only_when_the_published_checksum_changed() {
+        assert!(!needs_fetch(Some("ab"), Some("ab")));
+        assert!(!needs_fetch(Some("ab\n"), Some("ab")));
+        assert!(needs_fetch(Some("ab"), Some("cd")));
+        assert!(needs_fetch(None, Some("cd")));
+        assert!(!needs_fetch(Some("ab"), None));
+        assert!(!needs_fetch(None, None));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("flick-ytdlp-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_mac_build_is_the_unpacked_one() {
+        let d = Path::new("/t");
+        assert_eq!(asset(), Some("yt-dlp_macos.zip"));
+        assert_eq!(managed_path(d), d.join("yt-dlp_macos/yt-dlp_macos"));
+        assert_eq!(legacy_path(d), Some(d.join("yt-dlp")));
+        // Outside the folder an update replaces, so it survives the update.
+        assert_eq!(
+            stamp_path(d, &managed_path(d)),
+            d.join("yt-dlp_macos.updated")
+        );
+    }
+
+    #[test]
+    fn one_daily_update_at_a_time() {
+        static FLAG: AtomicBool = AtomicBool::new(false);
+        let first = Claim::take(&FLAG).expect("the first update gets the slot");
+        assert!(
+            Claim::take(&FLAG).is_none(),
+            "a second update waits for the next call"
+        );
+        drop(first);
+        assert!(
+            Claim::take(&FLAG).is_some(),
+            "the slot frees when the update ends"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unpack_replaces_the_copy_and_removes_the_one_file_build() {
+        let dir = tmp("unpack");
+        let make_zip = |tag: &str| {
+            let src = dir.join(format!("src-{tag}"));
+            std::fs::create_dir_all(src.join("_internal")).unwrap();
+            std::fs::write(src.join("yt-dlp_macos"), format!("#!/bin/sh\necho {tag}\n")).unwrap();
+            std::fs::write(src.join("_internal/lib"), tag).unwrap();
+            let zip = dir.join(format!("{tag}.zip"));
+            assert!(Command::new("/usr/bin/ditto")
+                .args(["-c", "-k"])
+                .arg(&src)
+                .arg(&zip)
+                .status()
+                .unwrap()
+                .success());
+            zip
+        };
+        std::fs::write(dir.join("yt-dlp"), "old one-file").unwrap();
+        std::fs::write(dir.join("yt-dlp.updated"), "").unwrap();
+        unpack(&make_zip("one"), &dir, "sum1").unwrap();
+        assert!(managed_path(&dir).is_file());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("yt-dlp_macos/_internal/lib")).unwrap(),
+            "one"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("yt-dlp_macos/release.sha256")).unwrap(),
+            "sum1"
+        );
+        assert!(!dir.join("yt-dlp").exists() && !dir.join("yt-dlp.updated").exists());
+        assert!(!dir.join("one.zip").exists());
+        // An update replaces the copy in place.
+        unpack(&make_zip("two"), &dir, "sum2").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("yt-dlp_macos/_internal/lib")).unwrap(),
+            "two"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("yt-dlp_macos/release.sha256")).unwrap(),
+            "sum2"
+        );
+        assert!(!dir.join("yt-dlp_macos.new").exists());
+        // The copy it replaced stays until the next update, for a search still running from it.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("yt-dlp_macos.old/_internal/lib")).unwrap(),
+            "one"
+        );
+        unpack(&make_zip("three"), &dir, "sum3").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("yt-dlp_macos.old/_internal/lib")).unwrap(),
+            "two"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unpack_refuses_what_is_not_the_build_and_keeps_the_copy() {
+        let dir = tmp("badzip");
+        std::fs::create_dir_all(dir.join("yt-dlp_macos")).unwrap();
+        std::fs::write(managed_path(&dir), "kept").unwrap();
+        let bad = dir.join("bad.zip");
+        std::fs::write(&bad, "not a zip").unwrap();
+        assert_eq!(
+            unpack(&bad, &dir, "x").unwrap_err(),
+            "Could not unpack yt-dlp."
+        );
+        assert_eq!(std::fs::read_to_string(managed_path(&dir)).unwrap(), "kept");
+        assert!(!bad.exists() && !dir.join("yt-dlp_macos.new").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_one_file_build_keeps_working_while_the_unpacked_one_downloads_or_fails() {
+        let dir = tmp("legacy");
+        std::fs::write(dir.join("yt-dlp"), "old").unwrap();
+        let getting = Arc::new(Mutex::new(Fetch::Getting { got: 1, total: 2 }));
+        assert_eq!(
+            managed(&dir, &getting, Duration::from_secs(300)).unwrap(),
+            dir.join("yt-dlp")
+        );
+        let failed = Arc::new(Mutex::new(Fetch::Failed("offline".into())));
+        assert_eq!(
+            managed(&dir, &failed, Duration::ZERO).unwrap(),
+            dir.join("yt-dlp")
+        );
+        assert!(matches!(*failed.lock().unwrap(), Fetch::Idle));
+        // Without the old build, a failed download is an error as before.
+        std::fs::remove_file(dir.join("yt-dlp")).unwrap();
+        let failed = Arc::new(Mutex::new(Fetch::Failed("offline".into())));
+        assert_eq!(
+            managed(&dir, &failed, Duration::ZERO).unwrap_err(),
+            "offline"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
