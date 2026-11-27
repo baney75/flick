@@ -167,7 +167,10 @@ pub fn verdict(j: &serde_json::Value, input: &str) -> StreamProbe {
 }
 
 /// Runs `cmd` with a deadline, killing it (and anything it started) when time runs out.
-fn output_within(cmd: &mut Command, limit: Duration) -> Result<(bool, Vec<u8>, Vec<u8>), String> {
+pub(crate) fn output_within(
+    cmd: &mut Command,
+    limit: Duration,
+) -> Result<(bool, Vec<u8>, Vec<u8>), String> {
     let mut child = own_group(cmd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

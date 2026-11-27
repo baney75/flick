@@ -782,17 +782,29 @@ fn with_ytdlp<T>(
 }
 
 /// One master lookup (ytmaster.rs): about 7 s, most of it YouTube's JS challenge.
+/// A lookup takes about 3 to 8 s; one that hangs (a stalled network, a challenge that never ends) is
+/// stopped here, so Play shows a message instead of waiting on it for good.
+const LOOKUP_LIMIT: Duration = Duration::from_secs(45);
+
 fn find_master(env: &Env, page: &str) -> ytmaster::Found {
+    find_master_within(env, page, LOOKUP_LIMIT)
+}
+
+fn find_master_within(env: &Env, page: &str, limit: Duration) -> ytmaster::Found {
     with_ytdlp(env, Duration::from_secs(300), |bin| {
-        let out = Command::new(bin)
-            .args(ytmaster::args(page))
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| e.to_string())?;
+        let (ok, out, err) =
+            crate::playback::output_within(Command::new(bin).args(ytmaster::args(page)), limit)
+                .map_err(|e| {
+                    if e == crate::playback::SLOW_SERVER {
+                        format!("yt-dlp found no stream within {} s.", limit.as_secs())
+                    } else {
+                        e
+                    }
+                })?;
         ytmaster::parse(
-            out.status.success(),
-            &String::from_utf8_lossy(&out.stdout),
-            &String::from_utf8_lossy(&out.stderr),
+            ok,
+            &String::from_utf8_lossy(&out),
+            &String::from_utf8_lossy(&err),
         )
     })
 }
@@ -1376,6 +1388,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let bin = managed_path(&dir);
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
         std::fs::write(
             &bin,
             format!("#!/bin/sh\necho \"$@\" >> \"$0.calls\"\nprintf '{out}'\n"),
@@ -1383,7 +1396,7 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         // Fresh, so update_daily never runs the stand-in with -U.
-        std::fs::write(bin.with_extension("updated"), b"").unwrap();
+        std::fs::write(stamp_path(&dir, &bin), b"").unwrap();
         let st = PluginTools::default();
         st.tokens
             .lock()
@@ -1409,6 +1422,23 @@ mod tests {
         assert!(!dir.join("cache").exists(), "the local pipeline ran");
         let calls = std::fs::read_to_string(managed_path(&dir).with_extension("calls")).unwrap();
         assert!(calls.contains("-f bv*[protocol^=m3u8] -O manifest_url -O is_live -O duration -- https://www.youtube.com/watch?v=a"), "{calls}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lookup_that_hangs_is_stopped_with_a_message() {
+        let (_st, e, dir) = with_fake_master("");
+        let bin = managed_path(&dir);
+        std::fs::write(&bin, "#!/bin/sh\nsleep 30\n").unwrap();
+        let t = Instant::now();
+        let r = find_master_within(
+            &e,
+            "https://www.youtube.com/watch?v=a",
+            Duration::from_secs(1),
+        );
+        assert_eq!(r.unwrap_err(), "yt-dlp found no stream within 1 s.");
+        assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
