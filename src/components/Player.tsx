@@ -59,7 +59,9 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   const began = useRef(0)
   const firstFrame = useRef(false)
   const stallFrom = useRef<{ t: number; ahead: number; seeking: boolean } | null>(null)
-  useEffect(() => { if (error) note('outcome', { result: 'error', message: error, stuck }) }, [error])
+  /** How long the stall still open has lasted: one that never recovers is logged at the card or close. */
+  const openStall = () => (stallFrom.current ? Date.now() - stallFrom.current.t : null)
+  useEffect(() => { if (error) note('outcome', { result: 'error', message: error, stuck, stalledMs: openStall() }) }, [error])
   const [playing, setPlaying] = useState(false)
   const [time, setTime] = useState(0)
   const [dur, setDur] = useState(0)
@@ -139,6 +141,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
           const planned = await planStream(input, !!liveIn, (line) => !cancelled && setStatus(line), closed.signal)
           if (cancelled || !planned) return
           const plan = req.fallbackUrl ? withServerFallback(planned) : planned
+          if (plan !== planned) note('decision', { plan: 'direct', serverFallback: true })
           if ('direct' in plan) {
             url = plan.direct
             fallback.current = plan.fallback
@@ -167,7 +170,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     })()
     return () => {
       cancelled = true
-      note('close', { played: began.current > 0 && firstFrame.current, at: Math.round(clock()) })
+      note('close', { played: began.current > 0 && firstFrame.current, at: Math.round(clock()), stalledMs: openStall() })
       closed.abort()
       remux.current?.stop()
       dog.current?.stop()

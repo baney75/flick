@@ -79,14 +79,15 @@ pub fn scrub(s: &str) -> String {
             let lead = who.len() - who.trim_start_matches(['"', '\'', '(', '[', '<']).len();
             out.push(format!("{}{at}", &w[..lead]));
         } else if is_path(w) {
-            // A path with spaces runs on to the word that ends it: one with a file type, or a colon.
-            let mut last = w;
-            let ends = |w: &str| w.ends_with([':', '.']) || ext(w.trim_end_matches(TRAIL)).is_some();
-            while !ends(last) {
-                match words.next() {
-                    Some(n) => last = n,
-                    None => break,
-                }
+            // A path with spaces runs on to the word that ends it: the first with a file type, else the
+            // first ending in a colon or period (`Dr. Strangelove.mkv` ends at the second), else the end.
+            let rest: Vec<&str> = std::iter::once(w).chain(words.clone()).collect();
+            let typed = rest.iter().position(|w| ext(w.trim_end_matches(TRAIL)).is_some());
+            let stop = rest.iter().position(|w| w.ends_with([':', '.']));
+            let end = typed.or(stop).unwrap_or(rest.len() - 1);
+            let last = rest[end];
+            for _ in 0..end {
+                words.next();
             }
             let tail = if last.ends_with(':') { ":" } else if last.ends_with('.') { "." } else { "" };
             out.push(match ext(last.trim_end_matches(TRAIL)) {
@@ -217,6 +218,10 @@ mod tests {
         assert_eq!(scrub("/Volumes/Disk/A Show/: Permission denied"), "[file]: Permission denied");
         assert_eq!(scrub("Error opening input file /tmp/My Film.mkv."), "Error opening input file [file] .mkv.");
         assert_eq!(scrub("No access to /Volumes/Disk/A Show. Try again"), "No access to [file]. Try again");
+        assert_eq!(
+            scrub("Error opening input file /Users/me/Movies/Dr. Strangelove (1964).mkv: No such file"),
+            "Error opening input file [file] .mkv: No such file"
+        );
         let s = scrub("bad header Authorization: Basic dXNlcjpwYXNz");
         assert!(!s.contains("dXNlcjpwYXNz") && !s.contains("Basic"), "{s}");
         assert_eq!(scrub("[http @ 0x1] user:pass@h.example"), "[http @ 0x1] h.example");

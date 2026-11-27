@@ -19,10 +19,17 @@ export function UpdatesPanel() {
     ? 'New versions download in the background from Flick\'s releases on GitHub and install when you restart.'
     : isMobileApp ? 'This app updates through your device\'s app store.' : 'The website updates itself when you reload the page.'
   // SPEC-playback-2 rule 8: the playback log's last 200 lines, for Donovan to paste. Nothing is sent.
-  const copyLog = async () => {
-    const t = await logTail()
-    if (!t) return notify('The playback log is empty.')
-    navigator.clipboard.writeText(t).then(() => notify('Playback log copied.'), () => prompt('Copy the playback log', t))
+  const copyLog = () => {
+    const text = logTail()
+    const done = (t: string) => notify(t ? 'Playback log copied.' : 'The playback log is empty.')
+    const offer = (t: string) => (t ? prompt('Copy the playback log', t) : done(t))
+    // WebKit keeps the click's permission for a write whose text is still on its way from the desktop.
+    if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+      const blob = text.then((t) => new Blob([t], { type: 'text/plain' }))
+      navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]).then(() => text.then(done), () => text.then(offer))
+      return
+    }
+    text.then((t) => (t ? navigator.clipboard.writeText(t).then(() => done(t), () => offer(t)) : done(t)))
   }
   return (
     <section class="panel" id="updates">
