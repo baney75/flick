@@ -99,6 +99,7 @@
       })
     },
     settings: function (sets) { settings = Object.freeze(plain(sets || {})) },
+    ping: function () { return !!plugin },
     call: function (fn, args) {
       if (!plugin) throw new Error('No plugin loaded.')
       if (['userCatalogs', 'catalog', 'meta', 'streams', 'subtitles', 'library', 'action', 'titleAction', 'progress', 'addonUrls', 'extensions', 'extensionCatalog', 'inspectExtension', 'addExtension', 'removeExtension', 'account', 'cached', 'resolve'].indexOf(fn) < 0 || typeof plugin[fn] !== 'function') {
