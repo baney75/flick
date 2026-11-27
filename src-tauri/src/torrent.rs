@@ -535,13 +535,19 @@ impl Engine {
         })
     }
 
-    /// A running torrent's download speed and live peers, for the player's readout.
+    /// A running torrent's download speed and live peers, for the player's readout: zero while
+    /// librqbit is between states, none once it no longer runs.
     pub fn stats(&self, hash: &str) -> Option<Stats> {
         let handle = match self.table().slots.get(&hash.to_ascii_lowercase()) {
             Some(Slot::Running(r)) => Arc::clone(&r.handle),
             _ => return None,
         };
-        let live = handle.stats().live?;
+        let Some(live) = handle.stats().live else {
+            return Some(Stats {
+                down_bps: 0,
+                peers: 0,
+            });
+        };
         Some(Stats {
             down_bps: live.download_speed.as_bytes(),
             peers: live.snapshot.peer_stats.live,
@@ -752,11 +758,14 @@ pub async fn torrent_stop(info_hash: String) -> Result<(), String> {
     Ok(())
 }
 
-/// The player's readout for the torrent of `info_hash`, while it runs.
+/// The player's readout for the torrent of `info_hash`; none once the engine no longer runs it.
+/// librqbit's stats take the torrent's locks, so it runs off the window's thread.
 #[tauri::command]
-pub fn torrent_stats(info_hash: String) -> Option<Stats> {
+pub async fn torrent_stats(info_hash: String) -> Result<Option<Stats>, String> {
     let e = ENGINE.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    e.and_then(|e| e.stats(&info_hash))
+    let Some(e) = e else { return Ok(None) };
+    let run = tauri::async_runtime::spawn_blocking(move || e.stats(&info_hash));
+    run.await.map_err(|e| e.to_string())
 }
 
 /// The app is quitting: every torrent stops and closes its sockets.

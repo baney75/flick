@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The store reads the route at import; the shell is a desktop one whose engine the tests answer.
 const shell = vi.hoisted(() => {
@@ -18,9 +18,9 @@ vi.mock('../src/lib/platform', async (orig) => ({
   },
   onDesktopEvent: async () => () => {},
 }))
-const { playingTorrent, dropTorrent, playTorrent } = await import('../src/lib/torrent')
+const { playingTorrent, dropTorrent, lostTorrent, playTorrent, wantTorrent, GRACE_MS, POLL_MS, TORRENT_LOST } = await import('../src/lib/torrent')
 const { engineNow, engineLine } = await import('../src/lib/readout')
-const { nowPlaying } = await import('../src/lib/store')
+const { nowPlaying, toast } = await import('../src/lib/store')
 const { checkAgain, gate } = await import('../src/lib/picking')
 
 const H = 'DD8255ECDC7CA55FB0BBF81323D87062DB1F6D1C'
@@ -37,50 +37,79 @@ describe('the readout for an engine torrent (SPEC-torrent rule 32)', () => {
 })
 
 describe('a torrent the engine plays', () => {
+  beforeEach(() => { vi.useFakeTimers(); shell.calls = []; shell.stats = { downBps: 1_000_000, peers: 3 } })
+  afterEach(async () => { nowPlaying.value = null; await vi.advanceTimersByTimeAsync(GRACE_MS); vi.useRealTimers() })
+  const flush = () => vi.advanceTimersByTimeAsync(0)
+
   it('asks the engine with the torrent stream as it came', async () => {
-    shell.calls = []
     expect(await playTorrent({ infoHash: H, fileIdx: 2 })).toBe('http://127.0.0.1:5/t/x/0')
     expect(shell.calls).toEqual([['torrent_play', { torrent: { infoHash: H, fileIdx: 2 } }]])
   })
 
-  it('shows the engine speed and peers, and stops the torrent when playback leaves it', async () => {
-    shell.calls = []
+  it('shows the engine speed and peers, and stops the torrent once the grace after closing ends', async () => {
     playingTorrent('k1', H)
     nowPlaying.value = req('k1')
-    await tick()
+    await flush()
     expect(shell.calls[0]).toEqual(['torrent_stats', { infoHash: h }])
     expect(engineNow.value).toEqual({ mbps: 8, peers: 3 })
-    expect(stops()).toEqual([])
     nowPlaying.value = null
-    expect(stops()).toEqual([h])
     expect(engineNow.value).toBeNull()
+    await vi.advanceTimersByTimeAsync(GRACE_MS - 100)
+    expect(stops()).toEqual([])
+    await vi.advanceTimersByTimeAsync(200)
+    expect(stops()).toEqual([h])
   })
 
-  it('keeps a torrent that plays again, and stops the old one for another torrent', async () => {
-    shell.calls = []
+  it('a replay or the next episode right after closing keeps the torrent; another torrent stops it at once', async () => {
     playingTorrent('k1', H)
     nowPlaying.value = req('k1')
-    // The next episode of the same torrent: the engine already switched files.
+    nowPlaying.value = null
+    await vi.advanceTimersByTimeAsync(GRACE_MS / 2)
     playingTorrent('k2', H)
     nowPlaying.value = req('k2')
+    await vi.advanceTimersByTimeAsync(GRACE_MS * 2)
     expect(stops()).toEqual([])
     const other = 'B'.repeat(40)
+    nowPlaying.value = null
     playingTorrent('k3', other)
     expect(stops()).toEqual([h])
     nowPlaying.value = req('k3')
     nowPlaying.value = null
+    await vi.advanceTimersByTimeAsync(GRACE_MS)
     expect(stops()).toEqual([h, 'b'.repeat(40)])
   })
 
-  it('a started torrent that loses its tap or its hold stops, unless it is the one playing', async () => {
-    shell.calls = []
+  it('a torrent whose VPN hold failed stops, unless it is the one playing', async () => {
     playingTorrent('k1', H)
     nowPlaying.value = req('k1')
     dropTorrent(H)
     expect(stops()).toEqual([])
     dropTorrent('C'.repeat(40))
     expect(stops()).toEqual(['C'.repeat(40)])
-    nowPlaying.value = null
+  })
+
+  it('a double tap starts the torrent once, and the losing tap never stops what the newer one wants', async () => {
+    const t = { infoHash: H }
+    wantTorrent(H)
+    const [a, b] = await Promise.all([playTorrent(t), playTorrent(t)])
+    expect(a).toBe(b)
+    expect(shell.calls.filter(([c]) => c === 'torrent_play')).toHaveLength(1)
+    lostTorrent(H)
+    expect(stops()).toEqual([])
+    // A newer tap on another stream: the older torrent stops.
+    wantTorrent(undefined)
+    lostTorrent(H)
+    expect(stops()).toEqual([H])
+  })
+
+  it('closes the player when the engine no longer runs the torrent (the VPN changed tunnels)', async () => {
+    playingTorrent('k1', H)
+    nowPlaying.value = req('k1')
+    await flush()
+    shell.stats = null
+    await vi.advanceTimersByTimeAsync(POLL_MS)
+    expect(nowPlaying.value).toBeNull()
+    expect(toast.value?.text).toBe(TORRENT_LOST)
   })
 })
 

@@ -329,6 +329,8 @@ mod tests {
         h.stop();
         // Another test may bind the freed port at once: stopped means nothing there takes the token.
         let after = TcpStream::connect(("127.0.0.1", port)).map_or(String::new(), |mut s| {
+            // A listener that never answers must not hang the test.
+            let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(5)));
             let _ = write!(
                 s,
                 "GET {lib} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"

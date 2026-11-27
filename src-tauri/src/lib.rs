@@ -1402,6 +1402,7 @@ pub fn run() {
             torrent::torrent_play,
             #[cfg(desktop)]
             torrent::torrent_stop,
+            #[cfg(desktop)]
             torrent::torrent_stats
         ])
         .setup(|app| {

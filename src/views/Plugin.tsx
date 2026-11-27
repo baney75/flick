@@ -21,7 +21,7 @@ import { cancelFetch, canStart, serviceTag, wantsGate } from '../lib/debrid-play
 import { DebridWait, playTorrent, useCached } from './Debrid'
 import { viaOf } from '../lib/readout'
 import { checkAgain, ctxNow, current, debridNow, deviceFor, holdGate, prefsNow, releaseGate, serviceName, shutFor, tap, watchGate } from '../lib/picking'
-import { dropTorrent, playTorrent as fromEngine, playingTorrent, STARTING } from '../lib/torrent'
+import { dropTorrent, lostTorrent, playTorrent as fromEngine, playingTorrent, STARTING, wantTorrent } from '../lib/torrent'
 import { resumeOf, unfinished } from '../lib/plugins/resume'
 import { formatTime } from '../lib/parse'
 import { langCode } from '../lib/release'
@@ -471,19 +471,21 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
     const t = tap()
     // Any newer tap ends a service's wait for an older one.
     cancelFetch()
-    // A stream behind the VPN gate never opens on a tap while the gate fails, nor outside its hold.
     const r = rowOf.get(s)
-    const shut = shutBy(r)
-    if (shut) { notify(shut); return }
     let url = s.url
     // A torrent from peers gets its url from the built-in engine, which holds the VPN gate itself.
     const hash = !url && s.torrent && r?.c.via === 'p2p' ? s.torrent.infoHash : undefined
+    wantTorrent(hash)
+    if (toast.value?.text === STARTING) toast.value = null
+    // A stream behind the VPN gate never opens on a tap while the gate fails, nor outside its hold.
+    const shut = shutBy(r)
+    if (shut) { notify(shut); return }
     if (hash && s.torrent) {
       notify(STARTING, 60_000)
       const got = await fromEngine(s.torrent).then((u) => ({ u }), (e) => ({ e: String(e) }))
       if (current(t) && toast.value?.text === STARTING) toast.value = null
       if ('e' in got) { if (current(t)) notify(got.e, 6000); return }
-      if (!current(t)) { dropTorrent(hash); return }
+      if (!current(t)) { lostTorrent(hash); return }
       url = got.u
     } else if (!url && r && canStart(r, s)) {
       // A torrent a debrid service takes gets its url from the service.
@@ -528,6 +530,7 @@ function Streams({ rec, meta, videoId, video }: { rec: Source; meta: Meta; video
       // such as MKV, takes the desktop's convert path (SPEC-torrent rule 24, SPEC-debrid rule 5).
       ...(s.torrent ? { src: { t: 'url' as const, url } } : {}),
       ...(via ? { via } : {}),
+      ...(hash ? { peers: true } : {}),
       poster: video?.thumbnail ?? meta.background ?? meta.poster,
       subs: subs.slice(0, 12).map((x) => ({ label: x.label ?? x.lang, lang: x.lang, url: x.url })),
       ref,

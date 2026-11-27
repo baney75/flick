@@ -105,7 +105,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
             })
           }).catch(() => {})
         }
-        if (preview.current && req.kind === 'video' && !isHls(url)) preview.current.src = url
+        if (preview.current && req.kind === 'video' && !isHls(url) && !req.peers) preview.current.src = url
       } catch (e) {
         if (!cancelled) { setStatus(null); setError((e as Error).message) }
       }

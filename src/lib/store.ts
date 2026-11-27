@@ -174,6 +174,8 @@ export interface PlayRequest {
   stream?: boolean
   /** A debrid stream: the player shows the service, its speed and the VPN state. */
   via?: import('./readout').Via
+  /** A torrent the built-in engine plays: no scrub preview, so the only reader is at the playhead. */
+  peers?: boolean
 }
 
 export const nowPlaying = signal<PlayRequest | null>(null)
