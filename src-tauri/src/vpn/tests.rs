@@ -835,3 +835,46 @@ fn another_address_during_a_recheck_keeps_playing_and_checks_again() {
         "the next round rechecked"
     );
 }
+
+#[test]
+fn the_torrent_engine_holds_through_the_watch_and_hears_every_change() {
+    let sys = Live::new(vpn());
+    let (w, events) = watched(&sys);
+    let engine = Arc::new(Mutex::new(vec![]));
+    let heard = Arc::clone(&engine);
+    w.subscribe(Box::new(move |s: &GateState| {
+        heard.lock().unwrap().push(s.reason)
+    }));
+    let gate: &dyn crate::torrent::Gate = &*w;
+    assert!(gate.hold("torrent").ok);
+    assert_eq!(w.held(), ["torrent"]);
+    sys.set(|f| *f = f.clone().route("1.1.1.1", "en0"));
+    w.round();
+    assert_eq!(*engine.lock().unwrap(), [None, Some(Fail::NoVpn)]);
+    assert_eq!(
+        *engine.lock().unwrap(),
+        *events.lock().unwrap(),
+        "the engine hears what the app hears"
+    );
+    sys.set(|f| *f = vpn());
+    assert!(gate.hold("torrent").ok);
+    gate.release("torrent");
+    assert!(w.held().is_empty());
+
+    // The app's wiring: the engine itself hears the drop.
+    let cache = std::env::temp_dir().join(format!("flick-listen-{}", std::process::id()));
+    let cfg = crate::torrent::Config {
+        cache,
+        cap: 0,
+        wait: std::time::Duration::from_secs(1),
+        dht: false,
+        peers: vec![],
+    };
+    let gate: Arc<dyn crate::torrent::Gate> = Arc::clone(&w) as _;
+    let e = Arc::new(crate::torrent::Engine::new(cfg, gate).unwrap());
+    crate::torrent::listen(&w, &e);
+    assert!(w.hold("play").ok, "a round runs only while something plays");
+    sys.set(|f| *f = f.clone().route("1.1.1.1", "en0"));
+    w.round();
+    assert_eq!(e.last_gate().and_then(|s| s.reason), Some(Fail::NoVpn));
+}

@@ -146,6 +146,11 @@ impl Watch {
         }
     }
 
+    /// Also tell `hook` whenever the answer changes (the torrent engine stops its torrents).
+    pub fn subscribe(&self, hook: Hook) {
+        lock(&self.hooks).push(hook);
+    }
+
     /// Records an answer and tells every hook when it differs from the last one. Returns the
     /// answer and the failure count after it. Hooks run under the state lock, so they hear the
     /// answers in order; they must not call back into the gate.

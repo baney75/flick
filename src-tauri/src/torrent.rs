@@ -10,7 +10,7 @@ mod rules;
 mod tests;
 
 use crate::torrent_http::{Server, Source};
-use crate::vpn::GateState;
+use crate::vpn::{watch::Watch, GateState};
 use librqbit::dht::Id20;
 use librqbit::limits::LimitsConfig;
 use librqbit::{
@@ -38,12 +38,20 @@ const STOP_WAIT: Duration = Duration::from_secs(10);
 const STOPPED: &str = "Playback stopped before the torrent started.";
 const STOPPING: &str = "This torrent is still stopping. Press Play again in a moment.";
 
-/// What the engine asks of the VPN gate: the app's `Watch` (wired up with the app's commands), or
-/// a stand-in in tests.
+/// What the engine asks of the VPN gate: the app's `Watch`, or a stand-in in tests.
 pub trait Gate: Send + Sync {
     /// The gate now; when it passes, `id` is held until released. A failed hold records nothing.
     fn hold(&self, id: &str) -> GateState;
     fn release(&self, id: &str);
+}
+
+impl Gate for Watch {
+    fn hold(&self, id: &str) -> GateState {
+        Watch::hold(self, id)
+    }
+    fn release(&self, id: &str) {
+        Watch::release(self, id)
+    }
 }
 
 pub struct Config {
@@ -133,6 +141,12 @@ impl Engine {
     // The gate is never called while this lock is held: its hooks call on_gate, which takes it.
     fn table(&self) -> MutexGuard<'_, Table> {
         self.table.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The gate's last answer through `on_gate`.
+    #[cfg(test)]
+    pub fn last_gate(&self) -> Option<GateState> {
+        self.table().last.clone()
     }
 
     /// Info hashes of the torrents running now.
@@ -556,5 +570,67 @@ impl Read for Reader {
                 Err(_) => Err(timed_out()),
             }
         })
+    }
+}
+
+static ENGINE: Mutex<Option<Arc<Engine>>> = Mutex::new(None);
+
+/// The app's engine, started on first use (rule 4) and told about every gate answer.
+fn engine(app: &tauri::AppHandle) -> Result<Arc<Engine>, String> {
+    use tauri::Manager;
+    let mut e = ENGINE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(e) = e.as_ref() {
+        return Ok(Arc::clone(e));
+    }
+    let watch = crate::vpn::watch::get()?;
+    let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    let cfg = Config {
+        cache: cache.join("torrents"),
+        cap: rules::CACHE_CAP,
+        wait: Duration::from_secs(45),
+        dht: true,
+        peers: vec![],
+    };
+    let gate: Arc<dyn Gate> = Arc::clone(watch) as Arc<dyn Gate>;
+    let started = Arc::new(Engine::new(cfg, gate).map_err(|e| e.to_string())?);
+    listen(watch, &started);
+    *e = Some(Arc::clone(&started));
+    Ok(started)
+}
+
+/// The engine hears every gate answer the app hears, so a drop stops its torrents.
+pub fn listen(watch: &crate::vpn::watch::Watch, engine: &Arc<Engine>) {
+    let hooked = Arc::clone(engine);
+    watch.subscribe(Box::new(move |s| hooked.on_gate(s)));
+}
+
+/// Plays a torrent stream: `{ infoHash, fileIdx?, trackers? }` to the URL the player opens.
+#[tauri::command]
+pub async fn torrent_play(app: tauri::AppHandle, torrent: Want) -> Result<String, String> {
+    if cfg!(windows) {
+        return Err(rules::WINDOWS_OFF.into());
+    }
+    // The engine starts here too: building or dropping its runtime must not run in an async task.
+    let run = tauri::async_runtime::spawn_blocking(move || engine(&app)?.play(&torrent));
+    run.await.map_err(|e| e.to_string())?
+}
+
+/// The player stopped the stream of `info_hash`. The player sends it only after `torrent_play`
+/// answered; a stop that ends a start still in progress is `Engine::stop`'s.
+#[tauri::command]
+pub async fn torrent_stop(info_hash: String) -> Result<(), String> {
+    let e = ENGINE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(e) = e {
+        let run = tauri::async_runtime::spawn_blocking(move || e.stop(&info_hash));
+        run.await.map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The app is quitting: every torrent stops and closes its sockets.
+pub fn shutdown() {
+    let e = ENGINE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(e) = e {
+        e.stop_all(true);
     }
 }
