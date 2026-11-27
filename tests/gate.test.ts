@@ -16,7 +16,7 @@ vi.mock('../src/lib/platform', async (orig) => ({
   invoke: async (cmd: string, args?: unknown) => { shell.calls.push([cmd, args]); return shell.answer },
   onDesktopEvent: async (_: string, cb: (g: unknown) => void) => { if (shell.listenFails) throw new Error('no listen'); shell.emit = cb; return () => {} },
 }))
-const { holdGate, releaseGate, shutFor, debridNow, noEngineFor, gate, VPN_DROPPED, NO_WATCH, OUTSIDE_GATE, WINDOWS_NO_ENGINE, NO_ENGINE_YET } = await import('../src/lib/picking')
+const { holdGate, releaseGate, shutFor, debridNow, noEngineFor, gate, VPN_DROPPED, NO_WATCH, OUTSIDE_GATE, WINDOWS_NO_ENGINE } = await import('../src/lib/picking')
 const { installed } = await import('../src/lib/plugins/registry')
 const { nowPlaying, toast } = await import('../src/lib/store')
 const { DESKTOP_ONLY } = await import('../src/views/Vpn')
@@ -73,7 +73,7 @@ describe('the built-in engine by platform', () => {
     [{ desktop: false, mobile: false, windows: false }, DESKTOP_ONLY],
     [{ desktop: true, mobile: true, windows: false }, DESKTOP_ONLY],
     [{ desktop: true, mobile: false, windows: true }, WINDOWS_NO_ENGINE],
-    [{ desktop: true, mobile: false, windows: false }, NO_ENGINE_YET],
+    [{ desktop: true, mobile: false, windows: false }, undefined],
   ])('%o: %s', (p, why) => expect(noEngineFor(p)).toBe(why))
 })
 

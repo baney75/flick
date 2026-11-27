@@ -325,7 +325,20 @@ mod tests {
         assert!(part.starts_with("HTTP/1.1 206"), "{part}");
         assert!(part.contains("Content-Range: bytes 2-5/10"), "{part}");
         assert!(part.ends_with("2345"), "{part}");
+        let lib = format!("/api/library?t={}", h.token());
         h.stop();
-        assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
+        // Another test may bind the freed port at once: stopped means nothing there takes the token.
+        let after = TcpStream::connect(("127.0.0.1", port)).map_or(String::new(), |mut s| {
+            // A listener that never answers must not hang the test.
+            let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            let _ = write!(
+                s,
+                "GET {lib} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+            );
+            let mut out = String::new();
+            let _ = s.read_to_string(&mut out);
+            out
+        });
+        assert!(!after.starts_with("HTTP/1.1 200"), "{after}");
     }
 }

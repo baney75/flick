@@ -93,10 +93,19 @@ impl Start {
     }
 }
 
+/// What the player's readout shows for a torrent (spec rule 32).
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stats {
+    pub down_bps: u64,
+    pub peers: u32,
+}
+
 struct Running {
     token: u64,
     /// Its files after the checks, so another file of it is judged before this one stops.
     vetted: rules::Vetted,
+    handle: Arc<ManagedTorrent>,
     session: Arc<Session>,
     iface: String,
     file: usize,
@@ -390,7 +399,7 @@ impl Engine {
                 let key = format!("{hash}/{file}");
                 let rt = self.rt.handle().clone();
                 let src = Arc::new(File {
-                    handle,
+                    handle: Arc::clone(&handle),
                     file,
                     len,
                     name,
@@ -400,6 +409,7 @@ impl Engine {
                     Ok(url) => Ok(Running {
                         token,
                         vetted,
+                        handle,
                         session,
                         iface: iface.to_string(),
                         file,
@@ -522,6 +532,25 @@ impl Engine {
             tokio::time::sleep(stall).await;
             session.stop().await;
             lock(&table).closing.remove(&hash);
+        })
+    }
+
+    /// A running torrent's download speed and live peers, for the player's readout: zero while
+    /// librqbit is between states, none once it no longer runs.
+    pub fn stats(&self, hash: &str) -> Option<Stats> {
+        let handle = match self.table().slots.get(&hash.to_ascii_lowercase()) {
+            Some(Slot::Running(r)) => Arc::clone(&r.handle),
+            _ => return None,
+        };
+        let Some(live) = handle.stats().live else {
+            return Some(Stats {
+                down_bps: 0,
+                peers: 0,
+            });
+        };
+        Some(Stats {
+            down_bps: live.download_speed.as_bytes(),
+            peers: live.snapshot.peer_stats.live,
         })
     }
 
@@ -727,6 +756,16 @@ pub async fn torrent_stop(info_hash: String) -> Result<(), String> {
         run.await.map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// The player's readout for the torrent of `info_hash`; none once the engine no longer runs it.
+/// librqbit's stats take the torrent's locks, so it runs off the window's thread.
+#[tauri::command]
+pub async fn torrent_stats(info_hash: String) -> Result<Option<Stats>, String> {
+    let e = ENGINE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let Some(e) = e else { return Ok(None) };
+    let run = tauri::async_runtime::spawn_blocking(move || e.stats(&info_hash));
+    run.await.map_err(|e| e.to_string())
 }
 
 /// The app is quitting: every torrent stops and closes its sockets.

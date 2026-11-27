@@ -1401,7 +1401,9 @@ pub fn run() {
             #[cfg(desktop)]
             torrent::torrent_play,
             #[cfg(desktop)]
-            torrent::torrent_stop
+            torrent::torrent_stop,
+            #[cfg(desktop)]
+            torrent::torrent_stats
         ])
         .setup(|app| {
             if selftest::active(app) {

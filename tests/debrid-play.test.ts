@@ -16,7 +16,7 @@ vi.mock('../src/lib/platform', async (orig) => ({
   invoke: async () => shell.answer,
   onDesktopEvent: async () => () => {},
 }))
-const { debridNow, gate, askable, mayAskNow, watchGate, NO_ENGINE_YET } = await import('../src/lib/picking')
+const { debridNow, gate, askable, mayAskNow, watchGate, WINDOWS_NO_ENGINE } = await import('../src/lib/picking')
 const { lookupCached, CachedLookups, serviceTag, torrentHashes, mayAsk, resolveOrder, wantsGate, canStart, torrentUrl, fetching, cancelFetch, waitLine, vpnStopped } = await import('../src/lib/debrid-play')
 const { services: playable } = await import('../src/lib/plugins/services')
 const { installed } = await import('../src/lib/plugins/registry')
@@ -32,7 +32,7 @@ const h = (c: string) => c.repeat(40)
 
 const dev: Device = { maxQuality: '1080p', hdr: false, codecs: {}, desktop: true, phone: false }
 const prefs = { audio: ['en'], subs: [], maxQuality: '4K' as const }
-const ctx = (more: Partial<PickCtx> = {}): PickCtx => ({ gate: gate.value?.ok === true, vpnForDebrid: settings.value.debridNeedsVpn === true, online: true, noEngine: NO_ENGINE_YET, ...more })
+const ctx = (more: Partial<PickCtx> = {}): PickCtx => ({ gate: gate.value?.ok === true, vpnForDebrid: settings.value.debridNeedsVpn === true, online: true, noEngine: WINDOWS_NO_ENGINE, ...more })
 const setup = (o: { list: unknown[]; gate: boolean; sw?: boolean }) => {
   installed.value = o.list as never
   settings.value = { ...settings.value, serviceOrder: (o.list as { id: string }[]).map((s) => s.id), debridNeedsVpn: o.sw === true }
@@ -88,9 +88,9 @@ describe('the cached lookups', () => {
   })
   it('gate failing, no service, torrent stream: blocked (the built-in engine needs the VPN)', async () => {
     setup({ list: [], gate: false })
-    // Today, with no engine: the engine's reason.
-    expect((await page([torrent('a')])).rows[0].blocked).toBe(NO_ENGINE_YET)
-    // With the engine there (P6's player), the row still needs the VPN.
+    // Where the engine doesn't run (Windows): its reason.
+    expect((await page([torrent('a')])).rows[0].blocked).toBe(WINDOWS_NO_ENGINE)
+    // With the engine there (macOS and Linux), the row still needs the VPN.
     const { call, rows } = await page([torrent('a')], undefined, { noEngine: undefined })
     expect(call).not.toHaveBeenCalled()
     expect(rows[0].c.via).toBe('p2p')
