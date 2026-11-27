@@ -146,7 +146,8 @@ values go only to that one `action()` call and are not saved; keep what you need
 - `ctx.tools.<name>.<op>(...)`: desktop tools the plugin listed in `tools`, desktop app only. The app
   checks each call against the `tools` of the installed manifest. Version 1 has one, `ytdlp`:
   - `search(query, limit)`: YouTube search, up to 50 `Meta`s of type `video`. Each `id` is the watch
-    URL; each also carries `channel` and `duration` (seconds).
+    URL; each also carries `channel`, `duration` (seconds, 0 when unknown), `views` (a count or null) and
+    `uploaded` (Unix seconds or null, approximate: YouTube's search page says "3 years ago").
   - `resolve(url)`: returns a `flick-tool:` stream URL for an `https:` page on the plugin's `hosts`.
     Flick picks the format (H.264 and AAC, up to 1080p) and plays it while yt-dlp streams it.
   - `download(url)`: a plugin cannot start a download; it fails with a plain message. The viewer saves

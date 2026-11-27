@@ -8,7 +8,9 @@
     "poster": "https://i.ytimg.com/vi/jNQXAC9IVRw/hqdefault.jpg?sqp=-oaymwE2COADEI4CSFXyq4qpAygIARUAAIhCGAFwAcABBvABAfgBvgKAAvABigIMCAAQARhVIFkoZTAP&rs=AOn4CLDkGJrAGBspJ5G6u9b7tutsHbloEg",
     "posterShape": "landscape",
     "runtime": "0:19",
-    "type": "video"
+    "type": "video",
+    "uploaded": 1114560000,
+    "views": 391000000
   },
   {
     "channel": "Alina Celeste",
@@ -19,7 +21,22 @@
     "poster": "https://i.ytimg.com/vi/zEVYvCKQ1gM/hq720.jpg?sqp=-oaymwEcCNAFEJQDSFXyq4qpAw4IARUAAIhCGAFwAcABBg==&rs=AOn4CLClxJuB9Px8injAjq9TeWxgKqfZTQ",
     "posterShape": "landscape",
     "runtime": "3:05",
-    "type": "video"
+    "type": "video",
+    "uploaded": null,
+    "views": 0
+  },
+  {
+    "channel": "Andrej Karpathy",
+    "description": "",
+    "duration": 3725,
+    "id": "https://www.youtube.com/watch?v=kArPaThY001",
+    "name": "A fixture lecture, one hour long",
+    "poster": "https://i.ytimg.com/vi/kArPaThY001/hqdefault.jpg",
+    "posterShape": "landscape",
+    "runtime": "1:02:05",
+    "type": "video",
+    "uploaded": 1700000000,
+    "views": 1200000
   },
   {
     "channel": "Someone",
@@ -30,6 +47,8 @@
     "poster": "https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg",
     "posterShape": "landscape",
     "runtime": "",
-    "type": "video"
+    "type": "video",
+    "uploaded": null,
+    "views": null
   }
 ]

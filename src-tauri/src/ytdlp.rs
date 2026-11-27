@@ -229,6 +229,15 @@ fn run_json(env: &Env, args: &[&str]) -> Result<Value, String> {
     }
 }
 
+/// A length as YouTube writes it: "3:05", "1:02:05". Empty for zero (unknown or live).
+fn clock(secs: u64) -> String {
+    match (secs / 3600, secs / 60 % 60, secs % 60) {
+        (0, 0, 0) => String::new(),
+        (0, m, s) => format!("{m}:{s:02}"),
+        (h, m, s) => format!("{h}:{m:02}:{s:02}"),
+    }
+}
+
 /// Search results as Flick metas. The id is the watch URL, ready for resolve().
 fn metas(j: &Value) -> Vec<Value> {
     let entries = j["entries"]
@@ -246,12 +255,15 @@ fn metas(j: &Value) -> Vec<Value> {
             let thumb = e["thumbnails"].as_array().and_then(|t| t.iter().max_by_key(|x| x["width"].as_u64().unwrap_or(0))?["url"].as_str().map(String::from));
             let secs = e["duration"].as_f64().unwrap_or(0.0) as u64;
             let channel = e["channel"].as_str().or(e["uploader"].as_str()).unwrap_or("");
+            // Null when the search page did not say. `uploaded` is approximate ("3 years ago").
+            let views = e["view_count"].as_u64();
+            let uploaded = e["timestamp"].as_i64().filter(|t| *t > 0);
             Some(json!({
                 "id": url, "type": "video", "name": name, "posterShape": "landscape",
                 "poster": thumb.unwrap_or_else(|| format!("https://i.ytimg.com/vi/{id}/hqdefault.jpg")),
                 "description": e["description"].as_str().unwrap_or(""),
-                "channel": channel, "duration": secs,
-                "runtime": if secs > 0 { format!("{}:{:02}", secs / 60, secs % 60) } else { String::new() },
+                "channel": channel, "duration": secs, "views": views, "uploaded": uploaded,
+                "runtime": clock(secs),
             }))
         })
         .collect()
@@ -308,7 +320,15 @@ fn run_tool(
                 .clamp(1, 50);
             let j = run_json(
                 env,
-                &["--flat-playlist", "-J", "--", &format!("ytsearch{n}:{q}")],
+                // approximate_date turns the page's "3 years ago" into `timestamp`.
+                &[
+                    "--flat-playlist",
+                    "--extractor-args",
+                    "youtubetab:approximate_date",
+                    "-J",
+                    "--",
+                    &format!("ytsearch{n}:{q}"),
+                ],
             )?;
             Ok(Value::Array(metas(&j)))
         }
