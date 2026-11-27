@@ -24,7 +24,7 @@ describe('plugin validation', () => {
     expect(() => V.validateManifest(manifest({ id: 'Films' }), FNS)).toThrow(/reverse-DNS/)
     expect(() => V.validateManifest(manifest({ hosts: ['https://example.org/x'] }), FNS)).toThrow(/not a host name/)
     expect(() => V.validateManifest(manifest({ tools: ['shell'] }), FNS)).toThrow(/no desktop tool/)
-    expect(() => V.validateManifest(manifest({ catalogs: [{ id: 'a', name: 'A', type: 'porn' }] }), FNS)).toThrow(/not one of/)
+    expect(() => V.validateManifest(manifest({ catalogs: [{ id: 'a', name: 'A', type: 'Porn' }] }), FNS)).toThrow(/not one of/)
     expect(() => V.validateManifest(manifest({ api: 2 }), FNS)).toThrow(/API 2/)
     expect(() => V.validateManifest(manifest(), ['catalog', 'meta'])).toThrow(/streams\(\)/)
     expect(() => V.validateManifest(manifest({ actions: [{ id: 'in', label: 'Sign in' }] }), FNS)).toThrow(/action\(\)/)
@@ -47,7 +47,7 @@ describe('plugin validation', () => {
   })
   it('skips bad metas, trims strings and caps items at 200', () => {
     const items = Array.from({ length: 250 }, (_, i) => ({ id: `m${i}`, type: 'movie', name: 'x'.repeat(3000), poster: 'javascript:1' }))
-    items.splice(1, 0, { id: 'bad', type: 'nope', name: 'Bad', poster: '' })
+    items.splice(1, 0, { id: 'bad', type: 'Nope', name: 'Bad', poster: '' })
     const r = V.validateCatalog({ items, more: true })
     expect(r.items.length).toBe(199)
     expect(r.items[0].name.length).toBe(2000)

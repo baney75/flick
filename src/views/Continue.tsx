@@ -13,7 +13,7 @@ import { ResumeCard } from './Home'
 export function useContinue() {
   const srcs = sources.value
   useEffect(() => { for (const rec of srcs) loadLibrary(rec) }, [srcs.map((r) => r.id).join()])
-  const libs = useMemo(() => srcs.map((r) => ({ p: r.id, list: libraries.value[r.id] ?? [] })), [srcs, libraries.value])
+  const libs = useMemo(() => srcs.map((r) => ({ p: r.id, list: libraries.value[r.id]?.items ?? [] })), [srcs, libraries.value])
   const showOf = useMemo(() => { const m = new Map(items.value.map((i) => [i.id, i.show])); return (id: string) => m.get(id) }, [items.value])
   return useMemo(() => continueEntries(progress.value, libs, showOf), [progress.value, libs, showOf])
 }

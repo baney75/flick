@@ -127,9 +127,9 @@ async function stubTool(name, op, a) {
 async function call(fn, args, validate, what) {
   try {
     const raw = plain(await withTimeout(Promise.resolve(plugin[fn](ctx, ...args)), `${fn}()`))
-    const out = validate(raw)
-    const rawItems = fn === 'catalog' ? (Array.isArray(raw) ? raw : raw?.items) : ['streams', 'library', 'userCatalogs', 'extensions', 'extensionCatalog'].includes(fn) ? raw : null
-    const kept = fn === 'catalog' ? out.items : out
+    const out = validate(raw, (t) => console.log(`     note: ${t}`))
+    const rawItems = fn === 'catalog' || fn === 'library' ? (Array.isArray(raw) ? raw : raw?.items) : ['streams', 'userCatalogs', 'extensions', 'extensionCatalog'].includes(fn) ? raw : null
+    const kept = fn === 'catalog' || fn === 'library' ? out.items : out
     if (Array.isArray(rawItems) && rawItems.length > kept.length) {
       check(false, `${what}: Flick dropped ${rawItems.length - kept.length} of ${rawItems.length} entries that do not match the shapes`)
     }
@@ -180,7 +180,7 @@ if (!sample) {
   check(false, 'no catalog returned an item to open')
   done()
 }
-const meta = await call('meta', [{ type: sample.type, id: sample.id }], V.validateMeta, `meta ${sample.id}`)
+const meta = await call('meta', [{ type: sample.type, id: sample.id }], (x) => V.validateMeta(x), `meta ${sample.id}`)
 if (meta) {
   check(true, `meta "${meta.name}" (${meta.type})${meta.videos ? `, ${meta.videos.length} videos` : ''}`)
   const vid = meta.videos?.find((v) => (v.season ?? 1) > 0) ?? meta.videos?.[0]
@@ -200,7 +200,13 @@ if (m.has.extensions) {
   if (cat) check(true, `extensionCatalog(): ${cat.length} addons to add`)
 }
 if (m.has.library) {
-  const lib = await call('library', [], V.validateLibrary, 'library')
-  if (lib) check(true, `library: ${lib.length} items`)
+  const notes = []
+  const lib = await call('library', [], (x, note) => V.validateLibrary(x, (t) => { notes.push(t); note(t) }), 'library')
+  if (lib) {
+    check(true, `library: ${lib.items.length} items, ${lib.shelves.length} shelves`)
+    for (const s of lib.shelves) console.log(`     shelf "${s.name}" (${s.id}): ${lib.items.filter((m) => m.shelves?.includes(s.id)).length} items`)
+    // More than 20 good shelves, or a shelf Flick drops, fails; the validator's notes say which.
+    for (const t of notes.filter((t) => / shelves\.$|shelf entr/.test(t))) check(false, `library: ${t}`)
+  }
 }
 done()

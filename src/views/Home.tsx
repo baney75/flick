@@ -33,7 +33,7 @@ export function Home() {
   const music = all.filter((i) => i.kind === 'audio').slice(0, 24)
   const showList = [...shows.value.values()].slice(0, 20)
   const srcs = sources.value
-  const plCont = srcs.map((rec) => ({ rec, list: continueOf(libraries.value[rec.id] ?? []).slice(0, 20) })).filter((x) => x.list.length)
+  const plCont = srcs.map((rec) => ({ rec, list: continueOf(libraries.value[rec.id]?.items ?? []).slice(0, 20) })).filter((x) => x.list.length)
   const empty = !all.length && !cont.length && !plCont.length && !srcs.length
   useEffect(() => { for (const rec of srcs) loadLibrary(rec) }, [srcs.map((r) => r.id).join()])
 

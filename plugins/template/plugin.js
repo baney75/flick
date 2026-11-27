@@ -62,6 +62,15 @@ export default {
     }
   },
 
+  // Optional: the user's own things, shown in Flick's Library. Return a Meta list, or shelves (chips in
+  // Library) and items that name them. `type` may be a kind of your own ('podcast', 'recipe'); `added`
+  // is when it was added (ms) and `facts` are labeled details for the title page. See "Library" in
+  // docs/PLUGINS.md.
+  //   async library(ctx) {
+  //     const saved = (await ctx.store.get('saved')) ?? []
+  //     return { shelves: [{ id: 'saved', name: 'Saved films' }], items: saved.map((m) => ({ ...m, shelves: ['saved'] })) }
+  //   },
+
   async streams(ctx, { id }) {
     const j = await (await ctx.fetch(`${API}/metadata/${encodeURIComponent(id)}`)).json()
     const files = (j.files ?? []).filter((f) => /\.(mp4|m4v|webm|ogv)$/i.test(f.name))

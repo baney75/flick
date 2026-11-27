@@ -183,13 +183,13 @@ function frameFor(rec: Installed): Promise<Frame> {
   return f
 }
 
-const CHECKS: Record<string, (x: unknown, m: V.PluginManifest, args: unknown[]) => unknown> = {
-  catalog: V.validateCatalog,
+const CHECKS: Record<string, (x: unknown, m: V.PluginManifest, args: unknown[], note: V.Note) => unknown> = {
+  catalog: (x, _m, _a, note) => V.validateCatalog(x, note),
   userCatalogs: V.validateCatalogDefs,
-  meta: V.validateMeta,
+  meta: (x) => V.validateMeta(x),
   streams: V.validateStreams,
   subtitles: V.validateSubs,
-  library: V.validateLibrary,
+  library: (x, _m, _a, note) => V.validateLibrary(x, note),
   addonUrls: V.validateAddonUrls,
   action: V.validateAction,
   extensions: (x) => V.validateExtensions(x),
@@ -204,7 +204,7 @@ const CHECKS: Record<string, (x: unknown, m: V.PluginManifest, args: unknown[]) 
 }
 
 export interface Results {
-  userCatalogs: V.CatalogDef[]; catalog: V.CatalogResult; meta: V.Meta; streams: V.Stream[]; subtitles: V.Sub[]; library: V.Meta[]; action: V.ActionResult; progress: null; addonUrls: string[]
+  userCatalogs: V.CatalogDef[]; catalog: V.CatalogResult; meta: V.Meta; streams: V.Stream[]; subtitles: V.Sub[]; library: V.Library; action: V.ActionResult; progress: null; addonUrls: string[]
   extensions: V.Extension[]; extensionCatalog: V.Extension[]; inspectExtension: V.Extension; addExtension: V.ExtensionResult; removeExtension: V.ExtensionResult
   account: V.AccountResult; cached: string[]; resolve: V.ResolveResult
 }
@@ -214,7 +214,7 @@ export async function callPlugin<K extends keyof Results>(rec: Installed, fn: K,
   const fr = await frameFor(rec)
   const raw = await fr.rpc.call('call', [fn, args]).catch((e: Error) => { logLine(rec.id, `${fn}() failed: ${e.message}`); throw e })
   try {
-    return CHECKS[fn](raw, rec.manifest as V.PluginManifest, args) as Results[K]
+    return CHECKS[fn](raw, rec.manifest as V.PluginManifest, args, (t) => logLine(rec.id, `${fn}(): ${t}`)) as Results[K]
   } catch (e) {
     logLine(rec.id, `Dropped a bad ${fn}() result: ${(e as Error).message}`)
     throw e

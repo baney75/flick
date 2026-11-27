@@ -1,7 +1,8 @@
 // Types for Flick plugins, API version 1. The contract in words: docs/PLUGINS.md.
 // In a plugin: /** @type {import('./flick-plugin').Plugin} */ export default { ... }
 
-export type MetaType = 'movie' | 'series' | 'video' | 'channel' | 'audio' | 'audiobook' | 'book'
+/** A built-in type, or a kind of your own: 2 to 32 of a-z 0-9 -, starting with a letter ("podcast"). */
+export type MetaType = 'movie' | 'series' | 'video' | 'channel' | 'audio' | 'audiobook' | 'book' | (string & {})
 export type Platform = 'web' | 'desktop' | 'mobile'
 
 export interface Field {
@@ -36,7 +37,15 @@ export interface Meta {
   badges?: string[]
   videos?: Video[]
   progress?: { pos: number; dur: number; at: number; videoId?: string }
+  /** library() only: ids of declared shelves this item sits on, up to 8. */
+  shelves?: string[]
+  /** When it was added, milliseconds since epoch (a number under 1e11 is read as seconds). */
+  added?: number
+  /** Up to 8 facts on the title page: { label: 'Servings', value: '4' }. Label 30, value 120 characters. */
+  facts?: { label: string; value: string | number }[]
 }
+/** A chip in Library. At most 20; id is 1 to 40 of a-z 0-9 _ -, name 1 to 40 characters. */
+export interface Shelf { id: string; name: string; layout?: 'poster' | 'square' | 'landscape' | 'list'; order?: 'plugin' | 'added' | 'name' | 'year' }
 export interface Sub { url: string; lang: string; label?: string }
 export interface Stream {
   url: string
@@ -82,7 +91,8 @@ export interface Plugin {
   meta(ctx: Ctx, args: { type: MetaType; id: string }): Promise<Meta>
   streams(ctx: Ctx, args: { type: MetaType; id: string; videoId: string }): Promise<Stream[]>
   subtitles?(ctx: Ctx, args: { type: MetaType; id: string; videoId: string }): Promise<Sub[]>
-  library?(ctx: Ctx): Promise<Meta[]>
+  /** The user's own things: a list, or shelves (chips in Library) and up to 1,000 items. */
+  library?(ctx: Ctx): Promise<Meta[] | { shelves?: Shelf[]; items: Meta[] }>
   /** The user's addon URLs, for Flick to offer debrid keys found in them. Only the bundled Stremio plugin is asked. */
   addonUrls?(ctx: Ctx): Promise<string[]>
   action?(ctx: Ctx, id: string, values: Record<string, any>): Promise<{ ok: boolean; message?: string }>

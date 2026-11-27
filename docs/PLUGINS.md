@@ -87,7 +87,7 @@ export default {
   async streams(ctx, { type, id, videoId }) { return [/* Stream */] },
   // optional:
   async subtitles(ctx, { type, id, videoId }) { return [/* Sub */] },            // extra subtitles for any stream
-  async library(ctx) { return [/* Meta, may carry progress */] },
+  async library(ctx) { return { shelves: [/* Shelf */], items: [/* Meta, may carry progress */] } }, // or just the Meta list, see "Library"
   async action(ctx, id, values) { return { ok: true, message: 'Signed in' } },  // an `actions` button was tapped
   async progress(ctx, { type, id, videoId, pos, dur }) {},                      // play position, to sync back
   async addonUrls(ctx) { return [/* https addon URLs */] },                     // bundled Stremio plugin only: Flick looks for debrid keys in them
@@ -123,6 +123,48 @@ Browse with search. Flick calls them only when the user opens that section or ta
 - Flick checks the address the user typed before the plugin sees it (`https://` or `stremio://`
   only), and shows any debrid key in an addon address by its last 4 characters.
 
+### Library
+
+`library(ctx)` is the user's own things in this source: saved titles, subscriptions, a recipe box. It
+returns either a list of `Meta` or `{ shelves, items }`. Items show in Library under All and, by
+`type`, in Flick's own chips. Shelves add chips of their own, so anything can become a library:
+podcasts, recipes, courses, comics, papers, games.
+
+- **Kinds.** `type` is one of the built-in types or a kind of your own: 2 to 32 lowercase letters,
+  digits and `-`, starting with a letter (`podcast`, `recipe`, `course`). Flick never merges a custom
+  kind with another source's titles and passes it back unchanged to `meta()` and `streams()`.
+- **Shelves.** `Shelf`: `{ id, name, layout?, order? }`. `id` is 1 to 40 of `a-z 0-9 _ -`, starting
+  with a letter or digit; `name` is 1 to 40 characters. `layout` is `poster`, `square`, `landscape` or
+  `list` (one row per item); without it the chip uses the most common `posterShape` of its items.
+  `order` is `plugin` (default, your order), `added`, `name` or `year`. At most 20 shelves; a bad or
+  repeated one is dropped with a log line and the rest stay. Two plugins' shelves with the same name
+  share one chip.
+- **Placing items.** An item lists the shelves it sits on in `shelves`, up to 8 ids. An id you did not
+  declare is dropped with one log line. An item with no shelf is still in the library.
+- At most 1,000 items. A result that is neither a list nor `{ shelves, items }` is dropped, and the
+  plugin's library is empty until the next call returns a good one.
+- Opening an item is its title page, as anywhere else: what `meta()` returns, with the library
+  item's `facts` when `meta()` has none. A web page is a stream with `external: true`; a kind with no
+  streams (a recipe) shows its title page with `facts` and `description` only.
+
+A podcast plugin, for example:
+
+```js
+async library(ctx) {
+  const subs = (await ctx.store.get('subs')) ?? []
+  return {
+    shelves: [
+      { id: 'subscribed', name: 'Subscribed', layout: 'square' },
+      { id: 'new', name: 'New episodes', layout: 'list', order: 'added' },
+    ],
+    items: [
+      ...subs.map((s) => ({ id: s.feed, type: 'podcast', name: s.title, poster: s.art, posterShape: 'square', shelves: ['subscribed'], facts: [{ label: 'Host', value: s.host }] })),
+      ...subs.flatMap((s) => s.latest.map((e) => ({ id: e.guid, type: 'podcast', name: e.title, subtitle: s.title, added: e.published, badges: [e.length], shelves: ['new'] }))),
+    ],
+  }
+},
+```
+
 ### Settings and actions
 
 A field is `{ key, label, type?, options?, default?, secret?, help? }` with `type` one of `text`
@@ -134,13 +176,18 @@ values go only to that one `action()` call and are not saved; keep what you need
 
 ### Shapes
 
-- `type`: `movie`, `series`, `video`, `channel`, `audio`, `audiobook`, `book`.
+- `type`: `movie`, `series`, `video`, `channel`, `audio`, `audiobook`, `book`, or a kind of your own
+  (`podcast`; see "Library"). A catalog's `type` follows the same rule.
 - `Meta`: `{ id, type, name, poster?, posterShape? ('poster'|'square'|'landscape'), background?,
   description?, year?, genres?, runtime?, subtitle?, badges?, videos?: Video[], progress?: { pos, dur,
-  at, videoId? } }`. `id` is the plugin's own id, at most 512 characters. `subtitle` is one line under
+  at, videoId? }, shelves?, added?, facts? }`. `id` is the plugin's own id, at most 512 characters. `subtitle` is one line under
   the name on a card (a channel, an author; it replaces the year there). `badges` are up to 4 short
   facts, 40 characters each, under it and on the title page ("1.2M views", "3 years ago"). A
-  `landscape` card shows `runtime` on its thumbnail and gives the name two lines.
+  `landscape` card shows `runtime` on its thumbnail and gives the name two lines. In `library()` only,
+  `shelves` places the item (see "Library"). `added` is when it was added, in milliseconds since
+  epoch (a number under 100,000,000,000 is read as seconds). `facts` is up to 8 `{ label, value }`
+  pairs listed on the title page (label 30 characters, value 120: Servings 4, Platform Switch); a
+  fact of the wrong shape is dropped, never the title.
 - `Video` (an episode, part or chapter): `{ id, title, season?, episode?, released?, thumbnail?, overview? }`.
 - `Stream`: `{ url, title?, quality?, kind? ('video'|'audio'|'book'), subs?: { url, lang, label? }[],
   needsDesktop?: true, external?: true, group? }`. `url` is `https:`, `http:` (desktop, or LAN), or
@@ -153,7 +200,8 @@ values go only to that one `action()` call and are not saved; keep what you need
   desktop app. On the website it shows only where the browser may fetch the file (CORS). A saved
   title plays from the file with no network and keeps its progress.
 - `Sub`: `{ url, lang, label? }`, `url` is `http:` or `https:` (SRT or VTT).
-- Strings are trimmed to 2,000 characters, lists to 500 items, `items` to 200 per call.
+- Strings are trimmed to 2,000 characters, lists to 500 items, `items` to 200 per call (1,000 in
+  `library()`).
 
 ### ctx
 

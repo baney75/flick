@@ -15,6 +15,7 @@ const DOCS = 'https://github.com/baney75/flick/blob/main/docs/PLUGINS.md'
 export const PROMPT = `Write a Flick plugin for: <the site, API or service you want in Flick>.
 Read the contract at ${DOCS} and follow the skill at https://github.com/baney75/flick/blob/main/skills/flick-plugin/SKILL.md.
 Start from https://raw.githubusercontent.com/baney75/flick/main/plugins/template/plugin.js.
+The plugin may name its own kinds (podcast, recipe) and return its library as shelves that become chips in Flick's Library.
 Clone https://github.com/baney75/flick, run npm install, and run npm run plugin:check -- plugin.js until every line is PASS.
 Then publish plugin.js as a GitHub gist and give me its raw URL (without the commit hash) to paste into Flick under Settings > Plugins > Add by URL.`
 
