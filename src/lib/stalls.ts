@@ -52,18 +52,49 @@ const real: Timers = { now: () => performance.now(), set: (f, ms) => setTimeout(
 
 export class Watchdog {
   readonly stalls: Stall[] = []
+  /** Reloads spent on a stuck stall during play, and on a stuck first-frame or seek wait. */
   reloads = 0
+  startReloads = 0
   private open: Stall | null = null
   private timer: unknown
+  /** A frame played since the last attach; until then every wait is the opening one. */
+  private played = false
+  /** The element failed: nothing is watched until the next attach. */
+  private failedNow = false
 
   constructor(public kind: SourceKind, private on: { reload(): void; giveUp(): void }, private t: Timers = real) {}
 
+  /** A new source or run was attached: its first wait is the opening one, and a failure is behind it. */
+  attached() {
+    this.resumed()
+    this.played = false
+    this.failedNow = false
+  }
+
+  /** The element fired `playing`. */
+  playing() {
+    this.played = true
+    this.resumed()
+  }
+
+  /** The user paused: a paused element stops fetching, so an open wait is no longer a stall to act on. */
+  paused() {
+    this.resumed()
+  }
+
+  /** The element failed (an error card, or a conversion started): no reload may follow. */
+  failed() {
+    this.resumed()
+    this.failedNow = true
+  }
+
   /**
-   * The element fired `waiting`; `from`..`to` is the buffered range at the playhead. `expected` is a
-   * wait before the first frame or for a seek: it still reloads when stuck, but is not a stall.
+   * The element fired `waiting`; `from`..`to` is the buffered range at the playhead. A wait before
+   * the first frame, or while `seeking`, is expected: it still reloads when stuck, but is not a stall.
    */
-  waiting(from: number, to: number, expected = false) {
-    if (this.open) return
+  waiting(from: number, to: number, seeking = false) {
+    if (this.open || this.failedNow) return
+    const expected = !this.played || seeking
     this.open = { kind: this.kind, start: this.t.now(), ms: null, from, to, expected }
     this.stalls.push(this.open)
     if (this.stalls.length > KEEP) this.stalls.shift()
@@ -113,7 +144,8 @@ export class Watchdog {
     if (!s) return
     s.ms = this.t.now() - s.start
     this.open = null
-    if (this.reloads++ === 0) this.on.reload()
+    // An expected wait has its own reload, so a slow seek does not spend the one a stall during play gets.
+    if ((s.expected ? this.startReloads++ : this.reloads++) === 0) this.on.reload()
     else this.on.giveUp()
   }
 }

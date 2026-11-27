@@ -7,9 +7,12 @@ const timers = { now: () => Date.now(), set: (f: () => void, ms: number) => setT
 beforeEach(() => vi.useFakeTimers())
 afterEach(() => vi.useRealTimers())
 
-function dog() {
+/** A watchdog on a source that has played its first frame, unless `opening`. */
+function dog(opening = false) {
   const seen: string[] = []
   const w = new Watchdog('debrid', { reload: () => seen.push('reload'), giveUp: () => seen.push('give up') }, timers)
+  w.attached()
+  if (!opening) w.playing()
   return { w, seen }
 }
 
@@ -53,18 +56,62 @@ describe('Watchdog', () => {
     expect(w.summary()).toBe('Stalls: 2, longest 4.2 s')
   })
   it('a wait before the first frame or for a seek is watched but not counted', () => {
-    const { w, seen } = dog()
-    w.waiting(0, 0, true)
+    const { w, seen } = dog(true)
+    w.waiting(0, 0)
     vi.advanceTimersByTime(2000)
-    w.resumed()
+    w.playing()
     expect(w.summary()).toBeNull()
     w.waiting(0, 0, true)
     vi.advanceTimersByTime(STALL_LIMIT_MS)
     expect(seen).toEqual(['reload'])
+    w.attached()
+    w.waiting(40, 40)
+    vi.advanceTimersByTime(800)
+    w.playing()
     w.waiting(40, 40)
     vi.advanceTimersByTime(500)
     w.resumed()
     expect(w.summary()).toBe('Stalls: 1, longest 0.5 s')
+  })
+  it('a reload attaches again, and that opening wait is not a second stall (review F2)', () => {
+    const { w, seen } = dog()
+    w.waiting(30, 30)
+    vi.advanceTimersByTime(STALL_LIMIT_MS)
+    expect(seen).toEqual(['reload'])
+    w.attached()
+    w.waiting(30, 30)
+    vi.advanceTimersByTime(1500)
+    w.playing()
+    expect(w.summary()).toBe('Stalls: 1, longest 15.0 s')
+  })
+  it('a pause during a wait ends it: no reload and no give-up later (review F1)', () => {
+    const { w, seen } = dog()
+    w.waiting(30, 30)
+    vi.advanceTimersByTime(3000)
+    w.paused()
+    vi.advanceTimersByTime(5 * STALL_LIMIT_MS)
+    expect(seen).toEqual([])
+  })
+  it('after a failure nothing reloads until the next attach (review F6)', () => {
+    const { w, seen } = dog(true)
+    w.waiting(0, 0)
+    w.failed()
+    w.waiting(0, 0)
+    vi.advanceTimersByTime(5 * STALL_LIMIT_MS)
+    expect(seen).toEqual([])
+    w.attached()
+    w.waiting(0, 0)
+    vi.advanceTimersByTime(STALL_LIMIT_MS)
+    expect(seen).toEqual(['reload'])
+  })
+  it('a stuck seek wait does not spend the reload a stall during play gets (review F7)', () => {
+    const { w, seen } = dog()
+    w.waiting(0, 0, true)
+    vi.advanceTimersByTime(STALL_LIMIT_MS)
+    w.attached(); w.playing()
+    w.waiting(50, 50)
+    vi.advanceTimersByTime(STALL_LIMIT_MS)
+    expect(seen).toEqual(['reload', 'reload'])
   })
   it('keeps the last 50 stalls', () => {
     const { w } = dog()

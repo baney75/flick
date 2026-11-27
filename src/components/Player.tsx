@@ -42,8 +42,6 @@ function PlayerInner({ req }: { req: PlayRequest }) {
   const dog = useRef<Watchdog | null>(null)
   const [stallLine, setStallLine] = useState<string | null>(null)
   const [stuck, setStuck] = useState(false)
-  // Waits before the first frame, and for a seek, are expected; a wait during play is a stall.
-  const played = useRef(false)
 
   const [status, setStatus] = useState<string | null>(OPENING)
   // The words beside the spinner wait 1 s (rule 7); the spinner shows at once.
@@ -158,6 +156,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     hls.current = null
     playingUrl.current = url
     if (!dog.current) dog.current = new Watchdog(kindOf(req, url, !!remux.current), { reload, giveUp })
+    dog.current.attached()
     // A local event playlist (a flick-tool: stream through ffmpeg) is still growing; start at the top, not the live edge.
     const local = isHls(url) && /^(asset:|https?:\/\/asset\.localhost\/)/.test(url)
     if (isHls(url) && !v.canPlayType('application/vnd.apple.mpegurl')) {
@@ -184,6 +183,8 @@ function PlayerInner({ req }: { req: PlayRequest }) {
 
   function onFail(msg: string, unsupported = false) {
     const v = video.current!
+    // No reload behind an error card or during a conversion.
+    dog.current?.failed()
     // A run being replaced loses its folder; the new run plays instead.
     if (restarting.current) return
     if (remux.current) { setStatus(null); setError(msg); return }
@@ -291,8 +292,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     const v = video.current!
     restarting.current = true
     // A stall open before the seek ends with it; the new run is watched from its start, its first wait expected.
-    dog.current?.resumed()
-    played.current = false
+    dog.current?.attached()
     v.pause()
     v.removeAttribute('src')
     v.load()
@@ -334,13 +334,12 @@ function PlayerInner({ req }: { req: PlayRequest }) {
     if (!v || restarting.current) return
     setStatus(waitLine(dog.current?.kind ?? 'plugin'))
     const [from, to] = bufferedAt(v)
-    dog.current?.waiting(from, to, !played.current || v.seeking)
+    dog.current?.waiting(from, to, v.seeking)
     setStallLine(dog.current?.summary() ?? null)
   }
   const onPlayingNow = () => {
-    played.current = true
     setStatus(null)
-    dog.current?.resumed()
+    dog.current?.playing()
     setStallLine(dog.current?.summary() ?? null)
   }
 
@@ -601,7 +600,7 @@ function PlayerInner({ req }: { req: PlayRequest }) {
         onClick={toggle}
         onDblClick={toggleFull}
         onPlay={() => { setPlaying(true); setStatus(null) }}
-        onPause={() => { setPlaying(false); save() }}
+        onPause={() => { setPlaying(false); dog.current?.paused(); save() }}
         onWaiting={onWaiting}
         onPlaying={onPlayingNow}
         onProgress={() => { const v = video.current; if (v) dog.current?.data(bufferedAt(v)[1]) }}
